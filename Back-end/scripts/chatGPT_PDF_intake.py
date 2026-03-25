@@ -13,6 +13,11 @@ from unstructured.partition.pdf import partition_pdf
 
 
 # ==============================================================================
+# Pipeline overview:
+# input_pdf -> extracted_raw.json (elements) + doc_context.txt (full text)
+# Outputs feed chatGPT_cleaner.py and context_enrichment.py.
+# ==============================================================================
+# ==============================================================================
 # 🛡️ CPU THREAD LIMITS (avoid oversubscription when running many workers)
 # ==============================================================================
 os.environ.setdefault("OMP_THREAD_LIMIT", "1")
@@ -56,6 +61,7 @@ ort.InferenceSession = PatchedInferenceSession
 
 # ==============================================================================
 # Helpers
+# These are good candidates to split into a reusable "pdf_utils" module later.
 # ==============================================================================
 def _safe_get_page_number(el_dict: Dict[str, Any]) -> int:
     return int(el_dict.get("metadata", {}).get("page_number", 0) or 0)
@@ -144,6 +150,7 @@ def process_single_chunk(args):
     Worker: takes a temp chunk PDF, runs FAST on texty pages and HI_RES on OCR pages,
     returns a list of element dicts.
     """
+    print(f"DEBUG: Worker started on chunk {args[1]}")
     temp_filename, chunk_start_idx, source_path, source_filename, hi_res_model_name, min_text_chars, ocr_dpi = args
 
     subset_files = []
@@ -154,6 +161,7 @@ def process_single_chunk(args):
         all_dicts: List[Dict[str, Any]] = []
 
         # --- FAST path (best for command fidelity) ---
+        # This is the path to keep if you later separate OCR and non-OCR pipelines.
         if texty_idx:
             fast_pdf = write_pdf_subset(reader, texty_idx)
             subset_files.append(fast_pdf)
@@ -214,6 +222,7 @@ def process_single_chunk(args):
 
 # ==============================================================================
 # Orchestrator
+# Splitting tip: keep "chunking", "worker pool", and "merge/sort" as separate steps.
 # ==============================================================================
 def process_pdf_parallel(
     pdf_path: str,
@@ -239,7 +248,7 @@ def process_pdf_parallel(
     tasks = []
     temp_files = []
 
-    # Slice PDF into batches
+    # Slice PDF into batches (keeps worker memory usage predictable).
     for start in range(0, total_pages, batch_size):
         writer = PdfWriter()
         for page in reader.pages[start : start + batch_size]:
@@ -280,14 +289,17 @@ def process_pdf_parallel(
 
                 pbar.update(1)
 
-    # Final deterministic sort
+    # Final deterministic sort (stable ordering before writing JSON).
     all_elements.sort(key=_sort_key)
 
     return all_elements
 
 
 if __name__ == "__main__":
-    input_pdf = "data/Debian_Install_Guide.pdf"
+    # Entry point produces:
+    # - extracted_raw.json (for cleaner)
+    # - doc_context.txt (for enrichment prompt context)
+    input_pdf = "data/The_Linux_Command_Line.pdf"
 
     start_time = time.time()
     data = process_pdf_parallel(
@@ -302,9 +314,27 @@ if __name__ == "__main__":
 
     print(f"\n✅ DONE! Extracted {len(data)} elements in {duration:.2f}s")
     print(f"⚡ Speed: {len(PdfReader(input_pdf).pages) / duration:.2f} pages/sec (approx)")
-
+    
+    # ==========================================================================
+    # 📄 DROP-IN: Full Text Export (Instant)
+    # Note: this feeds context_enrichment.py.
+    # ==========================================================================
+    txt_output = "doc_context.txt"
+    print(f"📝 Dumping full text to {txt_output}...")
+    
+    full_content = ""
+    reader = PdfReader(input_pdf)
+    
+    # We use tqdm here so you see a nice progress bar for the text dump
+    for page in tqdm(reader.pages, desc="Exporting Text", unit="page"):
+        full_content += (page.extract_text() or "") + "\n"
+    with open(txt_output, "w", encoding="utf-8") as f:
+        f.write(full_content)
+        
+    print(f"✅ Text dump saved! Size: {len(full_content)} chars.")
+    
     out = "extracted_raw.json"
     with open(out, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-
+    
     print(f"💾 Wrote: {out}")

@@ -1,0 +1,21 @@
+Proposal.pdf
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+
+# Local environments and editor settings
+.env
+Back-end/.env
+.venv/
+venv/
+.vscode/
+.idea/
+
+# Test and tool caches
+.pytest_cache/
+.mypy_cache/
+
+# Local vector database artifacts
+Back-end/chroma_db/
+Back-end/lancedb_data/

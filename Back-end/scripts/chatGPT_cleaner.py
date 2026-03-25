@@ -5,7 +5,13 @@ from typing import Dict, Any, List, Tuple, Optional
 
 
 # ------------------------------------------------------------------
+# Pipeline overview:
+# extracted_raw.json -> extracted_clean.json
+# Keeps dedupe local to page and preserves code-like text.
+# ------------------------------------------------------------------
+# ------------------------------------------------------------------
 # Heuristic: detect command/code-like text (protect from normalization)
+# Refactor note: keep this logic separate from dedupe so you can swap rules easily.
 # ------------------------------------------------------------------
 _COMMAND_HINTS = (
     "sudo ", "apt ", "apt-get ", "dnf ", "yum ", "pacman ", "zypper ",
@@ -41,6 +47,7 @@ def is_code_like(text: str) -> bool:
 
 # ------------------------------------------------------------------
 # Normalization for dedupe keys (different for code vs prose)
+# Refactor note: this is the boundary between "content" and "indexing".
 # ------------------------------------------------------------------
 def normalize_for_dedupe(text: str, code_like: bool) -> str:
     if code_like:
@@ -58,6 +65,7 @@ def normalize_for_dedupe(text: str, code_like: bool) -> str:
 # ------------------------------------------------------------------
 # Type scoring: choose "best" element when duplicates exist
 # (Prefer structured/non-OCR text over UncategorizedText/Image OCR)
+# Refactor note: move this priority map into a config file if you tune it often.
 # ------------------------------------------------------------------
 TYPE_PRIORITY = {
     "Title": 0,
@@ -93,13 +101,14 @@ def is_tiny_noise(text: str) -> bool:
 
 # ------------------------------------------------------------------
 # Cleaning
+# This function is the "public API" for the cleaner stage.
 # ------------------------------------------------------------------
 def clean_elements(
     elements: List[Dict[str, Any]],
     drop_boilerplate: bool = False,
     boilerplate_page_fraction: float = 0.25,  # only used if drop_boilerplate=True
 ) -> List[Dict[str, Any]]:
-    # Group by page
+    # Group by page (keeps dedupe local and avoids cross-page collisions).
     by_page: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     for el in elements:
         text = el.get("text", "")
@@ -114,7 +123,7 @@ def clean_elements(
 
         by_page[int(el.get("metadata", {}).get("page_number", 0) or 0)].append(el)
 
-    # Page-local dedupe
+    # Page-local dedupe (prefers higher-quality text types).
     cleaned_pages: Dict[int, List[Dict[str, Any]]] = {}
     for page, items in by_page.items():
         best_by_key: Dict[str, Dict[str, Any]] = {}
@@ -139,7 +148,7 @@ def clean_elements(
 
         cleaned_pages[page] = list(best_by_key.values())
 
-    # Optional: boilerplate removal (OFF by default)
+    # Optional: boilerplate removal (OFF by default; conservative for manuals).
     if drop_boilerplate:
         # Count repeated short lines across pages
         page_count = len(cleaned_pages)
@@ -179,7 +188,7 @@ def clean_elements(
                 new_items.append(el)
             cleaned_pages[page] = new_items
 
-    # Flatten and sort
+    # Flatten and sort (stable output for downstream diffing).
     out = []
     for page in sorted(cleaned_pages.keys()):
         out.extend(cleaned_pages[page])
@@ -187,6 +196,7 @@ def clean_elements(
 
 
 if __name__ == "__main__":
+    # Entry point: extracted_raw.json -> extracted_clean.json
     in_path = "extracted_raw.json"
     out_path = "extracted_clean.json"
 

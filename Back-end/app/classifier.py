@@ -67,10 +67,14 @@ class Classifier:
 
         # 1. Format the Main App's history into a string
         recent_history_text = ""
-        for msg in chat_history[-12:]: 
-            role = "User" if msg['role'] == 'user' else "Model"
-            # Handle different history formats (parts vs content)
-            content = msg.get('content') or msg.get('parts', [{}])[0].get('text', "")
+        for msg in chat_history[-12:]:
+            if isinstance(msg, tuple) and len(msg) == 2:
+                raw_role, content = msg
+            else:
+                raw_role = msg.get("role")
+                # Handle different history formats (parts vs content)
+                content = msg.get("content") or msg.get("parts", [{}])[0].get("text", "")
+            role = "User" if raw_role == "user" else "Model"
             recent_history_text += f"{role}: {content}\n"
 
         # 3. Construct the Data Payload (The Prompt)

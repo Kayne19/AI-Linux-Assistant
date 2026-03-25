@@ -1,5 +1,3 @@
-import string
-
 import ollama
 
 class Contextualizer:
@@ -82,119 +80,6 @@ class Contextualizer:
         OUTPUT: "How do I fix the 'permission denied' error when running apt update?\n<100 lines of log...>"
 
         """
-        self._strip_chars = string.punctuation
-        self._pronouns = {
-            "it",
-            "this",
-            "that",
-            "they",
-            "them",
-            "there",
-            "he",
-            "she",
-            "him",
-            "her",
-            "those",
-            "these",
-        }
-        self._singular_pronouns = {
-            "it",
-            "this",
-            "that",
-            "he",
-            "she",
-            "him",
-            "her",
-        }
-        self._narrative_tokens = {
-            "now",
-            "after",
-            "before",
-            "because",
-            "since",
-            "so",
-            "then",
-        }
-        self._stopwords = {
-            "a",
-            "an",
-            "the",
-            "and",
-            "or",
-            "to",
-            "of",
-            "for",
-            "in",
-            "on",
-            "at",
-            "with",
-            "my",
-            "your",
-        }
-
-    # Split text into lowercase word tokens, trimming punctuation.
-    def _tokenize(self, text):
-        tokens = []
-        for raw in text.split():
-            token = raw.strip(self._strip_chars).lower()
-            if token:
-                tokens.append(token)
-        return tokens
-
-    # Quick check for any pronoun in the input text.
-    def _has_pronoun(self, text):
-        for token in self._tokenize(text):
-            if token in self._pronouns:
-                return True
-        return False
-
-    # Check only singular pronouns to avoid ambiguous multi-entity rewrites.
-    def _has_singular_pronoun(self, text):
-        for token in self._tokenize(text):
-            if token in self._singular_pronouns:
-                return True
-        return False
-
-    # Detect likely ambiguity when prior user message mentions multiple entities.
-    def _looks_ambiguous(self, text):
-        if not text:
-            return False
-        lowered = f" {text.lower()} "
-        if " and " not in lowered and " or " not in lowered:
-            return False
-        for token in self._narrative_tokens:
-            if f" {token} " in lowered:
-                return False
-        return True
-
-    # Append prior user context when a pronoun remains after rewriting.
-    def _append_context(self, query, context):
-        if not context or context.strip() in query:
-            return query
-        if "\n" in context or "\n" in query:
-            return query
-        context = context.strip()
-        if len(context) > 200:
-            context = context[:200].rsplit(" ", 1)[0]
-        return f"{query} {context}".strip()
-
-    # Reject rewrites that introduce new tokens or alter log lines.
-    def _validate_rewrite(self, original, candidate, history_text):
-        if not candidate:
-            return False
-        if "\n" in original:
-            orig_lines = original.splitlines()
-            cand_lines = candidate.splitlines()
-            if len(cand_lines) < len(orig_lines):
-                return False
-            if cand_lines[1:] != orig_lines[1:]:
-                return False
-        allowed = set(self._tokenize(original)) | set(self._tokenize(history_text)) | self._stopwords
-        extra = set(self._tokenize(candidate)) - allowed
-        if extra:
-            return False
-        return True
-
     def call_api(self, user_question, chat_history):
         """
         Args:
@@ -204,25 +89,24 @@ class Contextualizer:
         """
         
         # 1. GUARD CLAUSE: If history is empty, there is nothing to recontextualize.
-        # if not chat_history:
-            # return user_question
+        if not chat_history:
+            return user_question
 
         # 2. Format the Main App's history into a string
         # We take the last 4 messages to save context tokens.
         recent_history_text = ""
         last_user_message = ""
-        for msg in chat_history[-4:]: 
-            role = "User" if msg['role'] == 'user' else "Model"
-            # Handle different history formats (parts vs content)
-            content = msg.get('content') or msg.get('parts', [{}])[0].get('text', "")
+        for msg in chat_history[-4:]:
+            if isinstance(msg, tuple) and len(msg) == 2:
+                raw_role, content = msg
+            else:
+                raw_role = msg.get("role")
+                # Handle different history formats (parts vs content)
+                content = msg.get("content") or msg.get("parts", [{}])[0].get("text", "")
+            role = "User" if raw_role == "user" else "Model"
             recent_history_text += f"{role}: {content}\n"
-            if msg.get('role') == 'user':
+            if raw_role == "user":
                 last_user_message = content
-
-        if not chat_history or not self._has_pronoun(user_question):
-            return user_question
-        if self._looks_ambiguous(last_user_message) and self._has_singular_pronoun(user_question):
-            return user_question
 
         # 3. Construct the Data Payload (The Prompt)
         # We wrap the data in XML tags so the model knows it is data, not chat.
@@ -252,10 +136,6 @@ class Contextualizer:
             )
             
             rewritten = response['message']['content'].strip()
-            if not self._validate_rewrite(user_question, rewritten, recent_history_text):
-                rewritten = user_question
-            if self._has_pronoun(rewritten) and not self._looks_ambiguous(last_user_message):
-                rewritten = self._append_context(rewritten, last_user_message)
             
             # Logging for your sanity
             print(f"\n[Contextualizer] In: '{user_question}'")  # AI Debug Print
