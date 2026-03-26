@@ -1,102 +1,83 @@
 import json
 
 import ollama
+from debug_utils import debug_print
 
 class LocalCaller:
     # "qwen2.5:7b"
     # "llama3.1:8b"
     # "mannix/llama3.1-8b-abliterated"
     # "mistral-nemo"
-    def __init__(self, router, system_prompt, model="qwen2.5:7b"):
+    def __init__(self, model="qwen2.5:7b"):
         self.model = model
-        self.router = router
-        self.system_prompt = system_prompt
-        
-        # We set the system prompt once. Ollama handles it as a message role.
-        self.system_message = {
+
+    def generate_text(
+        self,
+        system_prompt,
+        user_message,
+        history=None,
+        tools=None,
+        tool_handler=None,
+        temperature=None,
+        max_output_tokens=None,
+        max_tool_rounds=8,
+        event_listener=None,
+    ):
+        system_message = {
             "role": "system",
-            "content": self.system_prompt
-            }
-
-    def call_api(self, user_question, rag_context):
-        
-        # 1. Construct the RAG Prompt for this specific turn
-        current_turn_content = f"""
-        REFERENCE CONTEXT (Use this to answer, but do not memorize it):
-        {rag_context}
-
-        USER QUESTION:
-        {user_question}
-        """
-
-        # 2. Build the Message Payload
-        # [System Message] + [Previous History] + [Current Question]
-        history_messages = self.translate_history(self.router.get_history())
-        messages = [self.system_message] + history_messages + [
-            {"role": "user", "content": current_turn_content}
+            "content": system_prompt,
+        }
+        history_messages = self.translate_history(history or [])
+        messages = [system_message] + history_messages + [
+            {"role": "user", "content": user_message}
         ]
-        tools = [{
-            "type": "function",
-            "function": {
-                "name": "search_RAG_database",
-                "description": (
-                    "Search the RAG database for relevant context. "
-                    "Relevant document options: debian, proxmox, docker, general, no_rag."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query or question to look up",
-                        },
-                        "relevant_documents": {
-                            "type": "array",
-                            "items": {
-                                "type": "string",
-                                "enum": ["debian", "proxmox", "docker", "general", "no_rag"],
-                            },
-                            "description": "Document labels to search",
-                        },
-                    },
-                    "required": ["query", "relevant_documents"],
-                },
-            },
-        }]
-        # DEBUG: Print what we are sending
-        print("\n" + ">"*20 + f" [DEBUG] SENDING TO LOCAL {self.model} " + ">"*20)
-        # We print only the last message to keep logs readable, or len(messages)
-        print(f"Sending {len(messages)} messages...")
-        print(f"[AI Debug Print] Context chars: {len(rag_context)}")
-        print("<"*20 + " END PAYLOAD " + "<"*20 + "\n")
+        translated_tools = self._translate_tools(tools or [])
+        self._tool_handler = tool_handler
+
+        debug_print("\n" + ">" * 20 + f" [DEBUG] SENDING TO LOCAL {self.model} " + ">" * 20)
+        debug_print(f"Sending {len(messages)} messages...")
+        debug_print(f"[AI Debug Print] Prompt chars: {len(user_message)}")
+        debug_print("<" * 20 + " END PAYLOAD " + "<" * 20 + "\n")
 
         try:
-            # 3. Call Ollama
-            response = ollama.chat(model=self.model, messages=messages, tools=tools)
-            message = response.get("message", {})
-            tool_calls = message.get("tool_calls") or []
-            if isinstance(tool_calls, dict):
-                tool_calls = [tool_calls]
-            if not isinstance(tool_calls, list):
-                tool_calls = []
-            normalized_tool_calls = []
-            for tool_call in tool_calls:
-                if isinstance(tool_call, dict):
-                    normalized_tool_calls.append(tool_call)
-                elif hasattr(tool_call, "model_dump"):
-                    normalized_tool_calls.append(tool_call.model_dump())
-                elif hasattr(tool_call, "dict"):
-                    normalized_tool_calls.append(tool_call.dict())
-                elif hasattr(tool_call, "__dict__"):
-                    normalized_tool_calls.append(tool_call.__dict__)
-                else:
-                    normalized_tool_calls.append({"raw_tool_call": str(tool_call)})
-            tool_calls = normalized_tool_calls
-            print(f"[TOOL DEBUG] Tool calls returned: {len(tool_calls)}")
-            if tool_calls:
-                print(f"[TOOL DEBUG] Raw tool_calls: {json.dumps(tool_calls, indent=2, default=str)}")
+            if event_listener is not None:
+                event_listener("request_submitted", {"round": 0})
+            request_kwargs = {
+                "model": self.model,
+                "messages": messages,
+            }
+            if translated_tools:
+                request_kwargs["tools"] = translated_tools
+            if temperature is not None:
+                request_kwargs["options"] = {"temperature": temperature}
 
-            if tool_calls:
+            response = ollama.chat(**request_kwargs)
+            message = response.get("message", {})
+            model_response = message.get("content", "")
+            tool_calls = self._normalize_tool_calls(message.get("tool_calls") or [])
+            tool_rounds = 0
+
+            while tool_calls:
+                tool_rounds += 1
+                if tool_rounds > max_tool_rounds:
+                    raise RuntimeError("Local worker exceeded tool call limit.")
+                debug_print(f"[TOOL DEBUG] Tool calls returned: {len(tool_calls)}")
+                debug_print(f"[TOOL DEBUG] Raw tool_calls: {json.dumps(tool_calls, indent=2, default=str)}")
+                if event_listener is not None:
+                    event_listener(
+                        "tool_calls_received",
+                        {
+                            "round": tool_rounds,
+                            "count": len(tool_calls),
+                            "names": [
+                                tool_call.get("function", {}).get("name", "unknown_tool")
+                                for tool_call in tool_calls
+                            ],
+                        },
+                    )
+                if self._tool_handler is None:
+                    raise ValueError("Local worker received tool calls without a tool handler.")
+
                 assistant_message = {
                     "role": "assistant",
                     "content": message.get("content", ""),
@@ -104,30 +85,33 @@ class LocalCaller:
                 }
                 tool_messages = []
                 for tool_call in tool_calls:
-                    print(f"[TOOL DEBUG] Handling tool_call: {json.dumps(tool_call, indent=2, default=str)}")
+                    debug_print(f"[TOOL DEBUG] Handling tool_call: {json.dumps(tool_call, indent=2, default=str)}")
                     tool_messages.append(self._build_tool_message(tool_call))
-                print(f"[TOOL DEBUG] Tool messages: {json.dumps(tool_messages, indent=2, default=str)}")
+                debug_print(f"[TOOL DEBUG] Tool messages: {json.dumps(tool_messages, indent=2, default=str)}")
 
-                followup_messages = messages + [assistant_message] + tool_messages
-                print("[TOOL DEBUG] Sending follow-up request with tool results.")
-                response = ollama.chat(
-                    model=self.model,
-                    messages=followup_messages,
-                    tools=tools,
-                )
-                model_response = response["message"]["content"]
-            else:
-                model_response = message.get("content", "")
+                messages = messages + [assistant_message] + tool_messages
+                debug_print("[TOOL DEBUG] Sending follow-up request with tool results.")
+                if event_listener is not None:
+                    event_listener("tool_results_submitted", {"round": tool_rounds})
+                followup_kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                }
+                if translated_tools:
+                    followup_kwargs["tools"] = translated_tools
+                if temperature is not None:
+                    followup_kwargs["options"] = {"temperature": temperature}
+                response = ollama.chat(**followup_kwargs)
+                message = response.get("message", {})
+                model_response = message.get("content", model_response)
+                tool_calls = self._normalize_tool_calls(message.get("tool_calls") or [])
 
-            # 4. Update History (CLEANLY)
-            # We discard the massive RAG context from history to save context window
-            self.router.update_history("user", user_question)
-            self.router.update_history("model", model_response)
-            
+            if event_listener is not None:
+                event_listener("response_completed", {"tool_rounds": tool_rounds})
             return model_response
 
         except Exception as e:
-            return f"Ollama Error: {str(e)}"
+            raise RuntimeError(f"Ollama Error: {str(e)}") from e
 
     def translate_history(self, history):
         translated = []
@@ -146,16 +130,50 @@ class LocalCaller:
             translated.append({"role": role, "content": content})
         return translated
 
+    def _translate_tools(self, tools):
+        translated = []
+        for tool in tools:
+            translated.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool["description"],
+                        "parameters": tool["parameters"],
+                    },
+                }
+            )
+        return translated
+
+    def _normalize_tool_calls(self, tool_calls):
+        if isinstance(tool_calls, dict):
+            tool_calls = [tool_calls]
+        if not isinstance(tool_calls, list):
+            tool_calls = []
+        normalized_tool_calls = []
+        for tool_call in tool_calls:
+            if isinstance(tool_call, dict):
+                normalized_tool_calls.append(tool_call)
+            elif hasattr(tool_call, "model_dump"):
+                normalized_tool_calls.append(tool_call.model_dump())
+            elif hasattr(tool_call, "dict"):
+                normalized_tool_calls.append(tool_call.dict())
+            elif hasattr(tool_call, "__dict__"):
+                normalized_tool_calls.append(tool_call.__dict__)
+            else:
+                normalized_tool_calls.append({"raw_tool_call": str(tool_call)})
+        return normalized_tool_calls
+
     def _build_tool_message(self, tool_call):
         function = tool_call.get("function", {})
         tool_name = function.get("name", "unknown_tool")
         tool_args = self._parse_tool_arguments(function.get("arguments", {}))
 
-        print(f"[TOOL DEBUG] Parsed tool args for {tool_name}: {tool_args}")
+        debug_print(f"[TOOL DEBUG] Parsed tool args for {tool_name}: {tool_args}")
         tool_result = self._run_tool(tool_name, tool_args)
         if not isinstance(tool_result, str):
             tool_result = json.dumps(tool_result)
-        print(f"[TOOL DEBUG] Tool result for {tool_name}: {tool_result}")
+        debug_print(f"[TOOL DEBUG] Tool result for {tool_name}: {tool_result}")
 
         tool_message = {
             "role": "tool",
@@ -179,16 +197,12 @@ class LocalCaller:
         return {}
 
     def _run_tool(self, tool_name, tool_args):
-        if tool_name == "search_RAG_database":
-            try:
-                query = tool_args.get("query")
-                relevant_documents = tool_args.get("relevant_documents")
-                if query is None or relevant_documents is None:
-                    return "Tool error: missing required arguments"
-                return self.search_rag_database(query, relevant_documents)
-            except Exception as exc:
-                return f"Tool error: {exc}"
-        return f"Tool error: unknown tool '{tool_name}'"
+        if self._tool_handler is None:
+            return f"Tool error: missing handler for '{tool_name}'"
+        try:
+            return self._tool_handler(tool_name, tool_args)
+        except Exception as exc:
+            return f"Tool error: {exc}"
 
-    def search_rag_database(self, retrieval_query, relevant_documents):
-        return self.router.getDB().retrieve_context(retrieval_query, relevant_documents)
+
+LocalWorker = LocalCaller

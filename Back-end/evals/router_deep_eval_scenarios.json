@@ -1,0 +1,167 @@
+[
+  {
+    "id": "branch_switch_after_pushback",
+    "category": "debugging",
+    "notes": "Stress whether the assistant changes course after contrary evidence against its initial branch.",
+    "review_focus": "After explicit contrary evidence, does the assistant pivot or keep hammering the privilege-mode theory?",
+    "memory_debug_query": "docker proxmox lxc privilege nesting keyctl apparmor",
+    "steps": [
+      {
+        "user": "I'm on Debian 12 in a Proxmox LXC and Docker commands are failing with permission denied."
+      },
+      {
+        "user": "I already tried sudo apt install docker.io and restarting the docker service, but it didn't help."
+      },
+      {
+        "user": "What should I try next?",
+        "expected_labels": ["no_rag"],
+        "expect_rag": false
+      },
+      {
+        "user": "The container is already privileged and nesting=1. I don't think privilege mode is the issue."
+      },
+      {
+        "user": "Given that, what should I check next?",
+        "expected_labels": ["no_rag"],
+        "expect_rag": false
+      }
+    ]
+  },
+  {
+    "id": "restart_persistence_profile_and_attempts",
+    "category": "memory",
+    "notes": "Verify that long-term memory survives a router restart and carries profile facts plus prior attempts.",
+    "review_focus": "After restart, does the assistant answer from durable memory rather than only recent conversation history?",
+    "memory_debug_query": "os shell vm editor vim attempt config",
+    "steps": [
+      {
+        "user": "I'm using zsh on Debian 12 inside a VM."
+      },
+      {
+        "user": "I already edited the config with vim and it did not help."
+      },
+      {
+        "restart_before": true,
+        "user": "What OS, shell, and previous attempt do you remember?",
+        "expected_labels": ["no_rag"],
+        "expect_rag": false
+      }
+    ]
+  },
+  {
+    "id": "contradiction_persistence_after_restart",
+    "category": "memory",
+    "notes": "Verify that mutable user facts supersede stale committed values and remain correct across restart.",
+    "review_focus": "Does durable memory update to the new environment fact while preserving an audit trail for the old one?",
+    "memory_debug_query": "os distribution version environment",
+    "steps": [
+      {
+        "user": "I am on Debian 12."
+      },
+      {
+        "user": "Actually this machine is Ubuntu 24.04 now."
+      },
+      {
+        "restart_before": true,
+        "user": "What OS am I on?",
+        "expected_labels": ["no_rag"],
+        "expect_rag": false
+      }
+    ]
+  },
+  {
+    "id": "repeated_fix_avoidance",
+    "category": "debugging",
+    "notes": "Check whether memory and history prevent the assistant from repeating already-failed fixes.",
+    "review_focus": "On the final turn, does the assistant avoid repeating package install and service restart advice?",
+    "memory_debug_query": "docker attempt restart install permissions",
+    "steps": [
+      {
+        "user": "I'm on Debian 12 in a Proxmox LXC and Docker commands are failing with permission denied."
+      },
+      {
+        "user": "I already tried sudo apt install docker.io and restarting the docker service, but it didn't help."
+      },
+      {
+        "user": "What have I already tried?",
+        "expected_labels": ["no_rag"],
+        "expect_rag": false
+      },
+      {
+        "user": "Don't repeat fixes I've already done. Give me the next thing to check.",
+        "expected_labels": ["no_rag"],
+        "expect_rag": false
+      }
+    ]
+  },
+  {
+    "id": "exact_command_and_safety",
+    "category": "grounding",
+    "notes": "Exercise both exact-command recovery and refusal to guess when exact command text is not grounded.",
+    "review_focus": "Does the assistant recover simple exact commands and stay conservative on unsupported exact Proxmox syntax?",
+    "memory_debug_query": "docker proxmox exact command",
+    "steps": [
+      {
+        "user": "How do I list running Docker containers?",
+        "expected_labels": ["docker"],
+        "expect_rag": true
+      },
+      {
+        "user": "What's the exact pct set command to enable nesting for container 101?"
+      }
+    ]
+  },
+  {
+    "id": "long_history_compaction_and_recall",
+    "category": "history",
+    "notes": "Seed a long prior history and verify recall still works after compaction pressure.",
+    "review_focus": "Does the assistant preserve the important prior attempt when history is long enough to summarize?",
+    "seed_history": [
+      {"role": "user", "content": "Context note 1: I am debugging a Linux container."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 2: It is running on Proxmox."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 3: Debian 12 guest."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 4: Docker permission denied."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 5: I already tried restarting docker."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 6: I already tried reinstalling docker.io."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 7: The container is privileged."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 8: nesting=1 is already set."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 9: I am using zsh."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 10: I edited one config with vim already."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 11: AppArmor tweak also did not help."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 12: I need the next new thing to check."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 13: Please avoid repeating old fixes."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 14: The last exact error mentioned keyctl."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 15: This history is intentionally long."},
+      {"role": "model", "content": "Acknowledged."},
+      {"role": "user", "content": "Context note 16: Keep it concise."},
+      {"role": "model", "content": "Acknowledged."}
+    ],
+    "memory_debug_query": "docker proxmox attempts apparmor keyctl vim zsh",
+    "steps": [
+      {
+        "user": "What have I already tried?",
+        "expected_labels": ["no_rag"],
+        "expect_rag": false
+      },
+      {
+        "user": "What's the next new thing to check?",
+        "expected_labels": ["no_rag"],
+        "expect_rag": false
+      }
+    ]
+  }
+]

@@ -1,42 +1,18 @@
-import ollama
+from openAI_caller import OpenAIWorker
+from debug_utils import debug_print
+from history_preparer import PreparedHistory
+from prompts import build_classifier_system_prompt
+from routing_registry import get_allowed_labels, get_domain_map
 
 class Classifier:
-    def __init__(self, model="qwen2.5:7b"):
-        self.model = model
-        self.system_prompt = """
+    def __init__(self, worker=None, model="gpt-4.1-mini", temperature=0.0):
+        self.worker = worker or OpenAIWorker(model=model)
+        self.temperature = temperature
 
-    You are a routing classifier for RAG.
-    Goal: choose which document domains to search for the user’s message.
-
-    Return EXACTLY one line in this format:
-    labels=LABELS,conf=0.00
-
-    Rules:
-
-    - Allowed labels: debian, proxmox, docker, general, no_rag
-    - Multiple labels must be joined with | in this fixed order: debian|proxmox|docker|general|no_rag
-    - Confidence is a number from 0.00 to 1.00 with two decimals.
-    - Output only the line. No extra words, no quotes, no spaces.
-
-    Routing guidance:
-
-    - no_rag: greetings, thanks, small talk, meta questions (e.g., “hello”, “thanks”, “who are you”).
-    - debian: Debian install, apt, dpkg, Debian installer, Debian versions.
-    - proxmox: Proxmox/PVE, VM/LXC management, nodes, clusters, storage, backups, Proxmox UI.
-    - docker: Docker, containers/images, Dockerfile, docker compose, docker CLI.
-    - general: generic Linux shell/filesystem questions without a clear distro/platform.
-    - If the query clearly spans multiple domains, output multiple labels (e.g., “Debian container in
-        Proxmox” → debian|proxmox).
-    - If uncertain between two or more domains, output all plausible labels with lower confidence (≤0.60).
-
-    Examples (follow format exactly):
-    labels=no_rag,conf=1.00
-    labels=debian,conf=0.92
-    labels=proxmox|debian,conf=0.85
-    labels=docker,conf=0.90
-    labels=general,conf=0
-
-    """
+    def _build_system_prompt(self):
+        allowed_labels = get_allowed_labels()
+        domain_map = get_domain_map()
+        return build_classifier_system_prompt(allowed_labels, domain_map)
 
     # Parse classifier output into a list of allowed labels.
     def _parse_labels(self, output):
@@ -52,35 +28,28 @@ class Classifier:
         if label_part is None:
             return []
         labels = [label.strip() for label in label_part.split("|") if label.strip()]
-        allowed = {"debian", "proxmox", "docker", "general", "no_rag"}
+        allowed = set(get_allowed_labels())
         labels = [label for label in labels if label in allowed]
         return labels
 
-    def call_api(self, user_question, chat_history):
+    def call_api(self, user_question, summarized_conversation_history=None, memory_snapshot_text=""):
         """
         Args:
             user_question (str): The new raw input from the user.
-            chat_history (list): The list of dictionaries [{'role': 'user', 'content': '...'}, ...] 
-                                    from your MAIN application logic.
+            summarized_conversation_history: Prepared history object for the current turn.
         """
-        
 
-        # 1. Format the Main App's history into a string
-        recent_history_text = ""
-        for msg in chat_history[-12:]:
-            if isinstance(msg, tuple) and len(msg) == 2:
-                raw_role, content = msg
-            else:
-                raw_role = msg.get("role")
-                # Handle different history formats (parts vs content)
-                content = msg.get("content") or msg.get("parts", [{}])[0].get("text", "")
-            role = "User" if raw_role == "user" else "Model"
-            recent_history_text += f"{role}: {content}\n"
+        if summarized_conversation_history is None:
+            summarized_conversation_history = PreparedHistory()
+        recent_history_text = summarized_conversation_history.as_prompt_text()
 
         # 3. Construct the Data Payload (The Prompt)
         # We wrap the data in XML tags so the model knows it is data, not chat.
         user_message_content = f"""
         <task_data>
+        <memory>
+        {memory_snapshot_text}
+        </memory>
         <history>
         {recent_history_text}
         </history>
@@ -91,29 +60,22 @@ class Classifier:
         """
 
         # 4. Build Messages for Ollama
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_message_content}
-        ]
-
         try:
-            # 5. Call Ollama with low temperature
-            response = ollama.chat(
-                model=self.model, 
-                messages=messages,
-                options={'temperature': 0.1} # Crucial: makes output deterministic
+            output = self.worker.generate_text(
+                system_prompt=self._build_system_prompt(),
+                user_message=user_message_content,
+                history=[],
+                temperature=self.temperature,
             )
-            
-            output = response['message']['content'].strip()
+            output = output.strip()
             labels = self._parse_labels(output)
             
-            # Logging
-            print(f"\n[Classifier] In: '{user_question}'")  # AI Debug Print
-            print(f"[Classifier] Out: '{output}'")  # AI Debug Print
-            print(f"[Classifier] History chars: {len(recent_history_text)}")  # AI Debug Print
+            debug_print(f"\n[Classifier] In: '{user_question}'")
+            debug_print(f"[Classifier] Out: '{output}'")
+            debug_print(f"[Classifier] History chars: {len(recent_history_text)}")
             
             return labels
 
         except Exception as e:
-            print(f"[Classifier] Error: {e}")  # AI Debug Print
+            debug_print(f"[Classifier] Error: {e}")
             return [] # Fallback: no sources

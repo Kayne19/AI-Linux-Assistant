@@ -3,48 +3,18 @@ import json
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from debug_utils import debug_print
+
+
 # --- SETUP ---
 class GeminiCaller:
     # gemini-3-flash-preview
     # gemma-3-27b
-    def __init__(self, router, system_prompt, model="gemma-3-27b"):
+    def __init__(self, model="gemma-3-27b"):
         load_dotenv()
-        self.router = router
-        self.system_prompt = system_prompt
         self.API_KEY = os.getenv("GOOGLE_API_KEY")
         self.model = model
         self.client = genai.Client(api_key=self.API_KEY)
-        self.tools = [
-            types.Tool(
-                function_declarations=[
-                    types.FunctionDeclaration(
-                        name="search_RAG_database",
-                        description="Search the RAG database for relevant context",
-                        parameters={
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "Search query or question to look up",
-                                },
-                                "relevant_documents": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string",
-                                        "enum": ["debian", "proxmox", "docker", "general", "no_rag"],
-                                    },
-                                    "description": (
-                                        "Document labels to search: debian, proxmox, "
-                                        "docker, general, no_rag"
-                                    ),
-                                },
-                            },
-                            "required": ["query", "relevant_documents"],
-                        },
-                    )
-                ]
-            )
-        ]
 
     def translate_history(self, history):
         translated = []
@@ -63,80 +33,104 @@ class GeminiCaller:
             translated.append(types.Content(role=role, parts=[types.Part(text=content)]))
         return translated
 
-    def call_api(self, user_question, rag_context):
-        
+    def generate_text(
+        self,
+        system_prompt,
+        user_message,
+        history=None,
+        tools=None,
+        tool_handler=None,
+        temperature=None,
+        max_output_tokens=None,
+        max_tool_rounds=8,
+        event_listener=None,
+    ):
         current_turn_content = f"""
         SYSTEM INSTRUCTION:
-        {self.system_prompt}
+        {system_prompt}
 
-        REFERENCE CONTEXT (Use this to answer, but do not memorize it):
-        {rag_context}
-
-        USER QUESTION:
-        {user_question}
+        {user_message}
         """
-        
+
         current_message = types.Content(
             role="user",
             parts=[types.Part(text=current_turn_content)],
         )
 
-        payload_messages = self.translate_history(self.router.get_history()) + [current_message]
-        
-        '''
-        # DEBUG: SEE EXACTLY WHAT YOU ARE SENDING
-        print("\n" + ">"*20 + " [DEBUG] RAW OUTGOING PAYLOAD " + ">"*20)
-        print(json.dumps(data, indent=2))
-        print("<"*20 + " END PAYLOAD " + "<"*20 + "\n")
-        # DEBUG: SEE EXACTLY WHAT YOU GOT BACK
+        payload_messages = self.translate_history(history or []) + [current_message]
+        config_kwargs = {
+            "max_output_tokens": max_output_tokens or 2048 * 2,
+        }
+        translated_tools = self._translate_tools(tools or [])
+        if translated_tools:
+            config_kwargs["tools"] = translated_tools
+        if temperature is not None:
+            config_kwargs["temperature"] = temperature
+        self.tool_handler = tool_handler
+
         try:
-            debug_response = response.json()
-            print("\n" + ">"*20 + " [DEBUG] RAW INCOMING RESPONSE " + ">"*20)
-            print(json.dumps(debug_response, indent=2))
-            print("<"*20 + " END RESPONSE " + "<"*20 + "\n")
-        except:
-            print(f"\n❌ [DEBUG] RAW RESPONSE TEXT (Non-JSON): {response.text}")
-        '''
-        
-        try:
+            if event_listener is not None:
+                event_listener("request_submitted", {"round": 0})
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=payload_messages,
-                config=types.GenerateContentConfig(
-                    max_output_tokens=2048 * 2,
-                    tools=self.tools,
-                ),
+                config=types.GenerateContentConfig(**config_kwargs),
             )
 
+            tool_rounds = 0
             tool_calls, tool_call_content = self.extract_tool_calls(response)
-            if tool_calls:
+            model_response = response.text or ""
+
+            while tool_calls:
+                tool_rounds += 1
+                if tool_rounds > max_tool_rounds:
+                    raise RuntimeError("Gemini worker exceeded tool call limit.")
+                if event_listener is not None:
+                    event_listener(
+                        "tool_calls_received",
+                        {
+                            "round": tool_rounds,
+                            "count": len(tool_calls),
+                            "names": [tool_call.get("name", "unknown_tool") for tool_call in tool_calls],
+                        },
+                    )
+                if tool_handler is None:
+                    raise ValueError("Gemini worker received tool calls without a tool handler.")
+
                 tool_response_content = self.build_tool_response_content(tool_calls)
-                followup_messages = payload_messages + [tool_call_content, tool_response_content]
+                payload_messages = payload_messages + [tool_call_content, tool_response_content]
+                if event_listener is not None:
+                    event_listener("tool_results_submitted", {"round": tool_rounds})
+
                 response = self.client.models.generate_content(
                     model=self.model,
-                    contents=followup_messages,
-                    config=types.GenerateContentConfig(
-                        max_output_tokens=2048 * 2,
-                        tools=self.tools,
-                    ),
+                    contents=payload_messages,
+                    config=types.GenerateContentConfig(**config_kwargs),
                 )
-                model_response = response.text or ""
-                if not model_response:
-                    model_response = f"Tool call requested: {json.dumps(tool_calls)}"
-            else:
-                model_response = response.text or ""
-            
-            # Update Permanent History (CLEANLY)
-            # We only save the Question and the Answer. We discard the Context.
-            self.router.update_history("user", user_question)
-            self.router.update_history("model", model_response)
-            
-            
+                model_response = response.text or model_response
+                tool_calls, tool_call_content = self.extract_tool_calls(response)
+
+            if event_listener is not None:
+                event_listener("response_completed", {"tool_rounds": tool_rounds})
             return model_response
             
         except (KeyError, IndexError, AttributeError) as e:
-            print(f"Gemini Error: {e}")
-            return "Error: Could not parse response."
+            debug_print(f"Gemini Error: {e}")
+            raise RuntimeError("Gemini worker could not parse response.") from e
+
+    def _translate_tools(self, tools):
+        if not tools:
+            return []
+        declarations = []
+        for tool in tools:
+            declarations.append(
+                types.FunctionDeclaration(
+                    name=tool["name"],
+                    description=tool["description"],
+                    parameters=tool["parameters"],
+                )
+            )
+        return [types.Tool(function_declarations=declarations)]
 
     def extract_tool_calls(self, response):
         tool_calls = []
@@ -184,13 +178,17 @@ class GeminiCaller:
         return {}
 
     def run_tool(self, tool_name, tool_args):
-        if tool_name == "search_RAG_database":
-            query = tool_args.get("query")
-            relevant_documents = tool_args.get("relevant_documents")
-            if query is None or relevant_documents is None:
-                return {"error": "missing required arguments"}
-            return self.search_rag_database(query, relevant_documents)
-        return {"error": f"unknown tool '{tool_name}'"}
+        if self.tool_handler is None:
+            return {"error": f"tool handler missing for '{tool_name}'"}
+        return self.tool_handler(tool_name, tool_args)
 
-    def search_rag_database(self, retrieval_query, relevant_documents):
-        return self.router.database.retrieve_context(retrieval_query, relevant_documents)
+    @property
+    def tool_handler(self):
+        return getattr(self, "_tool_handler", None)
+
+    @tool_handler.setter
+    def tool_handler(self, handler):
+        self._tool_handler = handler
+
+
+GeminiWorker = GeminiCaller

@@ -1,0 +1,58 @@
+{
+  "domains": [
+    {
+      "label": "debian",
+      "aliases": [
+        "debian",
+        "apt",
+        "dpkg"
+      ],
+      "description": "Debian install, apt, dpkg, Debian installer, Debian versions.",
+      "skip_rag": false,
+      "builtin": true
+    },
+    {
+      "label": "proxmox",
+      "aliases": [
+        "proxmox",
+        "pve",
+        "lxc",
+        "vm"
+      ],
+      "description": "Proxmox/PVE, VM/LXC management, nodes, clusters, storage, backups, Proxmox UI.",
+      "skip_rag": false,
+      "builtin": true
+    },
+    {
+      "label": "docker",
+      "aliases": [
+        "docker",
+        "container",
+        "compose",
+        "dockerfile"
+      ],
+      "description": "Docker, containers/images, Dockerfile, docker compose, docker CLI.",
+      "skip_rag": false,
+      "builtin": true
+    },
+    {
+      "label": "general",
+      "aliases": [
+        "general",
+        "linux"
+      ],
+      "description": "Generic Linux shell/filesystem questions without a clear distro/platform.",
+      "skip_rag": true,
+      "builtin": true
+    },
+    {
+      "label": "no_rag",
+      "aliases": [
+        "no_rag"
+      ],
+      "description": "Greetings, thanks, small talk, and meta questions.",
+      "skip_rag": true,
+      "builtin": true
+    }
+  ]
+}

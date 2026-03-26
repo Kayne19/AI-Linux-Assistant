@@ -1,0 +1,333 @@
+"""Offline router regression tests.
+
+These tests intentionally stub the model-facing components so they stay fast and
+deterministic. They protect orchestration behavior:
+- router state transitions
+- no-RAG branch behavior
+- post-turn summarization ordering
+- history search tool behavior
+- settings-to-worker assembly
+"""
+
+from history_preparer import PreparedHistory
+from model_router import ModelRouter, RouterState
+from response_agent import ResponseAgent
+from settings import AppSettings, RoleModelSettings
+from summarizers import HistorySummarizer
+
+
+class FakeDatabase:
+    def __init__(self, returned_docs=""):
+        self.returned_docs = returned_docs
+        self.calls = []
+
+    def retrieve_context(self, query, sources):
+        self.calls.append((query, tuple(sources or [])))
+        return self.returned_docs
+
+
+class FakeClassifier:
+    def __init__(self, labels):
+        self.labels = labels
+
+    def call_api(self, user_question, summarized_conversation_history=None, memory_snapshot_text=""):
+        return list(self.labels)
+
+
+class FakeContextAgent:
+    def __init__(self, rewritten_query):
+        self.rewritten_query = rewritten_query
+
+    def call_api(self, user_question, recent_turns=None):
+        return self.rewritten_query
+
+
+class FakeHistorySummarizer:
+    def __init__(self, prepared=None, summarized=False):
+        self.prepared = prepared or PreparedHistory()
+        self.summarized = summarized
+
+    def call_api(self, chat_history):
+        return self.prepared, self.summarized
+
+
+class FakeContextSummarizer:
+    def __init__(self, summarized_text="", summarized=True):
+        self.summarized_text = summarized_text
+        self.summarized = summarized
+
+    def call_api(self, user_question, retrieved_docs):
+        return self.summarized_text or retrieved_docs, self.summarized
+
+
+class SpyResponder:
+    def __init__(self, response_text="ok"):
+        self.response_text = response_text
+        self.calls = []
+
+    def call_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
+        self.calls.append(
+            {
+                "user_query": user_query,
+                "retrieved_docs": retrieved_docs,
+                "summarized_conversation_history": summarized_conversation_history,
+                "memory_snapshot_text": memory_snapshot_text,
+            }
+        )
+        return self.response_text
+
+
+class FakeMemoryStore:
+    def __init__(self, snapshot_text="KNOWN SYSTEM PROFILE:\n- OS: Debian", issues_text="", attempts_text=""):
+        self.snapshot_text = snapshot_text
+        self.issues_text = issues_text
+        self.attempts_text = attempts_text
+        self.committed_resolutions = []
+
+    def format_memory_snapshot(self, query, host_label=None):
+        return self.snapshot_text
+
+    def load_snapshot(self):
+        return {
+            "profile": {"os.distribution": "Debian"},
+            "issues": [],
+            "attempts": [],
+            "constraints": [],
+            "preferences": [],
+            "session_summary": "",
+        }
+
+    def commit_resolution(self, resolution, user_question="", assistant_response=""):
+        self.committed_resolutions.append((resolution, user_question, assistant_response))
+
+    def format_system_profile(self, host_label=None, max_facts=12):
+        return self.snapshot_text
+
+    def search_issues(self, query, max_results=5):
+        return self.issues_text
+
+    def search_attempts(self, query, max_results=5):
+        return self.attempts_text
+
+
+class ExplodingWorker:
+    def generate_text(self, *args, **kwargs):
+        raise AssertionError("Summarizer worker should not be called below threshold")
+
+
+class FakeWorker:
+    def __init__(self, model="unset"):
+        self.model = model
+
+    def generate_text(self, *args, **kwargs):
+        return ""
+
+
+class FakeMemoryExtractor:
+    def __init__(self, extracted=None):
+        self.extracted = extracted or {
+            "facts": [],
+            "issues": [],
+            "attempts": [],
+            "constraints": [],
+            "preferences": [],
+            "session_summary": "",
+        }
+        self.calls = []
+
+    def call_api(self, user_question, assistant_response):
+        self.calls.append((user_question, assistant_response))
+        return dict(self.extracted)
+
+
+def test_router_uses_raw_retrieved_docs_before_post_turn_summarization():
+    responder = SpyResponder(response_text="final answer")
+    memory_store = FakeMemoryStore()
+    router = ModelRouter(
+        database=FakeDatabase(returned_docs="[Source: Debian_Install_Guide.pdf (Page 4)]\napt install foo"),
+        classifier=FakeClassifier(["debian"]),
+        context_agent=FakeContextAgent("install package"),
+        history_summarizer=FakeHistorySummarizer(
+            prepared=PreparedHistory(recent_turns=[("user", "older question")], summary_text="older summary")
+        ),
+        context_summarizer=FakeContextSummarizer(summarized_text="condensed docs", summarized=True),
+        responder=responder,
+        memory_store=memory_store,
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    response = router.ask_question("How do I install it?")
+
+    assert response == "final answer"
+    assert responder.calls[0]["retrieved_docs"] == "[Source: Debian_Install_Guide.pdf (Page 4)]\napt install foo"
+    assert "KNOWN SYSTEM PROFILE" in responder.calls[0]["memory_snapshot_text"]
+    assert router.last_turn.summarized_retrieved_docs == "condensed docs"
+    assert router.last_turn.state_trace == [
+        RouterState.START.name,
+        RouterState.LOAD_MEMORY.name,
+        RouterState.SUMMARIZE_CONVERSATION_HISTORY.name,
+        RouterState.CLASSIFY.name,
+        RouterState.REWRITE_QUERY.name,
+        RouterState.DECIDE_RAG.name,
+        RouterState.RETRIEVE_CONTEXT.name,
+        RouterState.GENERATE_RESPONSE.name,
+        RouterState.SUMMARIZE_RETRIEVED_DOCS.name,
+        RouterState.UPDATE_HISTORY.name,
+        RouterState.EXTRACT_MEMORY.name,
+        RouterState.RESOLVE_MEMORY.name,
+        RouterState.COMMIT_MEMORY.name,
+        RouterState.DONE.name,
+    ]
+
+
+def test_router_conversation_history_search_returns_matching_snippets():
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    router.update_history("user", "I already ran apt install docker.io and it failed.")
+    router.update_history("model", "Try checking whether the package exists first.")
+    router.update_history("user", "The exact error was permission denied.")
+
+    result = router._handle_responder_tool_call(
+        "search_conversation_history",
+        {"query": "apt install docker.io permission denied", "max_results": 2},
+    )
+
+    assert "apt install docker.io" in result
+    assert "permission denied" in result
+
+
+def test_router_no_rag_skips_database_retrieval():
+    database = FakeDatabase(returned_docs="should not be used")
+    responder = SpyResponder(response_text="hello back")
+    memory_store = FakeMemoryStore()
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent("hello"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=responder,
+        memory_store=memory_store,
+        memory_extractor=FakeMemoryExtractor({"issues": [{"title": "hello", "category": "general", "summary": "", "status": "unknown"}], "facts": [], "attempts": [], "constraints": [], "preferences": [], "session_summary": ""}),
+    )
+
+    response = router.ask_question("hello")
+
+    assert response == "hello back"
+    assert database.calls == []
+    assert responder.calls[0]["retrieved_docs"] == ""
+    assert RouterState.RETRIEVE_CONTEXT.name not in router.last_turn.state_trace
+    assert len(memory_store.committed_resolutions) == 1
+    assert memory_store.committed_resolutions[0][1:] == ("hello", "hello back")
+
+
+def test_history_summarizer_noops_below_threshold():
+    summarizer = HistorySummarizer(worker=ExplodingWorker(), max_recent_turns=4)
+    prepared, summarized = summarizer.call_api(
+        [("user", "hello"), ("model", "hi there")]
+    )
+
+    assert summarized is False
+    assert prepared.summary_text == ""
+    assert prepared.recent_turns == [("user", "hello"), ("model", "hi there")]
+
+
+def test_settings_provider_override_uses_provider_default_model():
+    original_worker_types = ModelRouter.WORKER_TYPES
+    ModelRouter.WORKER_TYPES = {
+        "openai": FakeWorker,
+        "local": FakeWorker,
+        "gemini": FakeWorker,
+    }
+
+    try:
+        settings = AppSettings(
+            provider_defaults={"openai": "openai-default", "local": "local-default", "gemini": "gemini-default"},
+            classifier=RoleModelSettings("openai", "classifier-model"),
+            contextualizer=RoleModelSettings("openai", "context-model"),
+            responder=RoleModelSettings("openai", "responder-model"),
+            history_summarizer=RoleModelSettings("openai", "history-model"),
+            context_summarizer=RoleModelSettings("openai", "context-summary-model"),
+            memory_extractor=RoleModelSettings("openai", "memory-model"),
+            registry_updater=RoleModelSettings("local", "registry-model"),
+            response_tool_rounds=5,
+            classifier_temperature=0.0,
+            contextualizer_temperature=0.0,
+            history_summarizer_temperature=0.1,
+            history_max_recent_turns=4,
+            history_summarize_turn_threshold=16,
+            history_summarize_char_threshold=3600,
+        )
+
+        router = ModelRouter(
+            settings=settings,
+            database=FakeDatabase(""),
+            responder="local",
+            memory_store=FakeMemoryStore(),
+        )
+
+        assert isinstance(router.responder, ResponseAgent)
+        assert router.responder.worker.model == "local-default"
+        assert router.response_tool_rounds == 5
+    finally:
+        ModelRouter.WORKER_TYPES = original_worker_types
+
+
+def test_router_exposes_structured_memory_tools():
+    memory_store = FakeMemoryStore(
+        snapshot_text="KNOWN SYSTEM PROFILE:\n- OS: Debian 12",
+        issues_text="[open] docker permissions | containers | permission denied",
+        attempts_text="restarted docker | sudo systemctl restart docker | reported by user | docker permissions",
+    )
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=memory_store,
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    assert "Debian 12" in router._handle_responder_tool_call("get_system_profile", {})
+    assert "docker permissions" in router._handle_responder_tool_call(
+        "search_memory_issues",
+        {"query": "docker permission denied", "max_results": 3},
+    )
+    assert "restart docker" in router._handle_responder_tool_call(
+        "search_attempt_log",
+        {"query": "restart docker", "max_results": 3},
+    )
+
+
+def test_router_builds_default_memory_extractor_when_custom_store_is_injected():
+    original_worker_types = ModelRouter.WORKER_TYPES
+    ModelRouter.WORKER_TYPES = {
+        "openai": FakeWorker,
+        "local": FakeWorker,
+        "gemini": FakeWorker,
+    }
+
+    try:
+        router = ModelRouter(
+            database=FakeDatabase(""),
+            classifier=FakeClassifier(["no_rag"]),
+            context_agent=FakeContextAgent(""),
+            history_summarizer=FakeHistorySummarizer(),
+            context_summarizer=FakeContextSummarizer(summarized=False),
+            responder=SpyResponder("ok"),
+            memory_store=FakeMemoryStore(),
+            memory_extractor=None,
+        )
+        assert router.memory_extractor is not None
+    finally:
+        ModelRouter.WORKER_TYPES = original_worker_types

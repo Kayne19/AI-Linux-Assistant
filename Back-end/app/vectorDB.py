@@ -5,6 +5,8 @@ import math
 from collections import Counter, defaultdict
 import lancedb
 from sentence_transformers import SentenceTransformer, CrossEncoder # <--- NEW IMPORT
+from debug_utils import debug_print
+from routing_registry import get_aliases_for_label, get_skip_rag_labels
 
 class VectorDB:
     # ------------------------------------------------------------------
@@ -33,14 +35,20 @@ class VectorDB:
         self._source_profiles_ready = False
         self._source_idf = {}
         self._source_top_tokens = {}
+        # Runtime device controls. The eval runner overrides these to CPU so the
+        # retrieval stack does not consume CUDA memory during prompt/model evals.
+        self.EMBED_DEVICE = os.getenv("VECTORDB_EMBED_DEVICE", "").strip() or None
+        self.RERANK_DEVICE = os.getenv("VECTORDB_RERANK_DEVICE", "cuda").strip() or "cuda"
         
-        print("🤖 Loading Models...")
+        debug_print("🤖 Loading Models...")
         # 1. Load Embedder (Vectors)
-        self.embedder = SentenceTransformer(self.EMBED_MODEL_NAME)
+        embedder_kwargs = {}
+        if self.EMBED_DEVICE is not None:
+            embedder_kwargs["device"] = self.EMBED_DEVICE
+        self.embedder = SentenceTransformer(self.EMBED_MODEL_NAME, **embedder_kwargs)
         
         # 2. Load Reranker (The Judge)
-        # Note: If you hit OOM errors on your 3080, add device='cpu' inside these brackets
-        self.reranker = CrossEncoder(self.RERANKER_MODEL_NAME, device='cuda')
+        self.reranker = CrossEncoder(self.RERANKER_MODEL_NAME, device=self.RERANK_DEVICE)
 
     def _get_table(self):
         # Single place to open the LanceDB table (useful when refactoring storage).
@@ -56,10 +64,11 @@ class VectorDB:
         if not allowed_titles:
             return True
         source = (source or "").lower()
-        for title in allowed_titles:
-            title = (title or "").strip().lower()
-            if title and title in source:
-                return True
+        for label in allowed_titles:
+            for alias in get_aliases_for_label(label):
+                alias = (alias or "").strip().lower()
+                if alias and alias in source:
+                    return True
         return False
 
     def _build_source_profiles(self, tbl):
@@ -189,10 +198,11 @@ class VectorDB:
         except:
             return "Error: Database not initialized."
 
-        if sources is not None and sources[0] == "no_rag" or sources[0]== "general": 
+        skip_rag_labels = get_skip_rag_labels()
+        if sources and any(label in skip_rag_labels for label in sources):
             return ""
 
-        print(f"\n🔍 Searching manual for: '{query}'...")
+        debug_print(f"\n🔍 Searching manual for: '{query}'...")
         
         # 1. Embed the User Query
         query_vec = self.embedder.encode(query)
@@ -215,7 +225,7 @@ class VectorDB:
             return ""
 
         # 3. RERANKING (The "Smart Filter")
-        print(f"   - Reranking {len(candidates)} chunks...")
+        debug_print(f"   - Reranking {len(candidates)} chunks...")
         
         # Prepare pairs: [ [Query, Doc1], [Query, Doc2] ... ]
         # We use 'search_text' because it contains the Enriched AI Context
@@ -309,5 +319,5 @@ class VectorDB:
             context_text += f"---\n[Source: {source_file} (Page {page}) | Score: {doc['rerank_score']:.2f}]\n{text}\n"
             sources.append(f"{source_file}:{page}")
             
-        print(f"   (Selected top {len(final_results)} chunks from: {', '.join(sources)}...)")
+        debug_print(f"   (Selected top {len(final_results)} chunks from: {', '.join(sources)}...)")
         return context_text

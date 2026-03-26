@@ -1,0 +1,118 @@
+[
+  {
+    "id": "greeting_hello",
+    "category": "no_rag",
+    "query": "Hello there",
+    "expected_labels": ["no_rag"],
+    "expect_rag": false,
+    "expect_citations": false,
+    "notes": "Basic greeting should route to no_rag and answer naturally."
+  },
+  {
+    "id": "meta_explain_router",
+    "category": "no_rag",
+    "query": "Explain very briefly how you decide whether to search the docs",
+    "expected_labels": ["no_rag"],
+    "expect_rag": false,
+    "expect_citations": false,
+    "notes": "Meta behavior should stay conversational and avoid unnecessary retrieval."
+  },
+  {
+    "id": "shell_pwd_followup",
+    "category": "history_followup",
+    "seed_history": [
+      {"role": "user", "content": "I am trying to learn the Linux shell."},
+      {"role": "model", "content": "Ask me about commands and I will answer using the available docs."}
+    ],
+    "query": "What does pwd do?",
+    "expected_labels": ["general"],
+    "expect_rag": false,
+    "expect_citations": false,
+    "notes": "General shell question may skip retrieval depending on routing policy."
+  },
+  {
+    "id": "debian_install_help",
+    "category": "technical",
+    "query": "I need help with setting up Debian",
+    "expected_labels": ["debian"],
+    "expect_rag": true,
+    "expect_citations": true,
+    "notes": "Should route to Debian docs and produce a grounded technical answer."
+  },
+  {
+    "id": "debian_apt_update",
+    "category": "technical",
+    "query": "How do I update packages on Debian?",
+    "expected_labels": ["debian"],
+    "expect_rag": true,
+    "expect_citations": true,
+    "notes": "Package-management question should hit Debian material."
+  },
+  {
+    "id": "docker_ps",
+    "category": "technical",
+    "query": "How do I list running Docker containers?",
+    "expected_labels": ["docker"],
+    "expect_rag": true,
+    "expect_citations": true,
+    "notes": "Simple Docker CLI lookup."
+  },
+  {
+    "id": "proxmox_container_setup",
+    "category": "technical",
+    "query": "How do I create a Debian container in Proxmox?",
+    "expected_labels": ["proxmox", "debian"],
+    "expect_rag": true,
+    "expect_citations": true,
+    "notes": "Cross-domain query should plausibly route to both Proxmox and Debian."
+  },
+  {
+    "id": "history_previous_attempt",
+    "category": "history_followup",
+    "seed_history": [
+      {"role": "user", "content": "I already ran apt install docker.io and it failed with permission denied."},
+      {"role": "model", "content": "That sounds like a permissions or privilege issue."}
+    ],
+    "query": "What did I already try?",
+    "expected_labels": ["no_rag"],
+    "expect_rag": false,
+    "expect_citations": false,
+    "notes": "Should be able to answer from conversation context, possibly using history search."
+  },
+  {
+    "id": "followup_next_step_same_issue",
+    "category": "history_followup",
+    "seed_history": [
+      {"role": "user", "content": "I'm on Debian 12 in a Proxmox LXC and Docker commands are failing with permission denied."},
+      {"role": "model", "content": "Tell me the exact Docker error and whether the container is privileged or unprivileged."},
+      {"role": "user", "content": "I already tried sudo apt install docker.io and restarting the docker service, but it didn't help."}
+    ],
+    "query": "What should I try next?",
+    "expected_labels": ["no_rag"],
+    "expect_rag": false,
+    "expect_citations": false,
+    "notes": "Short follow-up should stay in-thread by default rather than trigger fresh retrieval."
+  },
+  {
+    "id": "environment_recap_same_issue",
+    "category": "history_followup",
+    "seed_history": [
+      {"role": "user", "content": "I'm on Debian 12 in a Proxmox LXC and Docker commands are failing with permission denied."},
+      {"role": "model", "content": "That sounds like a container-side restriction rather than a missing Docker package."}
+    ],
+    "query": "What's my environment again?",
+    "expected_labels": ["no_rag"],
+    "expect_rag": false,
+    "expect_citations": false,
+    "notes": "Environment recap should be answered from thread context or memory, not fresh docs."
+  },
+  {
+    "id": "thanks_turn",
+    "category": "no_rag",
+    "query": "Thanks, that helped",
+    "expected_labels": ["no_rag"],
+    "expect_rag": false,
+    "expect_citations": false,
+    "notes": "Thanks message should not trigger retrieval."
+  }
+]

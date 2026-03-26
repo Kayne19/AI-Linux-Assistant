@@ -1,8 +1,8 @@
-from model_router import modelRouter
+from model_router import ModelRouter
 
 
 def main():
-    router = modelRouter()
+    router = ModelRouter()
     
     print("\n(Type 'exit' to quit)")
     while True:
