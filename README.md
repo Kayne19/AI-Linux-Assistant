@@ -41,6 +41,7 @@ That starts:
 Start with these docs:
 
 - [Back-end/ARCHITECTURE.md](Back-end/ARCHITECTURE.md)
+- [Back-end/RUNS.md](Back-end/RUNS.md)
 - [Back-end/MEMORY.md](Back-end/MEMORY.md)
 - [Back-end/RETRIEVAL.md](Back-end/RETRIEVAL.md)
 - [Back-end/INGESTION.md](Back-end/INGESTION.md)

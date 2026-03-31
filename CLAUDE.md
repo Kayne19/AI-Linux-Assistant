@@ -16,6 +16,8 @@ Use this file for shared workflow and doc routing when working in this repositor
   - [README.md](/home/kayne19/projects/AI-Linux-Assistant/README.md)
 - Backend orchestration, FSM ownership, providers, Magi boundaries:
   - [Back-end/ARCHITECTURE.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/ARCHITECTURE.md)
+- Durable chat runs, worker queueing, leases, replay, and concurrency policy:
+  - [Back-end/RUNS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/RUNS.md)
 - Memory extraction, resolution, storage, or prompt usage:
   - [Back-end/MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/MEMORY.md)
 - Retrieval, LanceDB, embeddings, reranking, retrieval providers:
@@ -80,6 +82,7 @@ Important maintained docs:
 
 - [README.md](/home/kayne19/projects/AI-Linux-Assistant/README.md)
 - [Back-end/ARCHITECTURE.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/ARCHITECTURE.md)
+- [Back-end/RUNS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/RUNS.md)
 - [Back-end/MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/MEMORY.md)
 - [Back-end/RETRIEVAL.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/RETRIEVAL.md)
 - [Back-end/INGESTION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/INGESTION.md)
