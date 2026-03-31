@@ -17,7 +17,7 @@ This repo is organized as a real application, not a prompt wrapper.
 - `Front-end/`
   - React + TypeScript web client
 - `run_dev.py`
-  - starts backend, chat worker, and frontend together for local development
+  - starts backend, four chat worker processes by default, and frontend together for local development
 
 ## Start The App
 
@@ -33,7 +33,7 @@ python run_dev.py
 That starts:
 
 - FastAPI backend on port `8000`
-- chat run worker with configurable background concurrency
+- four chat worker processes by default in dev (`CHAT_RUN_WORKER_PROCESS_COUNT`, defaults to `4`)
 - Vite frontend on port `5173`
 
 ## Backend Orientation

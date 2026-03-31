@@ -17,6 +17,7 @@ BACKEND_PORT = os.getenv("AILA_BACKEND_PORT", "8000")
 FRONTEND_HOST = os.getenv("AILA_FRONTEND_HOST", "0.0.0.0")
 FRONTEND_PORT = os.getenv("AILA_FRONTEND_PORT", "5173")
 CHAT_WORKER_ID = os.getenv("CHAT_RUN_WORKER_ID", "dev-chat-worker")
+CHAT_WORKER_PROCESS_COUNT = max(1, int(os.getenv("CHAT_RUN_WORKER_PROCESS_COUNT", "4")))
 
 
 def _require_path(path: Path, label: str) -> None:
@@ -106,19 +107,20 @@ def main() -> None:
     print("Starting AI Linux Assistant dev stack")
     print(f"  backend  http://{BACKEND_HOST}:{BACKEND_PORT}")
     print(f"  frontend http://{FRONTEND_HOST}:{FRONTEND_PORT}")
-    print(f"  worker   {CHAT_WORKER_ID}")
+    print(f"  workers  {CHAT_WORKER_ID} x {CHAT_WORKER_PROCESS_COUNT}")
 
     backend = _spawn_process("backend", backend_command, BACKEND_DIR, backend_env)
     frontend = _spawn_process("frontend", frontend_command, FRONTEND_DIR, frontend_env)
-    worker_env = backend_env.copy()
-    worker_env["CHAT_RUN_WORKER_ID"] = CHAT_WORKER_ID
-    worker = _spawn_process("worker", worker_command, BACKEND_DIR, worker_env)
-
     processes = [
         ("backend", backend),
         ("frontend", frontend),
-        ("worker", worker),
     ]
+    for worker_index in range(CHAT_WORKER_PROCESS_COUNT):
+        worker_env = backend_env.copy()
+        worker_env["CHAT_RUN_WORKER_ID"] = f"{CHAT_WORKER_ID}-{worker_index + 1}"
+        worker_env.setdefault("CHAT_RUN_WORKER_CONCURRENCY", "1")
+        worker = _spawn_process(f"worker-{worker_index + 1}", worker_command, BACKEND_DIR, worker_env)
+        processes.append((f"worker-{worker_index + 1}", worker))
 
     def _shutdown(*_args) -> None:
         for label, process in reversed(processes):

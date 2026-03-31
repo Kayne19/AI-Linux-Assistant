@@ -150,6 +150,11 @@ Worker-local reuse boundary:
 - per-run mutable state, listeners, emitted events, and response buffers must remain isolated
 - mutable retrieval/response state must never be shared across concurrent chats
 
+Local dev note:
+
+- `run_dev.py` starts `4` worker processes by default
+- each dev worker process defaults to `CHAT_RUN_WORKER_CONCURRENCY=1`, so local dev gets four independent claimers unless overridden
+
 ## Cancellation Semantics
 
 Cancellation is cooperative and checkpoint-based.
