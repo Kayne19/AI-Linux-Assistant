@@ -1,0 +1,346 @@
+[
+  {
+    "id": "greeting_hello",
+    "category": "no_rag",
+    "query": "Hello there",
+    "notes": "Basic greeting should route to no_rag and answer naturally.",
+    "response": "Hello! How can I assist you with Linux or any related technical tasks today?",
+    "duration_ms": 2003.3,
+    "passed": true,
+    "checks": {
+      "no_router_error": true,
+      "nonempty_response": true,
+      "routing_match": true,
+      "rag_match": true,
+      "citation_match": true
+    },
+    "routing_labels": [
+      "no_rag"
+    ],
+    "retrieval_query": "Hello there",
+    "tool_names": [],
+    "state_trace": [
+      "START",
+      "SUMMARIZE_CONVERSATION_HISTORY",
+      "CLASSIFY",
+      "REWRITE_QUERY",
+      "DECIDE_RAG",
+      "GENERATE_RESPONSE",
+      "RESPONDER_PREPARE_REQUEST",
+      "RESPONDER_REQUEST_MODEL",
+      "RESPONDER_COMPLETE",
+      "SUMMARIZE_RETRIEVED_DOCS",
+      "UPDATE_HISTORY",
+      "DONE"
+    ],
+    "retrieved_docs_chars": 0,
+    "summarized_retrieved_docs_chars": 0
+  },
+  {
+    "id": "meta_explain_router",
+    "category": "no_rag",
+    "query": "Explain very briefly how you decide whether to search the docs",
+    "notes": "Meta behavior should stay conversational and avoid unnecessary retrieval.",
+    "response": "I decide to search the docs when the user's question involves specific technical commands, configurations, or procedures that are not explicitly covered in the current context. If the context lacks exact commands, file paths, or syntax needed to answer accurately, I perform a search to find verified information before responding. This ensures all technical guidance is precise and supported by documentation.",
+    "duration_ms": 2513.4,
+    "passed": true,
+    "checks": {
+      "no_router_error": true,
+      "nonempty_response": true,
+      "routing_match": true,
+      "rag_match": true,
+      "citation_match": true
+    },
+    "routing_labels": [
+      "no_rag"
+    ],
+    "retrieval_query": "Explain very briefly how you decide whether to search the docs",
+    "tool_names": [],
+    "state_trace": [
+      "START",
+      "SUMMARIZE_CONVERSATION_HISTORY",
+      "CLASSIFY",
+      "REWRITE_QUERY",
+      "DECIDE_RAG",
+      "GENERATE_RESPONSE",
+      "RESPONDER_PREPARE_REQUEST",
+      "RESPONDER_REQUEST_MODEL",
+      "RESPONDER_COMPLETE",
+      "SUMMARIZE_RETRIEVED_DOCS",
+      "UPDATE_HISTORY",
+      "DONE"
+    ],
+    "retrieved_docs_chars": 0,
+    "summarized_retrieved_docs_chars": 0
+  },
+  {
+    "id": "shell_pwd_followup",
+    "category": "history_followup",
+    "query": "What does pwd do?",
+    "notes": "General shell question may skip retrieval depending on routing policy.",
+    "response": "Goal:\nExplain the function of the `pwd` command in the Linux shell.\n\nSteps:\nThe `pwd` command stands for \"print working directory.\" It displays the full absolute path of the current directory you are in within the shell.\n\nVerification:\nYou can verify this by running the command:\n```\npwd\n```\nIt will output something like `/home/username` indicating your current directory path.\n\nSources:\nContext is general Linux shell knowledge and standard command usage.",
+    "duration_ms": 4016.5,
+    "passed": true,
+    "checks": {
+      "no_router_error": true,
+      "nonempty_response": true,
+      "routing_match": true,
+      "rag_match": true,
+      "citation_match": true
+    },
+    "routing_labels": [
+      "general"
+    ],
+    "retrieval_query": "The pwd command in Linux stands for \"print working directory.\" It displays the full path of the current directory you are in within the shell. For example, running pwd might output something like /home/username, showing your current location in the filesystem.",
+    "tool_names": [],
+    "state_trace": [
+      "START",
+      "SUMMARIZE_CONVERSATION_HISTORY",
+      "CLASSIFY",
+      "REWRITE_QUERY",
+      "DECIDE_RAG",
+      "GENERATE_RESPONSE",
+      "RESPONDER_PREPARE_REQUEST",
+      "RESPONDER_REQUEST_MODEL",
+      "RESPONDER_COMPLETE",
+      "SUMMARIZE_RETRIEVED_DOCS",
+      "UPDATE_HISTORY",
+      "DONE"
+    ],
+    "retrieved_docs_chars": 0,
+    "summarized_retrieved_docs_chars": 0
+  },
+  {
+    "id": "debian_install_help",
+    "category": "technical",
+    "query": "I need help with setting up Debian",
+    "notes": "Should route to Debian docs and produce a grounded technical answer.",
+    "response": "Goal:\nHelp you with the initial setup and installation of Debian GNU/Linux.\n\nInputs to confirm:\n- Are you installing Debian on a physical machine or a virtual machine?\n- Do you have the Debian installation media ready, such as a USB stick or DVD?\n- What version or flavor of Debian are you planning to install (e.g., Debian Stable)?\n\nSteps:\n1. Prepare your installation media by downloading the Debian ISO from the official site and creating a bootable USB or DVD (Debian_Install_Guide.pdf, Page 2).\n2. Boot your computer from the Debian installation media (Debian_Install_Guide.pdf, Page 67).\n3. Follow the Debian Installer steps which include language selection, location, keyboard layout, network configuration, and setting up users and passwords (Debian_Install_Guide.pdf, Pages 45-53).\n4. Partition your disk according to your preference or use guided partitioning offered by the installer (Debian_Install_Guide.pdf, Pages 45-53).\n5. Install the base system and configure system clock and package manager mirrors as prompted (Debian_Install_Guide.pdf, Pages 45-53).\n6. Select and install software packages and configure the bootloader to complete the installation (Debian_Install_Guide.pdf, Pages 45-53).\n7. Once installation finishes, reboot into your new Debian system (Debian_Install_Guide.pdf, Page 67).\n\nVerification:\n- You should see the Debian login prompt after rebooting.\n- Network should be configured and you should be able to log in with the user credentials set during installation.\n\nIf you hit any specific errors or need guidance on any step, please provide details.\n\nSources:\nDebian_Install_Guide.pdf Pages 2, 45-53, 67",
+    "duration_ms": 7428.2,
+    "passed": false,
+    "checks": {
+      "no_router_error": true,
+      "nonempty_response": true,
+      "routing_match": true,
+      "rag_match": true,
+      "citation_match": false
+    },
+    "routing_labels": [
+      "debian"
+    ],
+    "retrieval_query": "I need help with setting up Debian",
+    "tool_names": [],
+    "state_trace": [
+      "START",
+      "SUMMARIZE_CONVERSATION_HISTORY",
+      "CLASSIFY",
+      "REWRITE_QUERY",
+      "DECIDE_RAG",
+      "RETRIEVE_CONTEXT",
+      "GENERATE_RESPONSE",
+      "RESPONDER_PREPARE_REQUEST",
+      "RESPONDER_REQUEST_MODEL",
+      "RESPONDER_COMPLETE",
+      "SUMMARIZE_RETRIEVED_DOCS",
+      "UPDATE_HISTORY",
+      "DONE"
+    ],
+    "retrieved_docs_chars": 1398,
+    "summarized_retrieved_docs_chars": 1398
+  },
+  {
+    "id": "debian_apt_update",
+    "category": "technical",
+    "query": "How do I update packages on Debian?",
+    "notes": "Package-management question should hit Debian material.",
+    "response": "Goal: Update packages on Debian to get the latest security fixes and software updates.\n\nInputs to confirm:\n- Ensure you have root or sudo user privileges.\n- Confirm network connectivity for downloading updates.\n\nSteps:\n1. First, refresh the package database to get the latest information about available packages and versions with:\n   ```bash\n   sudo apt update\n   ```\n2. Then, upgrade all installed packages to their latest versions with:\n   ```bash\n   sudo apt upgrade\n   ```\n\nThese commands will download and install updates from Debian\u2019s verified maintainers securely (Source: Debian_Install_Guide.pdf, Page 12).\n\nVerification:\n- Check for any upgrade completion message indicating no errors.\n- Use `apt list --upgradable` before upgrade to see which packages will be updated.\n\nIf you hit issues like package conflicts or broken dependencies, you may need to fix those before proceeding with updates.\n\nSources:\n- Debian_Install_Guide.pdf (Page 12)",
+    "duration_ms": 5764.2,
+    "passed": true,
+    "checks": {
+      "no_router_error": true,
+      "nonempty_response": true,
+      "routing_match": true,
+      "rag_match": true,
+      "citation_match": true
+    },
+    "routing_labels": [
+      "debian"
+    ],
+    "retrieval_query": "How do I update packages on Debian?",
+    "tool_names": [
+      "search_rag_database"
+    ],
+    "state_trace": [
+      "START",
+      "SUMMARIZE_CONVERSATION_HISTORY",
+      "CLASSIFY",
+      "REWRITE_QUERY",
+      "DECIDE_RAG",
+      "RETRIEVE_CONTEXT",
+      "GENERATE_RESPONSE",
+      "RESPONDER_PREPARE_REQUEST",
+      "RESPONDER_REQUEST_MODEL",
+      "RESPONDER_PROCESS_TOOL_CALLS",
+      "TOOL_RETRIEVE_CONTEXT",
+      "RESPONDER_SUBMIT_TOOL_RESULTS",
+      "RESPONDER_COMPLETE",
+      "SUMMARIZE_RETRIEVED_DOCS",
+      "UPDATE_HISTORY",
+      "DONE"
+    ],
+    "retrieved_docs_chars": 695,
+    "summarized_retrieved_docs_chars": 695
+  },
+  {
+    "id": "docker_ps",
+    "category": "technical",
+    "query": "How do I list running Docker containers?",
+    "notes": "Simple Docker CLI lookup.",
+    "response": "Goal:\nList the running Docker containers on your system.\n\nSteps:\nTo list all running Docker containers, use the following command:\n\n```bash\ndocker ps\n```\n\nThis will show you the container ID, names, status, and other details of all currently running containers (Source: DockerQuickGuide.pdf, Page 13).\n\nVerification:\nYou should see a list of containers with their details like container ID, image, command, created time, status, ports, and names.\n\nSources:\nDockerQuickGuide.pdf, Page 13",
+    "duration_ms": 5507.3,
+    "passed": true,
+    "checks": {
+      "no_router_error": true,
+      "nonempty_response": true,
+      "routing_match": true,
+      "rag_match": true,
+      "citation_match": true
+    },
+    "routing_labels": [
+      "docker"
+    ],
+    "retrieval_query": "How do I list running Docker containers?",
+    "tool_names": [],
+    "state_trace": [
+      "START",
+      "SUMMARIZE_CONVERSATION_HISTORY",
+      "CLASSIFY",
+      "REWRITE_QUERY",
+      "DECIDE_RAG",
+      "RETRIEVE_CONTEXT",
+      "GENERATE_RESPONSE",
+      "RESPONDER_PREPARE_REQUEST",
+      "RESPONDER_REQUEST_MODEL",
+      "RESPONDER_COMPLETE",
+      "SUMMARIZE_RETRIEVED_DOCS",
+      "UPDATE_HISTORY",
+      "DONE"
+    ],
+    "retrieved_docs_chars": 2595,
+    "summarized_retrieved_docs_chars": 687
+  },
+  {
+    "id": "proxmox_container_setup",
+    "category": "technical",
+    "query": "How do I create a Debian container in Proxmox?",
+    "notes": "Cross-domain query should plausibly route to both Proxmox and Debian.",
+    "response": "Goal:\nCreate a Debian container in Proxmox VE.\n\nInputs to confirm:\n- <VMID>: ID for the new container (e.g., 100).\n- Debian template path: the path to the downloaded Debian template file.\n\nSteps:\n1. Ensure you have downloaded the Debian container template via the Proxmox web interface or using the pveam command-line utility (Proxmox VE provides default templates including Debian) (Source: proxmox-cleaned.pdf, page 313).\n2. Create the container using the pct (Proxmox Container Toolkit) command with the specified VMID and the path to the Debian template. For example:\n\n```bash\npct create <VMID> /var/lib/vz/template/cache/debian-10.0-standard_10.0-1\n```\n\nReplace `<VMID>` with your desired container ID and ensure the template file path matches the downloaded Debian template on your system (Source: proxmox-cleaned.pdf, page 330).\n\nVerification:\n- Check the container is created via the Proxmox web interface or with `pct list` command to see the container status.\n\nSources:\n- (Source: proxmox-cleaned.pdf, page 313)\n- (Source: proxmox-cleaned.pdf, page 330)",
+    "duration_ms": 5356.4,
+    "passed": false,
+    "checks": {
+      "no_router_error": true,
+      "nonempty_response": true,
+      "routing_match": false,
+      "rag_match": true,
+      "citation_match": true
+    },
+    "routing_labels": [
+      "debian",
+      "proxmox"
+    ],
+    "retrieval_query": "How do I create a Debian container in Proxmox?",
+    "tool_names": [],
+    "state_trace": [
+      "START",
+      "SUMMARIZE_CONVERSATION_HISTORY",
+      "CLASSIFY",
+      "REWRITE_QUERY",
+      "DECIDE_RAG",
+      "RETRIEVE_CONTEXT",
+      "GENERATE_RESPONSE",
+      "RESPONDER_PREPARE_REQUEST",
+      "RESPONDER_REQUEST_MODEL",
+      "RESPONDER_COMPLETE",
+      "SUMMARIZE_RETRIEVED_DOCS",
+      "UPDATE_HISTORY",
+      "DONE"
+    ],
+    "retrieved_docs_chars": 2088,
+    "summarized_retrieved_docs_chars": 2088
+  },
+  {
+    "id": "history_previous_attempt",
+    "category": "history_followup",
+    "query": "What did I already try?",
+    "notes": "Should be able to answer from conversation context, possibly using history search.",
+    "response": "You already tried to install Docker using the command:\n\n```bash\napt install docker.io\n```\n\nbut it failed with a \"permission denied\" error. This suggests you may have run the command without sufficient privileges (missing sudo) or the current user does not have permission to run apt install commands. \n\nTo resolve this, you typically need to run the install command with sudo to gain administrative rights. For example:\n\n```bash\nsudo apt install docker.io\n```\n\nSource: (DockerQuickGuide.pdf, Page 11)",
+    "duration_ms": 5089.4,
+    "passed": false,
+    "checks": {
+      "no_router_error": true,
+      "nonempty_response": true,
+      "routing_match": false,
+      "rag_match": false,
+      "citation_match": false
+    },
+    "routing_labels": [
+      "docker"
+    ],
+    "retrieval_query": "I already ran apt install docker.io and it failed with permission denied.",
+    "tool_names": [],
+    "state_trace": [
+      "START",
+      "SUMMARIZE_CONVERSATION_HISTORY",
+      "CLASSIFY",
+      "REWRITE_QUERY",
+      "DECIDE_RAG",
+      "RETRIEVE_CONTEXT",
+      "GENERATE_RESPONSE",
+      "RESPONDER_PREPARE_REQUEST",
+      "RESPONDER_REQUEST_MODEL",
+      "RESPONDER_COMPLETE",
+      "SUMMARIZE_RETRIEVED_DOCS",
+      "UPDATE_HISTORY",
+      "DONE"
+    ],
+    "retrieved_docs_chars": 1966,
+    "summarized_retrieved_docs_chars": 1966
+  },
+  {
+    "id": "thanks_turn",
+    "category": "no_rag",
+    "query": "Thanks, that helped",
+    "notes": "Thanks message should not trigger retrieval.",
+    "response": "You're welcome! If you have any more questions or need further assistance, feel free to ask.",
+    "duration_ms": 1312.1,
+    "passed": true,
+    "checks": {
+      "no_router_error": true,
+      "nonempty_response": true,
+      "routing_match": true,
+      "rag_match": true,
+      "citation_match": true
+    },
+    "routing_labels": [
+      "no_rag"
+    ],
+    "retrieval_query": "Thanks, that helped",
+    "tool_names": [],
+    "state_trace": [
+      "START",
+      "SUMMARIZE_CONVERSATION_HISTORY",
+      "CLASSIFY",
+      "REWRITE_QUERY",
+      "DECIDE_RAG",
+      "GENERATE_RESPONSE",
+      "RESPONDER_PREPARE_REQUEST",
+      "RESPONDER_REQUEST_MODEL",
+      "RESPONDER_COMPLETE",
+      "SUMMARIZE_RETRIEVED_DOCS",
+      "UPDATE_HISTORY",
+      "DONE"
+    ],
+    "retrieved_docs_chars": 0,
+    "summarized_retrieved_docs_chars": 0
+  }
+]

@@ -5,7 +5,7 @@ from pathlib import Path
 import queue
 import threading
 import time
-from model_router import ModelRouter
+from orchestration.session_bootstrap import bootstrap_interactive_session
 
 
 def wrap_text(text, width):
@@ -68,7 +68,7 @@ def save_tui_logs(chat_log, debug_log):
     return logs_dir
 
 
-def run_tui(stdscr):
+def run_tui(stdscr, session_info):
     curses.curs_set(1)
     curses.start_color()
     curses.use_default_colors()
@@ -83,9 +83,9 @@ def run_tui(stdscr):
     status_attr = curses.color_pair(4) | curses.A_BOLD
     message_attr = curses.A_NORMAL  # AI Generated for the TUI
 
-    router = ModelRouter()
+    router = session_info.build_router()
     event_queue = queue.Queue()
-    chat_log = []
+    chat_log = router.get_history()[:]
     debug_log = []
     input_buffer = ""
     chat_scroll_offset = 0
@@ -280,6 +280,8 @@ def run_tui(stdscr):
             + toggles
         )
         status_header = (
+            f"User: {session_info.username}  |  Project: {session_info.project_name}  |  "
+            f"Chat: {session_info.chat_session_title or session_info.chat_session_id}  |  "
             f"Status: {status_text}  |  State: {active_state}  |  Tool: {active_tool}  |  "
             f"Focus: {format_pane_name(active_pane)}"
         )
@@ -444,8 +446,9 @@ def run_tui(stdscr):
 
 
 def main():
+    session_info = bootstrap_interactive_session()
     try:
-        curses.wrapper(run_tui)
+        curses.wrapper(lambda stdscr: run_tui(stdscr, session_info))
     finally:
         # If the UI exits unexpectedly, the most recent completed turn has already been
         # autosaved by run_tui. No extra recovery action needed here.

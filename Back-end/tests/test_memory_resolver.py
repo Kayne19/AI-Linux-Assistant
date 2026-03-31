@@ -1,4 +1,4 @@
-from memory_resolver import MemoryResolver
+from agents.memory_resolver import MemoryResolver
 
 
 def test_memory_resolver_commits_high_confidence_user_fact_and_keeps_assistant_fact_as_candidate():

@@ -6,6 +6,8 @@ __pycache__/
 
 # Local environments and editor settings
 .env
+.env.local
+*.local
 Back-end/.env
 .venv/
 venv/
@@ -19,3 +21,19 @@ venv/
 # Local vector database artifacts
 Back-end/chroma_db/
 Back-end/lancedb_data/
+Back-end/lancedb_backups/
+
+# Log and trace files
+Back-end/tui_logs/
+
+# Raw/ingested document data (PDFs etc.)
+Back-end/data/ingested/
+Back-end/data/old/
+
+# Frontend dependencies
+Front-end/node_modules/
+Front-end/tsconfig.app.tsbuildinfo
+Front-end/tsconfig.node.tsbuildinfo
+Front-end/vite.config.d.ts
+Front-end/vite.config.js
+Front-end/dist/

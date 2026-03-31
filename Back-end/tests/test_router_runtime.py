@@ -9,11 +9,11 @@ deterministic. They protect orchestration behavior:
 - settings-to-worker assembly
 """
 
-from history_preparer import PreparedHistory
-from model_router import ModelRouter, RouterState
-from response_agent import ResponseAgent
-from settings import AppSettings, RoleModelSettings
-from summarizers import HistorySummarizer
+from orchestration.history_preparer import PreparedHistory
+from orchestration.model_router import ModelRouter, RouterState
+from agents.response_agent import ResponseAgent
+from config.settings import AppSettings, RoleModelSettings
+from agents.summarizers import HistorySummarizer
 
 
 class FakeDatabase:
@@ -135,9 +135,22 @@ class FakeMemoryExtractor:
         }
         self.calls = []
 
-    def call_api(self, user_question, assistant_response):
+    def call_api(self, user_question, assistant_response, recent_history=None):
         self.calls.append((user_question, assistant_response))
         return dict(self.extracted)
+
+
+class FakeChatStore:
+    def __init__(self, history=None):
+        self.history = list(history or [])
+        self.appended = []
+
+    def load_conversation_history(self, chat_session_id):
+        return list(self.history)
+
+    def append_message(self, chat_session_id, role, content, council_entries=None):
+        self.appended.append((chat_session_id, role, content))
+        self.history.append((role, content))
 
 
 def test_router_uses_raw_retrieved_docs_before_post_turn_summarization():
@@ -167,12 +180,13 @@ def test_router_uses_raw_retrieved_docs_before_post_turn_summarization():
         RouterState.LOAD_MEMORY.name,
         RouterState.SUMMARIZE_CONVERSATION_HISTORY.name,
         RouterState.CLASSIFY.name,
-        RouterState.REWRITE_QUERY.name,
         RouterState.DECIDE_RAG.name,
+        RouterState.REWRITE_QUERY.name,
         RouterState.RETRIEVE_CONTEXT.name,
         RouterState.GENERATE_RESPONSE.name,
         RouterState.SUMMARIZE_RETRIEVED_DOCS.name,
         RouterState.UPDATE_HISTORY.name,
+        RouterState.DECIDE_MEMORY.name,
         RouterState.EXTRACT_MEMORY.name,
         RouterState.RESOLVE_MEMORY.name,
         RouterState.COMMIT_MEMORY.name,
@@ -224,9 +238,101 @@ def test_router_no_rag_skips_database_retrieval():
     assert response == "hello back"
     assert database.calls == []
     assert responder.calls[0]["retrieved_docs"] == ""
+    assert RouterState.REWRITE_QUERY.name not in router.last_turn.state_trace
     assert RouterState.RETRIEVE_CONTEXT.name not in router.last_turn.state_trace
+    assert RouterState.SUMMARIZE_RETRIEVED_DOCS.name not in router.last_turn.state_trace
+    assert RouterState.EXTRACT_MEMORY.name in router.last_turn.state_trace
     assert len(memory_store.committed_resolutions) == 1
     assert memory_store.committed_resolutions[0][1:] == ("hello", "hello back")
+    assert router.last_turn.suggested_search_labels == []
+
+
+def test_router_prefetch_uses_searchable_labels_only():
+    database = FakeDatabase(returned_docs="scoped docs")
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["general", "docker"]),
+        context_agent=FakeContextAgent("docker permission denied"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    router.ask_question("Why does docker say permission denied?")
+
+    assert database.calls == [("docker permission denied", ("docker",))]
+    assert router.last_turn.suggested_search_labels == ["docker"]
+
+
+def test_router_tool_search_strips_control_labels_before_retrieval():
+    database = FakeDatabase(returned_docs="manual docs")
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    result = router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "docker install", "relevant_documents": ["no_rag", "docker"]},
+    )
+
+    assert result == "manual docs"
+    assert database.calls == [("docker install", ("docker",))]
+
+
+def test_router_tool_search_allows_broad_search_when_only_control_labels_are_present():
+    database = FakeDatabase(returned_docs="broad docs")
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    result = router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "obscure package", "relevant_documents": ["no_rag"]},
+    )
+
+    assert result == "broad docs"
+    assert database.calls == [("obscure package", ())]
+
+
+def test_router_loads_and_persists_session_scoped_chat_history():
+    chat_store = FakeChatStore(history=[("user", "old question"), ("model", "old answer")])
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("fresh answer"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+        chat_store=chat_store,
+        chat_session_id="session-123",
+    )
+
+    assert router.get_history() == [("user", "old question"), ("model", "old answer")]
+
+    router.ask_question("new question")
+
+    assert chat_store.appended == [
+        ("session-123", "user", "new question"),
+        ("session-123", "model", "fresh answer"),
+    ]
 
 
 def test_history_summarizer_noops_below_threshold():
@@ -245,12 +351,11 @@ def test_settings_provider_override_uses_provider_default_model():
     ModelRouter.WORKER_TYPES = {
         "openai": FakeWorker,
         "local": FakeWorker,
-        "gemini": FakeWorker,
     }
 
     try:
         settings = AppSettings(
-            provider_defaults={"openai": "openai-default", "local": "local-default", "gemini": "gemini-default"},
+            provider_defaults={"openai": "openai-default", "local": "local-default"},
             classifier=RoleModelSettings("openai", "classifier-model"),
             contextualizer=RoleModelSettings("openai", "context-model"),
             responder=RoleModelSettings("openai", "responder-model"),
@@ -314,7 +419,6 @@ def test_router_builds_default_memory_extractor_when_custom_store_is_injected():
     ModelRouter.WORKER_TYPES = {
         "openai": FakeWorker,
         "local": FakeWorker,
-        "gemini": FakeWorker,
     }
 
     try:
@@ -331,3 +435,231 @@ def test_router_builds_default_memory_extractor_when_custom_store_is_injected():
         assert router.memory_extractor is not None
     finally:
         ModelRouter.WORKER_TYPES = original_worker_types
+
+
+def test_no_memory_store_skips_load_memory():
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=None,
+    )
+
+    router.ask_question("hello")
+
+    assert RouterState.LOAD_MEMORY.name not in router.last_turn.state_trace
+
+
+def test_no_rag_skips_rewrite_query():
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent("should not be called"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    router.ask_question("hello")
+
+    assert RouterState.REWRITE_QUERY.name not in router.last_turn.state_trace
+    assert RouterState.RETRIEVE_CONTEXT.name not in router.last_turn.state_trace
+
+
+def test_empty_docs_skip_summarize_retrieved():
+    router = ModelRouter(
+        database=FakeDatabase(returned_docs=""),
+        classifier=FakeClassifier(["debian"]),
+        context_agent=FakeContextAgent("install debian"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    router.ask_question("How do I install Debian?")
+
+    assert RouterState.RETRIEVE_CONTEXT.name in router.last_turn.state_trace
+    assert RouterState.SUMMARIZE_RETRIEVED_DOCS.name not in router.last_turn.state_trace
+
+
+def test_decide_memory_skips_when_no_store():
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["debian"]),
+        context_agent=FakeContextAgent("install debian"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=None,
+    )
+
+    router.ask_question("How do I install Debian?")
+
+    assert RouterState.DECIDE_MEMORY.name in router.last_turn.state_trace
+    assert RouterState.EXTRACT_MEMORY.name not in router.last_turn.state_trace
+    assert RouterState.RESOLVE_MEMORY.name not in router.last_turn.state_trace
+    assert RouterState.COMMIT_MEMORY.name not in router.last_turn.state_trace
+
+
+def test_decide_memory_always_runs_extraction_regardless_of_labels():
+    memory_store = FakeMemoryStore()
+    extractor = FakeMemoryExtractor()
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=memory_store,
+        memory_extractor=extractor,
+    )
+
+    router.ask_question("thanks, by the way I'm running Ubuntu 24.04")
+
+    assert RouterState.DECIDE_MEMORY.name in router.last_turn.state_trace
+    assert RouterState.EXTRACT_MEMORY.name in router.last_turn.state_trace
+    assert len(extractor.calls) == 1
+    assert len(memory_store.committed_resolutions) == 1
+
+
+def test_decide_memory_runs_for_substantive_turns():
+    memory_store = FakeMemoryStore()
+    extractor = FakeMemoryExtractor()
+    router = ModelRouter(
+        database=FakeDatabase(returned_docs="docker docs"),
+        classifier=FakeClassifier(["docker"]),
+        context_agent=FakeContextAgent("docker permission denied"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("try sudo"),
+        memory_store=memory_store,
+        memory_extractor=extractor,
+    )
+
+    router.ask_question("docker permission denied")
+
+    assert RouterState.DECIDE_MEMORY.name in router.last_turn.state_trace
+    assert RouterState.EXTRACT_MEMORY.name in router.last_turn.state_trace
+    assert RouterState.COMMIT_MEMORY.name in router.last_turn.state_trace
+    assert len(extractor.calls) == 1
+    assert len(memory_store.committed_resolutions) == 1
+
+
+# ---------------------------------------------------------------------------
+# Magi router integration tests
+# ---------------------------------------------------------------------------
+
+class FakeMagiResponder:
+    def __init__(self, response_text="magi answer"):
+        self.response_text = response_text
+        self.calls = []
+
+    def call_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
+        self.calls.append(user_query)
+        return self.response_text
+
+    def stream_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
+        return self.call_api(user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text)
+
+
+def test_router_magi_toggle_dispatches_correctly():
+    normal_responder = SpyResponder("normal answer")
+    magi_responder = FakeMagiResponder("magi answer")
+
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=normal_responder,
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    router.magi_responder = magi_responder
+
+    # Normal turn
+    result_normal = router.ask_question("hello", magi="off")
+    assert result_normal == "normal answer"
+    assert len(normal_responder.calls) == 1
+    assert len(magi_responder.calls) == 0
+
+    # Full Council turn
+    result_magi = router.ask_question("hello again", magi="full")
+    assert result_magi == "magi answer"
+    assert len(magi_responder.calls) == 1
+
+
+def test_router_magi_turn_trace_markers():
+    magi_responder = FakeMagiResponder("magi answer")
+
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("normal"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    router.magi_responder = magi_responder
+
+    router.ask_question("test question", magi="full")
+
+    assert RouterState.GENERATE_RESPONSE.name in router.last_turn.state_trace
+
+
+def test_router_magi_lite_dispatches_to_lite_responder():
+    normal_responder = SpyResponder("normal answer")
+    full_responder = FakeMagiResponder("full answer")
+    lite_responder = FakeMagiResponder("lite answer")
+
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=normal_responder,
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    router.magi_responder = full_responder
+    router.magi_lite_responder = lite_responder
+
+    result = router.ask_question("lite question", magi="lite")
+    assert result == "lite answer"
+    assert len(lite_responder.calls) == 1
+    assert len(full_responder.calls) == 0
+    assert len(normal_responder.calls) == 0
+
+
+def test_router_magi_off_uses_standard_responder():
+    normal_responder = SpyResponder("normal answer")
+    full_responder = FakeMagiResponder("full answer")
+
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=normal_responder,
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    router.magi_responder = full_responder
+
+    result = router.ask_question("normal question", magi="off")
+    assert result == "normal answer"
+    assert len(normal_responder.calls) == 1
+    assert len(full_responder.calls) == 0

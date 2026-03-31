@@ -1,129 +1,232 @@
 """Worker-loop parity tests.
 
-These tests do not call real providers. They use fake Gemini/Ollama responses to
-verify that Local and Gemini now follow the same repeated tool-round contract as
+These tests do not call real providers. They use fake provider responses to
+verify that Local and Anthropic follow the same repeated tool-round contract as
 OpenAI: keep looping until tool calls stop, emit round-aware events, and return
 the final model response.
 """
 
 from types import SimpleNamespace
 
-import gemini_caller as gemini_module
-import local_caller as local_module
+import providers.anthropic_caller as anthropic_module
+import providers.local_caller as local_module
+import providers.openAI_caller as openai_module
 
 
-class FakeFunctionCall:
-    def __init__(self, name, args):
-        self.name = name
-        self.args = args
-
-
-class FakeResponsePart:
-    def __init__(self, function_call=None):
-        self.function_call = function_call
-
-
-class FakeCandidateContent:
-    def __init__(self, parts):
-        self.parts = parts
-
-
-class FakeGeminiResponse:
-    def __init__(self, text="", tool_calls=None):
+class FakeAnthropicBlock:
+    def __init__(self, block_type, text=None, name=None, block_id=None, tool_input=None):
+        self.type = block_type
         self.text = text
-        parts = []
+        self.name = name
+        self.id = block_id
+        self.input = tool_input
+
+
+class FakeAnthropicResponse:
+    def __init__(self, text="", tool_calls=None, stop_reason="end_turn", web_search_requests=0):
+        self.content = []
+        self.stop_reason = stop_reason
+        self.usage = SimpleNamespace(server_tool_use=SimpleNamespace(web_search_requests=web_search_requests))
+        if text:
+            self.content.append(FakeAnthropicBlock("text", text=text))
         for tool_call in tool_calls or []:
-            parts.append(FakeResponsePart(function_call=FakeFunctionCall(tool_call["name"], tool_call["arguments"])))
-        self.candidates = [SimpleNamespace(content=FakeCandidateContent(parts))]
+            self.content.append(
+                FakeAnthropicBlock(
+                    "tool_use",
+                    name=tool_call["name"],
+                    block_id=tool_call["id"],
+                    tool_input=tool_call["input"],
+                )
+            )
 
 
-class FakeGeminiModels:
+class FakeAnthropicStreamEvent:
+    def __init__(self, event_type, delta=None):
+        self.type = event_type
+        self.delta = delta
+
+
+class FakeAnthropicStream:
+    def __init__(self, response):
+        self._response = response
+        self._events = []
+        for block in response.content:
+            if block.type == "text" and block.text:
+                self._events.append(
+                    FakeAnthropicStreamEvent(
+                        "content_block_delta",
+                        delta=SimpleNamespace(text=block.text),
+                    )
+                )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def get_final_message(self):
+        return self._response
+
+
+class FakeAnthropicMessages:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
 
-    def generate_content(self, **kwargs):
+    def create(self, **kwargs):
         self.calls.append(kwargs)
         return self.responses.pop(0)
 
+    def stream(self, **kwargs):
+        self.calls.append(kwargs)
+        return FakeAnthropicStream(self.responses.pop(0))
 
-class FakeGeminiClient:
+
+class FakeAnthropicClient:
     def __init__(self, responses):
-        self.models = FakeGeminiModels(responses)
+        self.messages = FakeAnthropicMessages(responses)
 
 
-class FakeTypes:
-    class Content:
-        def __init__(self, role, parts):
-            self.role = role
-            self.parts = parts
-
-    class Part:
-        def __init__(self, text=None, function_response=None):
-            self.text = text
-            self.function_response = function_response
-            self.function_call = None
-
-    class FunctionDeclaration:
-        def __init__(self, name, description, parameters):
-            self.name = name
-            self.description = description
-            self.parameters = parameters
-
-    class Tool:
-        def __init__(self, function_declarations):
-            self.function_declarations = function_declarations
-
-    class FunctionResponse:
-        def __init__(self, name, response):
-            self.name = name
-            self.response = response
-
-    class GenerateContentConfig:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
+class FakeOpenAIToolCall:
+    def __init__(self, name, arguments, call_id):
+        self.type = "function_call"
+        self.name = name
+        self.arguments = arguments
+        self.call_id = call_id
 
 
-def test_gemini_worker_repeats_tool_rounds_until_completion():
-    original_types = gemini_module.types
-    gemini_module.types = FakeTypes
-    try:
-        worker = gemini_module.GeminiCaller.__new__(gemini_module.GeminiCaller)
-        worker.model = "fake-gemini"
-        worker.client = FakeGeminiClient(
-            [
-                FakeGeminiResponse(tool_calls=[{"name": "lookup", "arguments": {"q": "one"}}]),
-                FakeGeminiResponse(tool_calls=[{"name": "lookup", "arguments": {"q": "two"}}]),
-                FakeGeminiResponse(text="final answer"),
-            ]
-        )
+class FakeOpenAIWebSearchCall:
+    def __init__(self):
+        self.type = "web_search_call"
 
-        tool_calls = []
-        events = []
 
-        def tool_handler(name, args):
-            tool_calls.append((name, args))
-            return {"ok": True}
+class FakeOpenAIResponse:
+    def __init__(self, output=None, output_text=""):
+        self.output = output or []
+        self.output_text = output_text
+        self.id = "resp_123"
 
-        def event_listener(event_type, payload):
-            events.append((event_type, payload))
 
-        response = worker.generate_text(
-            system_prompt="sys",
-            user_message="user",
-            history=[],
-            tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
-            tool_handler=tool_handler,
-            max_tool_rounds=4,
-            event_listener=event_listener,
-        )
+class FakeOpenAIResponses:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
 
-        assert response == "final answer"
-        assert tool_calls == [("lookup", {"q": "one"}), ("lookup", {"q": "two"})]
-        assert len(worker.client.models.calls) == 3
-        assert events[-1] == ("response_completed", {"tool_rounds": 2})
-    finally:
-        gemini_module.types = original_types
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._responses.pop(0)
+
+
+class FakeOpenAIClient:
+    def __init__(self, responses):
+        self.responses = FakeOpenAIResponses(responses)
+
+
+def test_openai_worker_includes_native_web_search_and_emits_event():
+    worker = openai_module.OpenAICaller.__new__(openai_module.OpenAICaller)
+    worker.model = "fake-openai"
+    worker.reasoning_effort = "low"
+    worker.client = FakeOpenAIClient(
+        [
+            FakeOpenAIResponse(
+                output=[FakeOpenAIWebSearchCall(), FakeOpenAIToolCall("lookup", "{\"q\":\"one\"}", "call_1")]
+            ),
+            FakeOpenAIResponse(output_text="final answer"),
+        ]
+    )
+
+    tool_calls = []
+    events = []
+
+    def tool_handler(name, args):
+        tool_calls.append((name, args))
+        return {"ok": True}
+
+    def event_listener(event_type, payload):
+        events.append((event_type, payload))
+
+    response = worker.generate_text(
+        system_prompt="sys",
+        user_message="user",
+        history=[],
+        tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+        tool_handler=tool_handler,
+        enable_web_search=True,
+        event_listener=event_listener,
+    )
+
+    assert response == "final answer"
+    assert tool_calls == [("lookup", {"q": "one"})]
+    assert worker.client.responses.calls[0]["tools"][-1]["type"] == "web_search"
+    assert ("web_search_used", {"provider": "openai", "count": 1, "round": 0}) in events
+
+def test_anthropic_worker_repeats_tool_rounds_until_completion():
+    worker = anthropic_module.AnthropicCaller.__new__(anthropic_module.AnthropicCaller)
+    worker.model = "fake-claude"
+    worker.client = FakeAnthropicClient(
+        [
+            FakeAnthropicResponse(tool_calls=[{"id": "toolu_1", "name": "lookup", "input": {"q": "one"}}]),
+            FakeAnthropicResponse(tool_calls=[{"id": "toolu_2", "name": "lookup", "input": {"q": "two"}}]),
+            FakeAnthropicResponse(text="final answer"),
+        ]
+    )
+
+    tool_calls = []
+    events = []
+
+    def tool_handler(name, args):
+        tool_calls.append((name, args))
+        return {"ok": True}
+
+    def event_listener(event_type, payload):
+        events.append((event_type, payload))
+
+    response = worker.generate_text(
+        system_prompt="sys",
+        user_message="user",
+        history=[],
+        tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+        tool_handler=tool_handler,
+        max_tool_rounds=4,
+        event_listener=event_listener,
+    )
+
+    assert response == "final answer"
+    assert tool_calls == [("lookup", {"q": "one"}), ("lookup", {"q": "two"})]
+    assert len(worker.client.messages.calls) == 3
+    assert events[-1] == ("response_completed", {"tool_rounds": 2})
+
+
+def test_anthropic_worker_includes_native_web_search_and_emits_event():
+    worker = anthropic_module.AnthropicCaller.__new__(anthropic_module.AnthropicCaller)
+    worker.model = "fake-claude"
+    worker.client = FakeAnthropicClient(
+        [
+            FakeAnthropicResponse(text="web-backed answer", web_search_requests=1),
+        ]
+    )
+
+    events = []
+
+    def event_listener(event_type, payload):
+        events.append((event_type, payload))
+
+    response = worker.generate_text(
+        system_prompt="sys",
+        user_message="user",
+        history=[],
+        tools=[],
+        enable_web_search=True,
+        event_listener=event_listener,
+    )
+
+    assert response == "web-backed answer"
+    assert worker.client.messages.calls[0]["tools"][-1]["type"] == "web_search_20250305"
+    assert ("web_search_used", {"provider": "anthropic", "count": 1, "round": 0}) in events
 
 
 def test_local_worker_repeats_tool_rounds_until_completion():
@@ -168,3 +271,95 @@ def test_local_worker_repeats_tool_rounds_until_completion():
         assert events[-1] == ("response_completed", {"tool_rounds": 2})
     finally:
         local_module.ollama.chat = original_chat
+
+
+def test_anthropic_worker_stream_emits_text_deltas():
+    worker = anthropic_module.AnthropicCaller.__new__(anthropic_module.AnthropicCaller)
+    worker.model = "fake-claude"
+    worker.client = FakeAnthropicClient([FakeAnthropicResponse(text="hello world")])
+
+    events = []
+
+    def event_listener(event_type, payload):
+        events.append((event_type, payload))
+
+    result = worker.generate_text_stream(
+        system_prompt="sys",
+        user_message="user",
+        history=[],
+        tools=[],
+        event_listener=event_listener,
+    )
+
+    assert result == "hello world"
+    delta_events = [e for e in events if e[0] == "text_delta"]
+    assert len(delta_events) == 1
+    assert delta_events[0][1]["provider"] == "anthropic"
+    assert delta_events[0][1]["delta"] == "hello world"
+    assert delta_events[0][1]["round"] == 0
+
+
+def test_anthropic_worker_stream_handles_tool_rounds():
+    worker = anthropic_module.AnthropicCaller.__new__(anthropic_module.AnthropicCaller)
+    worker.model = "fake-claude"
+    worker.client = FakeAnthropicClient([
+        FakeAnthropicResponse(tool_calls=[{"id": "toolu_1", "name": "lookup", "input": {"q": "one"}}]),
+        FakeAnthropicResponse(text="streamed final answer"),
+    ])
+
+    tool_calls = []
+    events = []
+
+    def tool_handler(name, args):
+        tool_calls.append((name, args))
+        return {"ok": True}
+
+    def event_listener(event_type, payload):
+        events.append((event_type, payload))
+
+    result = worker.generate_text_stream(
+        system_prompt="sys",
+        user_message="user",
+        history=[],
+        tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+        tool_handler=tool_handler,
+        max_tool_rounds=4,
+        event_listener=event_listener,
+    )
+
+    assert result == "streamed final answer"
+    assert tool_calls == [("lookup", {"q": "one"})]
+    delta_events = [e for e in events if e[0] == "text_delta"]
+    assert len(delta_events) == 1
+    assert delta_events[0][1]["delta"] == "streamed final answer"
+    assert delta_events[0][1]["round"] == 1
+    assert events[-1] == ("response_completed", {"tool_rounds": 1})
+
+
+def test_anthropic_worker_stream_handles_pause_turn():
+    pause_response = FakeAnthropicResponse(text="part one", stop_reason="pause_turn")
+    final_response = FakeAnthropicResponse(text="part two")
+    worker = anthropic_module.AnthropicCaller.__new__(anthropic_module.AnthropicCaller)
+    worker.model = "fake-claude"
+    worker.client = FakeAnthropicClient([pause_response, final_response])
+
+    events = []
+
+    def event_listener(event_type, payload):
+        events.append((event_type, payload))
+
+    result = worker.generate_text_stream(
+        system_prompt="sys",
+        user_message="user",
+        history=[],
+        tools=[],
+        event_listener=event_listener,
+    )
+
+    # The streaming path accumulates text from the pause round but only returns
+    # the final round's text (matching the non-streaming _extract_text behaviour).
+    assert result == "part two"
+    delta_events = [e for e in events if e[0] == "text_delta"]
+    assert len(delta_events) == 2
+    assert delta_events[0][1]["delta"] == "part one"
+    assert delta_events[1][1]["delta"] == "part two"

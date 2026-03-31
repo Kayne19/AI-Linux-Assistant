@@ -1,4 +1,4 @@
-from memory_extractor import MemoryExtractor
+from agents.memory_extractor import MemoryExtractor
 
 
 class FakeWorker:
@@ -6,6 +6,16 @@ class FakeWorker:
         self.response_text = response_text
 
     def generate_text(self, *args, **kwargs):
+        return self.response_text
+
+
+class RecordingWorker:
+    def __init__(self, response_text):
+        self.response_text = response_text
+        self.calls = []
+
+    def generate_text(self, *args, **kwargs):
+        self.calls.append(kwargs)
         return self.response_text
 
 
@@ -72,3 +82,37 @@ def test_memory_extractor_normalizes_structured_output():
     assert result["preferences"][0]["preference_key"] == "editor"
     assert result["preferences"][0]["source_type"] == "user"
     assert result["session_summary"] == "Docker socket issue under investigation."
+
+
+def test_memory_extractor_includes_recent_history_for_reference_resolution():
+    worker = RecordingWorker(
+        """
+        {
+          "facts": [],
+          "issues": [],
+          "attempts": [],
+          "constraints": [
+            {"constraint_key": "willingness", "constraint_value": "User does not want to do the requested action", "source_type": "user"}
+          ],
+          "preferences": [],
+          "session_summary": ""
+        }
+        """
+    )
+    extractor = MemoryExtractor(worker=worker)
+
+    extractor.call_api(
+        "I don't wanna do that",
+        "Okay, we can take a different approach.",
+        recent_history=[
+            ("assistant", "Please reboot the machine and tell me what changes."),
+            ("user", "I don't wanna do that"),
+            ("model", "Okay, we can take a different approach."),
+        ],
+    )
+
+    assert worker.calls, "expected the extractor to call the worker"
+    payload = worker.calls[0]["user_message"]
+    assert "recent_history" in payload
+    assert "Please reboot the machine and tell me what changes." in payload
+    assert '"role": "assistant"' in payload

@@ -1,0 +1,995 @@
+[
+  {
+    "id": "branch_switch_after_pushback",
+    "category": "debugging",
+    "notes": "Stress whether the assistant changes course after contrary evidence against its initial branch.",
+    "review_focus": "After explicit contrary evidence, does the assistant pivot or keep hammering the privilege-mode theory?",
+    "steps": [
+      {
+        "index": 1,
+        "user": "I'm on Debian 12 in a Proxmox LXC and Docker commands are failing with permission denied.",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 27.996535323s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-3-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '27s'}]}}",
+        "duration_ms": 2071.7,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true
+        },
+        "routing_labels": [
+          "debian",
+          "proxmox",
+          "docker"
+        ],
+        "retrieval_query": "I'm on Debian 12 in a Proxmox LXC and Docker commands are failing with permission denied.",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "RETRIEVE_CONTEXT",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 1525,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "user": "I already tried sudo apt install docker.io and restarting the docker service, but it didn't help.",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 27.04511051s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '27s'}]}}",
+        "duration_ms": 951.4,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "I already tried sudo apt install docker.io and restarting the docker service, but it didn't help.",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "user": "What should I try next?",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 26.305785267s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '26s'}]}}",
+        "duration_ms": 738.8,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true,
+          "routing_match": true,
+          "rag_match": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "What should I try next?",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "user": "The container is already privileged and nesting=1. I don't think privilege mode is the issue.",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 25.412749727s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '25s'}]}}",
+        "duration_ms": 893.3,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "The container is already privileged and nesting=1. I don't think privilege mode is the issue.",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "user": "Given that, what should I check next?",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 24.59828455s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-3-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '24s'}]}}",
+        "duration_ms": 816.4,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true,
+          "routing_match": true,
+          "rag_match": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "Given that, what should I check next?",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      }
+    ],
+    "final_snapshot": {
+      "profile": {},
+      "issues": [],
+      "attempts": [],
+      "constraints": [],
+      "preferences": [],
+      "session_summary": ""
+    },
+    "final_candidates": [],
+    "final_debug_dump": ""
+  },
+  {
+    "id": "restart_persistence_profile_and_attempts",
+    "category": "memory",
+    "notes": "Verify that long-term memory survives a router restart and carries profile facts plus prior attempts.",
+    "review_focus": "After restart, does the assistant answer from durable memory rather than only recent conversation history?",
+    "steps": [
+      {
+        "index": 1,
+        "user": "I'm using zsh on Debian 12 inside a VM.",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 20.423304288s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '20s'}]}}",
+        "duration_ms": 1191.2,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true
+        },
+        "routing_labels": [
+          "debian",
+          "general"
+        ],
+        "retrieval_query": "I'm using zsh on Debian 12 inside a VM.",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "user": "I already edited the config with vim and it did not help.",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 19.558353271s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '19s'}]}}",
+        "duration_ms": 864.6,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "I already edited the config with vim and it did not help.",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "user": "What OS, shell, and previous attempt do you remember?",
+        "notes": "",
+        "response": "I don't have any record of your OS, shell, or previous attempts in my current memory. \n\nTo get us started, could you let me know what environment you're working in and what you've tried so far? That way, I can provide grounded advice for whatever you're troubleshooting.",
+        "duration_ms": 6663.2,
+        "passed": true,
+        "checks": {
+          "no_router_error": true,
+          "nonempty_response": true,
+          "routing_match": true,
+          "rag_match": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "What OS, shell, and previous attempt do you remember?",
+        "tool_names": [
+          "get_system_profile",
+          "search_attempt_log",
+          "search_conversation_history"
+        ],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_PROCESS_TOOL_CALLS",
+          "TOOL_SEARCH_HISTORY",
+          "RESPONDER_SUBMIT_TOOL_RESULTS",
+          "RESPONDER_COMPLETE",
+          "SUMMARIZE_RETRIEVED_DOCS",
+          "UPDATE_HISTORY",
+          "EXTRACT_MEMORY",
+          "RESOLVE_MEMORY",
+          "COMMIT_MEMORY",
+          "DONE"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          },
+          {
+            "type": "memory_extracted",
+            "payload": {
+              "facts": 0,
+              "issues": 0,
+              "attempts": 0,
+              "constraints": 0,
+              "preferences": 0,
+              "has_session_summary": true,
+              "examples": {
+                "facts": [],
+                "issues": [],
+                "attempts": [],
+                "constraints": [],
+                "preferences": []
+              }
+            }
+          },
+          {
+            "type": "memory_resolved",
+            "payload": {
+              "committed": {
+                "facts": 0,
+                "issues": 0,
+                "attempts": 0,
+                "constraints": 0,
+                "preferences": 0
+              },
+              "candidates": 0,
+              "conflicts": 0,
+              "has_session_summary": true,
+              "committed_examples": {
+                "facts": [],
+                "issues": [],
+                "attempts": [],
+                "constraints": [],
+                "preferences": []
+              },
+              "candidate_examples": [],
+              "conflict_examples": []
+            }
+          },
+          {
+            "type": "memory_committed",
+            "payload": {
+              "committed": {
+                "facts": 0,
+                "issues": 0,
+                "attempts": 0,
+                "constraints": 0,
+                "preferences": 0
+              },
+              "candidates": 0,
+              "conflicts": 0,
+              "has_session_summary": true,
+              "committed_examples": {
+                "facts": [],
+                "issues": [],
+                "attempts": [],
+                "constraints": [],
+                "preferences": []
+              },
+              "candidate_examples": [],
+              "conflict_examples": []
+            }
+          }
+        ]
+      }
+    ],
+    "final_snapshot": {
+      "profile": {},
+      "issues": [],
+      "attempts": [],
+      "constraints": [],
+      "preferences": [],
+      "session_summary": "The assistant stated it has no record of the user's OS, shell, or previous attempts in current memory and asked the user to provide their environment and what they've tried."
+    },
+    "final_candidates": [],
+    "final_debug_dump": "RELEVANT MEMORY VIEW:\nSESSION NOTES:\nThe assistant stated it has no record of the user's OS, shell, or previous attempts in current memory and asked the user to provide their environment and what they've tried."
+  },
+  {
+    "id": "contradiction_persistence_after_restart",
+    "category": "memory",
+    "notes": "Verify that mutable user facts supersede stale committed values and remain correct across restart.",
+    "review_focus": "Does durable memory update to the new environment fact while preserving an audit trail for the old one?",
+    "steps": [
+      {
+        "index": 1,
+        "user": "I am on Debian 12.",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 6.422567632s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '6s'}]}}",
+        "duration_ms": 1042.7,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true
+        },
+        "routing_labels": [
+          "debian"
+        ],
+        "retrieval_query": "I am on Debian 12.",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "RETRIEVE_CONTEXT",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "user": "Actually this machine is Ubuntu 24.04 now.",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 5.576248792s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-3-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '5s'}]}}",
+        "duration_ms": 846.2,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "Actually this machine is Ubuntu 24.04 now.",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "user": "What OS am I on?",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 2.053158452s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '2s'}]}}",
+        "duration_ms": 864.2,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true,
+          "routing_match": true,
+          "rag_match": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "What OS am I on?",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      }
+    ],
+    "final_snapshot": {
+      "profile": {},
+      "issues": [],
+      "attempts": [],
+      "constraints": [],
+      "preferences": [],
+      "session_summary": ""
+    },
+    "final_candidates": [],
+    "final_debug_dump": ""
+  },
+  {
+    "id": "repeated_fix_avoidance",
+    "category": "debugging",
+    "notes": "Check whether memory and history prevent the assistant from repeating already-failed fixes.",
+    "review_focus": "On the final turn, does the assistant avoid repeating package install and service restart advice?",
+    "steps": [
+      {
+        "index": 1,
+        "user": "I'm on Debian 12 in a Proxmox LXC and Docker commands are failing with permission denied.",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 57.870532122s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '57s'}]}}",
+        "duration_ms": 1404.4,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true
+        },
+        "routing_labels": [
+          "debian",
+          "proxmox",
+          "docker"
+        ],
+        "retrieval_query": "I'm on Debian 12 in a Proxmox LXC and Docker commands are failing with permission denied.",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "RETRIEVE_CONTEXT",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 1525,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "user": "I already tried sudo apt install docker.io and restarting the docker service, but it didn't help.",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 56.868307405s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '56s'}]}}",
+        "duration_ms": 994.2,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "I already tried sudo apt install docker.io and restarting the docker service, but it didn't help.",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "user": "What have I already tried?",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 55.999582822s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '55s'}]}}",
+        "duration_ms": 869.7,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true,
+          "routing_match": true,
+          "rag_match": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "What have I already tried?",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "user": "Don't repeat fixes I've already done. Give me the next thing to check.",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 53.474309234s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '53s'}]}}",
+        "duration_ms": 2524.6,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true,
+          "routing_match": true,
+          "rag_match": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "Don't repeat fixes I've already done. Give me the next thing to check.",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      }
+    ],
+    "final_snapshot": {
+      "profile": {},
+      "issues": [],
+      "attempts": [],
+      "constraints": [],
+      "preferences": [],
+      "session_summary": ""
+    },
+    "final_candidates": [],
+    "final_debug_dump": ""
+  },
+  {
+    "id": "exact_command_and_safety",
+    "category": "grounding",
+    "notes": "Exercise both exact-command recovery and refusal to guess when exact command text is not grounded.",
+    "review_focus": "Does the assistant recover simple exact commands and stay conservative on unsupported exact Proxmox syntax?",
+    "steps": [
+      {
+        "index": 1,
+        "user": "How do I list running Docker containers?",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 48.390861431s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '48s'}]}}",
+        "duration_ms": 1455.1,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true,
+          "routing_match": true,
+          "rag_match": true
+        },
+        "routing_labels": [
+          "docker"
+        ],
+        "retrieval_query": "How do I list running Docker containers?",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "RETRIEVE_CONTEXT",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 1333,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "user": "What's the exact pct set command to enable nesting for container 101?",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 44.738025462s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '44s'}]}}",
+        "duration_ms": 3654.5,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true
+        },
+        "routing_labels": [
+          "proxmox"
+        ],
+        "retrieval_query": "What's the exact pct set command to enable nesting for container 101?",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "RETRIEVE_CONTEXT",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 1368,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      }
+    ],
+    "final_snapshot": {
+      "profile": {},
+      "issues": [],
+      "attempts": [],
+      "constraints": [],
+      "preferences": [],
+      "session_summary": ""
+    },
+    "final_candidates": [],
+    "final_debug_dump": ""
+  },
+  {
+    "id": "long_history_compaction_and_recall",
+    "category": "history",
+    "notes": "Seed a long prior history and verify recall still works after compaction pressure.",
+    "review_focus": "Does the assistant preserve the important prior attempt when history is long enough to summarize?",
+    "steps": [
+      {
+        "index": 1,
+        "user": "What have I already tried?",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 38.114052659s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '38s'}]}}",
+        "duration_ms": 4008.5,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true,
+          "routing_match": true,
+          "rag_match": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "What have I already tried?",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "user": "What's the next new thing to check?",
+        "notes": "",
+        "response": "Router error: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3-flash\\nPlease retry in 35.377502496s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '35s'}]}}",
+        "duration_ms": 2736.6,
+        "passed": false,
+        "checks": {
+          "no_router_error": false,
+          "nonempty_response": true,
+          "routing_match": true,
+          "rag_match": true
+        },
+        "routing_labels": [
+          "no_rag"
+        ],
+        "retrieval_query": "What's the next new thing to check?",
+        "tool_names": [],
+        "state_trace": [
+          "START",
+          "LOAD_MEMORY",
+          "SUMMARIZE_CONVERSATION_HISTORY",
+          "CLASSIFY",
+          "REWRITE_QUERY",
+          "DECIDE_RAG",
+          "GENERATE_RESPONSE",
+          "RESPONDER_PREPARE_REQUEST",
+          "RESPONDER_REQUEST_MODEL",
+          "RESPONDER_ERROR",
+          "ERROR"
+        ],
+        "memory_snapshot_chars": 0,
+        "retrieved_docs_chars": 0,
+        "memory_events": [
+          {
+            "type": "memory_loaded",
+            "payload": {
+              "chars": 0,
+              "has_memory": false
+            }
+          }
+        ]
+      }
+    ],
+    "final_snapshot": {
+      "profile": {},
+      "issues": [],
+      "attempts": [],
+      "constraints": [],
+      "preferences": [],
+      "session_summary": ""
+    },
+    "final_candidates": [],
+    "final_debug_dump": ""
+  }
+]

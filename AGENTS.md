@@ -1,8 +1,18 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `Back-end/app/`: Python runtime for the assistant. Entry point is `app/main.py`, with supporting modules like `model_router.py`, `gemini_caller.py`, `context_agent.py`, and `vectorDB.py`.
-- `Back-end/scripts/`: Data ingestion and cleanup utilities (older variants live under `scripts/deprecated/`).
+- `Back-end/app/`: Python runtime for the assistant. Entry points remain `app/main.py` and `app/AI_Generated_TUI.py`.
+- `Back-end/app/orchestration/`: Router, history preparation, routing registry, and session bootstrap.
+- `Back-end/app/agents/`: Task-shaped agents such as classifier, contextualizer, responder, summarizers, and memory extraction/resolution.
+- `Back-end/app/providers/`: Model provider transport layers such as OpenAI, Anthropic, and local workers.
+- `Back-end/app/retrieval/`: Vector DB orchestration and retrieval-provider adapters.
+- `Back-end/app/persistence/`: SQLite/Postgres persistence and app-store layers.
+- `Back-end/app/prompting/`, `Back-end/app/config/`, `Back-end/app/utils/`: prompts, settings, and utilities.
+- `Back-end/scripts/`: Operational scripts grouped by purpose:
+  - `scripts/eval/`
+  - `scripts/ingest/`
+  - `scripts/db/`
+  - older variants live under `scripts/deprecated/`
 - `Back-end/data/`: Source PDFs used for retrieval-augmented generation (RAG).
 - `Back-end/lancedb_data/` and `Back-end/chroma_db/`: Local vector database artifacts.
 - `Back-end/extracted_*.json` and `Back-end/doc_context.txt`: Preprocessed datasets and context outputs.
@@ -10,21 +20,25 @@
 
 ## Architecture Priorities
 - The project is intentionally organized around explicit state machines and traceability. Prefer making lifecycle phases visible in the router trace over hiding important work inside helpers or side effects.
-- `Back-end/app/model_router.py` is the top-level orchestration layer. The router should own workflow phases and state transitions, not provider-specific execution details.
+- `Back-end/app/orchestration/model_router.py` is the top-level orchestration layer. The router should own workflow phases and state transitions, not provider-specific execution details.
 - Task agents should stay task-shaped, not provider-shaped. Current examples include classifier, contextualizer, responder, and memory extractor. They should accept injected workers instead of hardcoding a provider.
-- Provider workers (`openAI_caller.py`, `gemini_caller.py`, `local_caller.py`) should own transport/API behavior only. They should not mutate router state or persistent storage directly.
-- Persistence/query layers should stay persistence/query-only. For example, `memory_store.py` should store, merge, and query memory, while extraction/policy live in separate modules.
+- Provider workers in `Back-end/app/providers/` should own transport/API behavior only. They should not mutate router state or persistent storage directly.
+- Persistence/query layers in `Back-end/app/persistence/` should stay persistence/query-only. For example, `memory_store.py` should store, merge, and query memory, while extraction/policy live in separate modules.
 - If a subsystem has meaningful internal phases, prefer explicit modeling. The responder already has visible substates, and the memory pipeline is now represented as explicit router states (`LOAD_MEMORY`, `EXTRACT_MEMORY`, `RESOLVE_MEMORY`, `COMMIT_MEMORY`).
 - Tool use should be observable. If a model can call tools, keep those calls visible through emitted events and trace markers rather than burying them in silent helper logic.
 - Avoid “magic” behavior. Future agents should prefer architecture that makes it easy to answer: what phase is running, what component owns it, and where state changed.
 
 ## Build, Test, and Development Commands
 - `conda activate AI-Linux-Assistant`: Required before running Python tooling for this project.
+- Always run Python commands, tests, evals, and scripts inside the `AI-Linux-Assistant` conda environment. If a command fails in a different environment, switch first instead of debugging the wrong runtime.
 - `python app/main.py` (run from `Back-end/`): Launches the CLI assistant loop.
 - `python app/AI_Generated_TUI.py` (run from `Back-end/`): Launches the curses-based TUI with router state and tool visibility.
-- `python scripts/evaluate_router.py` (run from `Back-end/`): Runs the repeatable router evaluation battery and writes JSON results to `Back-end/evals/`.
-- `python scripts/chatGPT_PDF_intake.py`: Ingests PDFs into cleaned JSON (read the script before running; it writes outputs).
-- `python scripts/context_enrichment.py`: Enriches context fields for RAG (writes `extracted_*` files).
+- `python scripts/eval/evaluate_router.py` (run from `Back-end/`): Runs the repeatable router evaluation battery and writes JSON results to `Back-end/evals/`.
+- `python scripts/eval/evaluate_router_deep.py` (run from `Back-end/`): Runs the deeper scenario-style evaluation battery.
+- `python scripts/ingest/chatGPT_PDF_intake.py`: Ingests PDFs into cleaned JSON (read the script before running; it writes outputs).
+- `python scripts/ingest/context_enrichment.py`: Enriches context fields for RAG (writes `extracted_*` files).
+- `python scripts/ingest/ingest_pipeline.py`: End-to-end ingestion and registry update flow.
+- `python scripts/db/init_postgres_schema.py`: Initializes the Postgres schema.
 - No build system is defined; use a Python virtualenv and install dependencies as needed.
 
 ## Coding Style & Naming Conventions
@@ -43,10 +57,15 @@
 
 ## Configuration & Security
 - Store secrets in `Back-end/.env` (e.g., `GOOGLE_API_KEY`); do not commit them.
-- Default role/provider/model selection is centralized in `Back-end/app/settings.py`; prefer changing defaults there or via `.env` overrides instead of scattering model choices across modules.
-- Model and DB paths are still configured in `app/vectorDB.py` (e.g., `lancedb_data`, `extracted_clean_final.json`). Update carefully and document changes in PRs.
+- Default role/provider/model selection is centralized in `Back-end/app/config/settings.py`; prefer changing defaults there or via `.env` overrides instead of scattering model choices across modules.
+- Model and DB paths are still configured in `Back-end/app/retrieval/vectorDB.py` (e.g., `lancedb_data`, `extracted_clean_final.json`). Update carefully and document changes in PRs.
 - `VectorDB` supports `VECTORDB_EMBED_DEVICE` and `VECTORDB_RERANK_DEVICE` environment overrides. The eval runner may use these to control retrieval device placement.
 
 ## Commit & Pull Request Guidelines
 - No commit history is available in this repo; use short, imperative commit subjects (e.g., "Add vector DB ingest guard").
 - PRs should include: a clear description, commands run, and notes about any data/regeneration steps. Screenshots are unnecessary unless you change UI outputs.
+
+## Documentation Maintenance
+- Keep relevant markdown docs up to date when architecture, subsystem behavior, or developer workflow changes.
+- The important handoff docs currently include `README.md`, `Back-end/ARCHITECTURE.md`, `Back-end/MEMORY.md`, `Back-end/RETRIEVAL.md`, `Back-end/INGESTION.md`, `Back-end/API.md`, `Back-end/STREAMING.md`, and `Front-end/FRONTEND.md`.
+- If a change alters one of those surfaces and the markdown is not updated in the same pass, treat that as incomplete work.

@@ -4,8 +4,8 @@ These tests are intentionally lightweight. They catch prompt drift after major
 architecture changes, especially around removed subsystems like memory.
 """
 
-from prompts import CHATBOT_SYSTEM_PROMPT, CONTEXTUALIZER_SYSTEM_PROMPT, build_classifier_system_prompt
-from routing_registry import get_allowed_labels, get_domain_map
+from prompting.prompts import CHATBOT_SYSTEM_PROMPT, CONTEXTUALIZER_SYSTEM_PROMPT, build_classifier_system_prompt
+from orchestration.routing_registry import get_allowed_labels, get_domain_map
 
 
 def test_active_prompts_use_structured_memory_without_old_user_memory_path():
@@ -44,6 +44,14 @@ def test_chatbot_prompt_uses_updated_grounded_response_shape():
     assert "Do not force every answer into the same shape" in CHATBOT_SYSTEM_PROMPT
     assert "On the first troubleshooting turn, default to diagnosis-first behavior" in CHATBOT_SYSTEM_PROMPT
     assert "do not jump to remediation before you have the evidence that distinguishes the leading branches" in CHATBOT_SYSTEM_PROMPT
+    assert "Local RAG remains primary. Use provider-native web search only as a fallback" in CHATBOT_SYSTEM_PROMPT
+    assert "mentally follow this order: identify the project, name the source that established that identity, then decide whether you have enough source quality for actionable guidance" in CHATBOT_SYSTEM_PROMPT
+    assert "Do not guess what an unfamiliar project probably is." in CHATBOT_SYSTEM_PROMPT
+    assert "confirm the canonical source first" in CHATBOT_SYSTEM_PROMPT
+    assert 'Do not call a third-party blog, tutorial, or mirror "official".' in CHATBOT_SYSTEM_PROMPT
+    assert "If identity or source quality is still uncertain, state the assumption briefly and ask for the repo/source instead of jumping straight to install commands." in CHATBOT_SYSTEM_PROMPT
+    assert "do not fake recognition" in CHATBOT_SYSTEM_PROMPT
+    assert "If web fallback identifies the software but the source quality is still weak, stop at identification and ask for the canonical repo/source before prescribing install steps." in CHATBOT_SYSTEM_PROMPT
 
 
 def test_contextualizer_prompt_blocks_answer_shaped_rewrites():
