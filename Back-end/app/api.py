@@ -105,6 +105,12 @@ class SendMessageResponse(BaseModel):
     debug: AssistantDebugResponse
 
 
+class BootstrapResponse(BaseModel):
+    user: UserResponse
+    projects: list[ProjectResponse]
+    chats_by_project: dict[str, list[ChatSessionResponse]]
+
+
 def _iso(value):
     return value.isoformat() if value is not None else ""
 
@@ -201,6 +207,37 @@ def create_app():
         user = app_store.find_or_create_user(request.username)
         return _serialize_user(user)
 
+    @app.post("/auth/bootstrap", response_model=BootstrapResponse)
+    def bootstrap(request: LoginRequest):
+        result = app_store.bootstrap_user(request.username)
+        return BootstrapResponse(
+            user=UserResponse(id=result["user_id"], username=result["user_username"]),
+            projects=[
+                ProjectResponse(
+                    id=p["id"],
+                    user_id=p["user_id"],
+                    name=p["name"],
+                    description=p["description"],
+                    created_at=_iso(p["created_at"]),
+                    updated_at=_iso(p["updated_at"]),
+                )
+                for p in result["projects"]
+            ],
+            chats_by_project={
+                project_id: [
+                    ChatSessionResponse(
+                        id=c["id"],
+                        project_id=c["project_id"],
+                        title=c["title"],
+                        created_at=_iso(c["created_at"]),
+                        updated_at=_iso(c["updated_at"]),
+                    )
+                    for c in chats
+                ]
+                for project_id, chats in result["chats_by_project"].items()
+            },
+        )
+
     @app.get("/users/{user_id}/projects", response_model=list[ProjectResponse])
     def list_projects(user_id: str):
         return [_serialize_project(project) for project in app_store.list_projects(user_id)]
@@ -241,10 +278,10 @@ def create_app():
 
     @app.get("/projects/{project_id}/chats", response_model=list[ChatSessionResponse])
     def list_chats(project_id: str):
-        project = app_store.get_project(project_id)
-        if project is None:
+        chats = app_store.list_chat_sessions_checked(project_id)
+        if chats is None:
             raise HTTPException(status_code=404, detail="Project not found.")
-        return [_serialize_chat_session(chat) for chat in app_store.list_chat_sessions(project_id)]
+        return [_serialize_chat_session(chat) for chat in chats]
 
     @app.post("/projects/{project_id}/chats", response_model=ChatSessionResponse)
     def create_chat(project_id: str, request: ChatCreateRequest):
@@ -285,28 +322,20 @@ def create_app():
 
     @app.get("/chats/{chat_session_id}/messages", response_model=list[ChatMessageResponse])
     def list_messages(chat_session_id: str):
-        chat_session = app_store.get_chat_session(chat_session_id)
-        if chat_session is None:
+        messages = app_store.list_messages_checked(chat_session_id)
+        if messages is None:
             raise HTTPException(status_code=404, detail="Chat session not found.")
-        return [_serialize_message(message) for message in app_store.list_messages(chat_session_id)]
+        return [_serialize_message(message) for message in messages]
 
     @app.post("/chats/{chat_session_id}/messages", response_model=SendMessageResponse)
     def send_message(chat_session_id: str, request: MessageCreateRequest):
-        chat_session = app_store.get_chat_session(chat_session_id)
-        if chat_session is None:
-            raise HTTPException(status_code=404, detail="Chat session not found.")
-
         router = _build_router_for_session(app_store, chat_session_id)
-        previous_count = len(router.get_history())
-        response_text = router.ask_question(request.content, magi=request.magi)
-        persisted_messages = app_store.list_messages(chat_session_id)
+        router.ask_question(request.content, magi=request.magi)
+        turn = router.last_turn
 
-        if len(persisted_messages) < previous_count + 2:
+        if turn.persisted_user_message is None or turn.persisted_assistant_message is None:
             raise HTTPException(status_code=500, detail="Router did not persist the expected chat messages.")
 
-        user_message = _serialize_message(persisted_messages[-2])
-        assistant_message = _serialize_message(persisted_messages[-1])
-        turn = router.last_turn
         debug = AssistantDebugResponse(
             state_trace=list(getattr(turn, "state_trace", []) or []),
             tool_events=list(getattr(turn, "tool_events", []) or []),
@@ -314,19 +343,14 @@ def create_app():
             retrieved_sources=_extract_sources(getattr(turn, "retrieved_docs", "") or ""),
         )
         return SendMessageResponse(
-            user_message=user_message,
-            assistant_message=assistant_message,
+            user_message=_serialize_message(turn.persisted_user_message),
+            assistant_message=_serialize_message(turn.persisted_assistant_message),
             debug=debug,
         )
 
     @app.post("/chats/{chat_session_id}/messages/stream")
     def send_message_stream(chat_session_id: str, request: MessageCreateRequest):
-        chat_session = app_store.get_chat_session(chat_session_id)
-        if chat_session is None:
-            raise HTTPException(status_code=404, detail="Chat session not found.")
-
         router = _build_router_for_session(app_store, chat_session_id)
-        previous_count = len(router.get_history())
         event_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
 
         def on_state(state, _turn):
@@ -340,13 +364,13 @@ def create_app():
                 router.set_state_listener(on_state)
                 router.set_event_listener(on_event)
                 response_text = router.ask_question_stream(request.content, magi=request.magi)
-                persisted_messages = app_store.list_messages(chat_session_id)
 
                 if response_text.startswith("Router error:"):
                     event_queue.put({"type": "error", "message": response_text})
                     return
 
-                if len(persisted_messages) < previous_count + 2:
+                turn = router.last_turn
+                if turn.persisted_user_message is None or turn.persisted_assistant_message is None:
                     event_queue.put(
                         {
                             "type": "error",
@@ -355,9 +379,8 @@ def create_app():
                     )
                     return
 
-                user_message = _serialize_message(persisted_messages[-2])
-                assistant_message = _serialize_message(persisted_messages[-1])
-                turn = router.last_turn
+                user_message = _serialize_message(turn.persisted_user_message)
+                assistant_message = _serialize_message(turn.persisted_assistant_message)
                 debug = AssistantDebugResponse(
                     state_trace=list(getattr(turn, "state_trace", []) or []),
                     tool_events=list(getattr(turn, "tool_events", []) or []),

@@ -54,3 +54,9 @@ export type SendMessageResponse = {
   assistant_message: ChatMessage;
   debug: AssistantDebug;
 };
+
+export type BootstrapResponse = {
+  user: User;
+  projects: Project[];
+  chats_by_project: Record<string, ChatSession[]>;
+};

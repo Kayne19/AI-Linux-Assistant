@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatSession, Project, SendMessageResponse, User } from "./types";
+import type { BootstrapResponse, ChatMessage, ChatSession, Project, SendMessageResponse, User } from "./types";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "http://localhost:8000";
 
@@ -50,6 +50,11 @@ export const api = {
   health: () => request<{ ok: boolean }>("/health"),
   login: (username: string) =>
     request<User>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    }),
+  bootstrap: (username: string) =>
+    request<BootstrapResponse>("/auth/bootstrap", {
       method: "POST",
       body: JSON.stringify({ username }),
     }),

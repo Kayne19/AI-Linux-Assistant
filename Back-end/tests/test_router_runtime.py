@@ -84,6 +84,12 @@ class FakeMemoryStore:
         self.attempts_text = attempts_text
         self.committed_resolutions = []
 
+    def begin_turn(self):
+        pass
+
+    def end_turn(self):
+        pass
+
     def format_memory_snapshot(self, query, host_label=None):
         return self.snapshot_text
 

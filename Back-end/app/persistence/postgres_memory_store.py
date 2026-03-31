@@ -53,9 +53,117 @@ class PostgresMemoryStore:
             )
         self.project_id = str(project_id)
         self.session_factory = session_factory or get_session_factory()
+        self._snapshot_cache: dict | None = None
 
     def _session(self):
         return self.session_factory()
+
+    def begin_turn(self):
+        self._snapshot_cache = None
+
+    def end_turn(self):
+        self._snapshot_cache = None
+
+    def _load_raw_data(self):
+        if self._snapshot_cache is not None:
+            return self._snapshot_cache
+        with self._session() as session:
+            fact_rows = list(session.scalars(
+                select(ProjectFact)
+                .where(ProjectFact.project_id == self.project_id)
+                .order_by(ProjectFact.updated_at.desc(), ProjectFact.fact_key.asc())
+            ))
+            issue_rows = list(session.scalars(
+                select(ProjectIssue)
+                .where(ProjectIssue.project_id == self.project_id)
+                .order_by(ProjectIssue.last_seen_at.desc())
+            ))
+            attempt_rows = list(session.scalars(
+                select(ProjectAttempt)
+                .where(ProjectAttempt.project_id == self.project_id)
+                .order_by(ProjectAttempt.created_at.desc())
+            ))
+            constraint_rows = list(session.scalars(
+                select(ProjectConstraint)
+                .where(ProjectConstraint.project_id == self.project_id)
+                .order_by(ProjectConstraint.last_seen_at.desc())
+            ))
+            preference_rows = list(session.scalars(
+                select(ProjectPreference)
+                .where(ProjectPreference.project_id == self.project_id)
+                .order_by(ProjectPreference.last_seen_at.desc())
+            ))
+            state_rows = list(session.scalars(
+                select(ProjectState)
+                .where(ProjectState.project_id == self.project_id)
+            ))
+
+            facts = [
+                {
+                    "fact_key": row.fact_key,
+                    "fact_value": row.fact_value,
+                    "source_type": row.source_type,
+                    "source_ref": row.source_ref,
+                    "confidence": row.confidence,
+                    "verified": bool(row.verified),
+                    "observed_at": _iso(row.observed_at),
+                }
+                for row in fact_rows
+            ]
+            issues = [
+                {
+                    "id": row.id,
+                    "title": row.title,
+                    "category": row.category,
+                    "summary": row.summary,
+                    "status": row.status,
+                    "source_type": row.source_type,
+                    "last_seen_at": _iso(row.last_seen_at),
+                }
+                for row in issue_rows
+            ]
+            attempts = [
+                {
+                    "id": row.id,
+                    "issue_id": row.issue_id,
+                    "action": row.action,
+                    "command": row.command,
+                    "outcome": row.outcome,
+                    "status": row.status,
+                    "source_type": row.source_type,
+                    "created_at": _iso(row.created_at),
+                }
+                for row in attempt_rows
+            ]
+            constraints = [
+                {
+                    "constraint_key": row.constraint_key,
+                    "constraint_value": row.constraint_value,
+                    "source_type": row.source_type,
+                    "last_seen_at": _iso(row.last_seen_at),
+                }
+                for row in constraint_rows
+            ]
+            preferences = [
+                {
+                    "preference_key": row.preference_key,
+                    "preference_value": row.preference_value,
+                    "source_type": row.source_type,
+                    "last_seen_at": _iso(row.last_seen_at),
+                }
+                for row in preference_rows
+            ]
+            state_map = {row.state_key: row.state_value for row in state_rows}
+
+        self._snapshot_cache = {
+            "facts": facts,
+            "issues": issues,
+            "attempts": attempts,
+            "constraints": constraints,
+            "preferences": preferences,
+            "state_map": state_map,
+        }
+        return self._snapshot_cache
 
     def set_project(self, project_id):
         self.project_id = str(project_id)
@@ -89,102 +197,55 @@ class PostgresMemoryStore:
         state.updated_at = _utc_now()
 
     def get_system_facts(self):
-        with self._session() as session:
-            stmt = (
-                select(ProjectFact)
-                .where(ProjectFact.project_id == self.project_id)
-                .order_by(ProjectFact.updated_at.desc(), ProjectFact.fact_key.asc())
-            )
-            rows = list(session.scalars(stmt))
-        return [
-            {
-                "fact_key": row.fact_key,
-                "fact_value": row.fact_value,
-                "source_type": row.source_type,
-                "source_ref": row.source_ref,
-                "confidence": row.confidence,
-                "verified": bool(row.verified),
-                "observed_at": _iso(row.observed_at),
-            }
-            for row in rows
-        ]
+        return self._load_raw_data()["facts"]
 
     def load_snapshot(self):
-        profile_facts = self.get_system_facts()
-        with self._session() as session:
-            issues = list(
-                session.scalars(
-                    select(ProjectIssue)
-                    .where(ProjectIssue.project_id == self.project_id)
-                    .order_by(ProjectIssue.last_seen_at.desc())
-                    .limit(12)
-                )
-            )
-            attempts = list(
-                session.scalars(
-                    select(ProjectAttempt)
-                    .where(ProjectAttempt.project_id == self.project_id)
-                    .order_by(ProjectAttempt.created_at.desc())
-                    .limit(12)
-                )
-            )
-            constraints = list(
-                session.scalars(
-                    select(ProjectConstraint)
-                    .where(ProjectConstraint.project_id == self.project_id)
-                    .order_by(ProjectConstraint.last_seen_at.desc())
-                )
-            )
-            preferences = list(
-                session.scalars(
-                    select(ProjectPreference)
-                    .where(ProjectPreference.project_id == self.project_id)
-                    .order_by(ProjectPreference.last_seen_at.desc())
-                )
-            )
+        raw = self._load_raw_data()
+        issues = raw["issues"][:12]
+        attempts = raw["attempts"][:12]
         return {
-            "profile": {fact["fact_key"]: fact["fact_value"] for fact in profile_facts},
+            "profile": {fact["fact_key"]: fact["fact_value"] for fact in raw["facts"]},
             "issues": [
                 {
-                    "title": row.title,
-                    "category": row.category,
-                    "summary": row.summary,
-                    "status": row.status,
-                    "source_type": row.source_type,
-                    "last_seen_at": _iso(row.last_seen_at),
+                    "title": row["title"],
+                    "category": row["category"],
+                    "summary": row["summary"],
+                    "status": row["status"],
+                    "source_type": row["source_type"],
+                    "last_seen_at": row["last_seen_at"],
                 }
                 for row in issues
             ],
             "attempts": [
                 {
-                    "action": row.action,
-                    "command": row.command,
-                    "outcome": row.outcome,
-                    "status": row.status,
-                    "source_type": row.source_type,
-                    "created_at": _iso(row.created_at),
+                    "action": row["action"],
+                    "command": row["command"],
+                    "outcome": row["outcome"],
+                    "status": row["status"],
+                    "source_type": row["source_type"],
+                    "created_at": row["created_at"],
                 }
                 for row in attempts
             ],
             "constraints": [
                 {
-                    "constraint_key": row.constraint_key,
-                    "constraint_value": row.constraint_value,
-                    "source_type": row.source_type,
-                    "last_seen_at": _iso(row.last_seen_at),
+                    "constraint_key": row["constraint_key"],
+                    "constraint_value": row["constraint_value"],
+                    "source_type": row["source_type"],
+                    "last_seen_at": row["last_seen_at"],
                 }
-                for row in constraints
+                for row in raw["constraints"]
             ],
             "preferences": [
                 {
-                    "preference_key": row.preference_key,
-                    "preference_value": row.preference_value,
-                    "source_type": row.source_type,
-                    "last_seen_at": _iso(row.last_seen_at),
+                    "preference_key": row["preference_key"],
+                    "preference_value": row["preference_value"],
+                    "source_type": row["source_type"],
+                    "last_seen_at": row["last_seen_at"],
                 }
-                for row in preferences
+                for row in raw["preferences"]
             ],
-            "session_summary": self._read_state("session_summary"),
+            "session_summary": raw["state_map"].get("session_summary", ""),
         }
 
     def format_snapshot(self, snapshot):
@@ -239,53 +300,17 @@ class PostgresMemoryStore:
 
     def get_relevant_memory(self, query, max_profile_facts=10, max_issues=3, max_attempts=5):
         query_tokens = _tokenize(query)
+        raw = self._load_raw_data()
         profile_facts = self._select_profile_facts(
-            self.get_system_facts(),
+            raw["facts"],
             query_tokens=query_tokens,
             max_items=max_profile_facts,
         )
-        with self._session() as session:
-            issues = list(
-                session.scalars(
-                    select(ProjectIssue)
-                    .where(ProjectIssue.project_id == self.project_id)
-                    .order_by(ProjectIssue.last_seen_at.desc())
-                )
-            )
-            attempts = list(
-                session.scalars(
-                    select(ProjectAttempt)
-                    .where(ProjectAttempt.project_id == self.project_id)
-                    .order_by(ProjectAttempt.created_at.desc())
-                )
-            )
-            constraints = list(
-                session.scalars(
-                    select(ProjectConstraint)
-                    .where(ProjectConstraint.project_id == self.project_id)
-                    .order_by(ProjectConstraint.last_seen_at.desc())
-                )
-            )
-            preferences = list(
-                session.scalars(
-                    select(ProjectPreference)
-                    .where(ProjectPreference.project_id == self.project_id)
-                    .order_by(ProjectPreference.last_seen_at.desc())
-                )
-            )
 
         active_issues = []
-        for row in issues:
-            issue = {
-                "id": row.id,
-                "title": row.title,
-                "category": row.category,
-                "summary": row.summary,
-                "status": row.status,
-                "source_type": row.source_type,
-                "last_seen_at": _iso(row.last_seen_at),
-            }
-            issue["relevance"] = _relevance_score(query_tokens, f"{row.title} {row.summary} {row.category}")
+        for row in raw["issues"]:
+            issue = dict(row)
+            issue["relevance"] = _relevance_score(query_tokens, f"{row['title']} {row['summary']} {row['category']}")
             active_issues.append(issue)
         active_issues.sort(
             key=lambda item: (1 if item["status"] == "open" else 0, item["relevance"], item["last_seen_at"]),
@@ -294,24 +319,15 @@ class PostgresMemoryStore:
         active_issues = active_issues[:max_issues]
 
         issue_ids = {issue["id"] for issue in active_issues if issue.get("id")}
+        title_by_issue_id = {row["id"]: row["title"] for row in raw["issues"]}
         relevant_attempts = []
-        title_by_issue_id = {row.id: row.title for row in issues}
-        for row in attempts:
-            issue_title = title_by_issue_id.get(row.issue_id, "")
-            attempt = {
-                "id": row.id,
-                "issue_id": row.issue_id,
-                "action": row.action,
-                "command": row.command,
-                "outcome": row.outcome,
-                "status": row.status,
-                "source_type": row.source_type,
-                "created_at": _iso(row.created_at),
-                "issue_title": issue_title,
-            }
+        for row in raw["attempts"]:
+            issue_title = title_by_issue_id.get(row["issue_id"], "")
+            attempt = dict(row)
+            attempt["issue_title"] = issue_title
             attempt["relevance"] = _relevance_score(
                 query_tokens,
-                f"{row.action} {row.command} {row.outcome} {issue_title}",
+                f"{row['action']} {row['command']} {row['outcome']} {issue_title}",
             )
             relevant_attempts.append(attempt)
         relevant_attempts.sort(
@@ -329,25 +345,9 @@ class PostgresMemoryStore:
             profile_facts=profile_facts,
             active_issues=active_issues,
             relevant_attempts=relevant_attempts,
-            constraints=[
-                {
-                    "constraint_key": row.constraint_key,
-                    "constraint_value": row.constraint_value,
-                    "source_type": row.source_type,
-                    "last_seen_at": _iso(row.last_seen_at),
-                }
-                for row in constraints[:5]
-            ],
-            preferences=[
-                {
-                    "preference_key": row.preference_key,
-                    "preference_value": row.preference_value,
-                    "source_type": row.source_type,
-                    "last_seen_at": _iso(row.last_seen_at),
-                }
-                for row in preferences[:5]
-            ],
-            session_summary=self._read_state("session_summary"),
+            constraints=raw["constraints"][:5],
+            preferences=raw["preferences"][:5],
+            session_summary=raw["state_map"].get("session_summary", ""),
         )
 
     def format_memory_snapshot(self, query, host_label=None):
@@ -452,8 +452,6 @@ class PostgresMemoryStore:
                     .order_by(ProjectAttempt.created_at.desc())
                 )
             )
-        issue_titles = {}
-        with self._session() as session:
             issues = list(
                 session.scalars(select(ProjectIssue).where(ProjectIssue.project_id == self.project_id))
             )

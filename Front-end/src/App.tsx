@@ -232,43 +232,6 @@ export default function App() {
     );
   }, [chatListsByProject, selectedProjectId]);
 
-  useEffect(() => {
-    if (!user || projects.length === 0) {
-      return;
-    }
-
-    const uncachedProjectIds = projects
-      .map((project) => project.id)
-      .filter((projectId) => !(projectId in chatListsByProject));
-
-    if (uncachedProjectIds.length === 0) {
-      return;
-    }
-
-    let cancelled = false;
-
-    void Promise.all(
-      uncachedProjectIds.map(async (projectId) => {
-        const nextChats = await api.listChats(projectId);
-        if (cancelled) {
-          return;
-        }
-        setChatListsByProject((current) => ({
-          ...current,
-          [projectId]: nextChats,
-        }));
-      }),
-    ).catch((err: Error) => {
-      if (!cancelled) {
-        setError(err.message);
-        setStatus("error");
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [chatListsByProject, projects, user]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -389,10 +352,11 @@ export default function App() {
     setStatus("loading");
     setError("");
     try {
-      const nextUser = await api.login(usernameInput);
-      setUser(nextUser);
-      const nextProjects = await reloadProjects(nextUser.id);
-      setSelectedProjectId(nextProjects[0]?.id || "");
+      const result = await api.bootstrap(usernameInput);
+      setUser(result.user);
+      setProjects(result.projects);
+      setChatListsByProject(result.chats_by_project);
+      setSelectedProjectId(result.projects[0]?.id || "");
       setSelectedChatId("");
       setMessages([]);
       setStatus("idle");

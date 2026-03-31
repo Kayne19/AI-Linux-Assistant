@@ -3,9 +3,13 @@ from datetime import datetime, timezone
 from persistence.database import get_session_factory
 
 try:
-    from sqlalchemy import select
+    from sqlalchemy import select, update
+    from sqlalchemy.orm import joinedload, selectinload
 except ImportError:  # pragma: no cover - optional until SQLAlchemy is installed
     select = None
+    update = None
+    joinedload = None
+    selectinload = None
 
 from persistence.postgres_models import ChatMessage, ChatSession, Project, User
 
@@ -138,17 +142,42 @@ class PostgresAppStore:
             session.commit()
 
     def get_session_context(self, chat_session_id):
-        chat_session = self.get_chat_session(chat_session_id)
-        if chat_session is None:
-            return None
-        project = self.get_project(chat_session.project_id)
-        if project is None:
-            return None
-        return {
-            "chat_session_id": chat_session.id,
-            "project_id": project.id,
-            "user_id": project.user_id,
-        }
+        with self._session() as session:
+            chat_session = session.scalar(
+                select(ChatSession)
+                .where(ChatSession.id == chat_session_id)
+                .options(joinedload(ChatSession.project))
+            )
+            if chat_session is None or chat_session.project is None:
+                return None
+            return {
+                "chat_session_id": chat_session.id,
+                "project_id": chat_session.project.id,
+                "user_id": chat_session.project.user_id,
+            }
+
+    def list_chat_sessions_checked(self, project_id, limit=50):
+        with self._session() as session:
+            if session.scalar(select(Project.id).where(Project.id == project_id)) is None:
+                return None
+            stmt = (
+                select(ChatSession)
+                .where(ChatSession.project_id == project_id)
+                .order_by(ChatSession.updated_at.desc())
+                .limit(max(1, int(limit)))
+            )
+            return list(session.scalars(stmt))
+
+    def list_messages_checked(self, chat_session_id):
+        with self._session() as session:
+            if session.scalar(select(ChatSession.id).where(ChatSession.id == chat_session_id)) is None:
+                return None
+            stmt = (
+                select(ChatMessage)
+                .where(ChatMessage.session_id == chat_session_id)
+                .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+            )
+            return list(session.scalars(stmt))
 
     def load_conversation_history(self, chat_session_id):
         with self._session() as session:
@@ -185,3 +214,76 @@ class PostgresAppStore:
             session.commit()
             session.refresh(message)
             return message
+
+    def append_message_fast(self, chat_session_id, role, content, council_entries=None):
+        """Like append_message but skips the session existence re-check (caller already validated)."""
+        with self._session() as session:
+            message = ChatMessage(
+                session_id=chat_session_id,
+                role=role,
+                content=content,
+                council_entries=council_entries or None,
+            )
+            session.add(message)
+            session.execute(
+                update(ChatSession)
+                .where(ChatSession.id == chat_session_id)
+                .values(updated_at=_utc_now())
+            )
+            session.commit()
+            session.refresh(message)
+            return message
+
+    def bootstrap_user(self, username):
+        username = (username or "").strip()
+        if not username:
+            raise ValueError("username is required")
+        with self._session() as session:
+            user = session.scalar(select(User).where(User.username == username))
+            if user is None:
+                user = User(username=username)
+                session.add(user)
+                session.flush()
+                session.refresh(user)
+
+            user_id = user.id
+            user_username = user.username
+
+            projects = list(session.scalars(
+                select(Project)
+                .where(Project.user_id == user_id)
+                .order_by(Project.updated_at.desc())
+                .options(selectinload(Project.chat_sessions))
+            ))
+
+            bootstrap_projects = []
+            chats_by_project = {}
+            for project in projects:
+                bootstrap_projects.append({
+                    "id": project.id,
+                    "user_id": project.user_id,
+                    "name": project.name,
+                    "description": project.description or "",
+                    "created_at": project.created_at,
+                    "updated_at": project.updated_at,
+                })
+                chats = sorted(project.chat_sessions, key=lambda c: c.updated_at, reverse=True)[:50]
+                chats_by_project[project.id] = [
+                    {
+                        "id": chat.id,
+                        "project_id": chat.project_id,
+                        "title": (chat.title or "").strip(),
+                        "created_at": chat.created_at,
+                        "updated_at": chat.updated_at,
+                    }
+                    for chat in chats
+                ]
+
+            session.commit()
+
+        return {
+            "user_id": user_id,
+            "user_username": user_username,
+            "projects": bootstrap_projects,
+            "chats_by_project": chats_by_project,
+        }

@@ -35,6 +35,12 @@ class InMemoryMemoryStore:
     def set_project(self, project_id):
         self.project_id = str(project_id)
 
+    def begin_turn(self):
+        pass
+
+    def end_turn(self):
+        pass
+
     @property
     def shared_state(self):
         return self._shared_state

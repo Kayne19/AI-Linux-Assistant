@@ -55,6 +55,8 @@ class TurnContext:
     tool_events: list = field(default_factory=list)
     council_entries: list = field(default_factory=list)
     error: str | None = None
+    persisted_user_message: object | None = None
+    persisted_assistant_message: object | None = None
 
 
 class ModelRouter:
@@ -145,16 +147,22 @@ class ModelRouter:
         state = RouterState.START
         self._set_state(state, turn)
 
-        while state not in {RouterState.DONE, RouterState.ERROR}:
-            try:
-                action = self.state_actions[state]
-                state = action(turn)
-                self._set_state(state, turn)
+        if self.memory_store is not None:
+            self.memory_store.begin_turn()
+        try:
+            while state not in {RouterState.DONE, RouterState.ERROR}:
+                try:
+                    action = self.state_actions[state]
+                    state = action(turn)
+                    self._set_state(state, turn)
 
-            except Exception as exc:
-                turn.error = str(exc)
-                state = RouterState.ERROR
-                self._set_state(state, turn)
+                except Exception as exc:
+                    turn.error = str(exc)
+                    state = RouterState.ERROR
+                    self._set_state(state, turn)
+        finally:
+            if self.memory_store is not None:
+                self.memory_store.end_turn()
 
         self.last_turn = turn
         self.current_turn = None
@@ -698,8 +706,8 @@ class ModelRouter:
         return RouterState.SUMMARIZE_RETRIEVED_DOCS
 
     def _update_history(self, turn):
-        self.update_history("user", turn.user_question)
-        self.update_history("model", turn.response, council_entries=turn.council_entries or None)
+        turn.persisted_user_message = self.update_history("user", turn.user_question)
+        turn.persisted_assistant_message = self.update_history("model", turn.response, council_entries=turn.council_entries or None)
         return RouterState.DECIDE_MEMORY
 
     def _decide_memory(self, turn):
@@ -771,7 +779,9 @@ class ModelRouter:
     def update_history(self, role, content, council_entries=None):
         self.conversation_history.append((role, content))
         if self.chat_store is not None and self.chat_session_id:
-            self.chat_store.append_message(self.chat_session_id, role, content, council_entries=council_entries)
+            append_fn = getattr(self.chat_store, "append_message_fast", self.chat_store.append_message)
+            return append_fn(self.chat_session_id, role, content, council_entries=council_entries)
+        return None
 
     def get_history(self):
         return self.conversation_history
