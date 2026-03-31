@@ -42,14 +42,26 @@ class RunRequeueError(RuntimeError):
 
 
 class PostgresRunStore:
-    def __init__(self, session_factory=None):
+    def __init__(self, session_factory=None, redis_client=None):
         if select is None or func is None or and_ is None or or_ is None:
             raise ImportError(
                 "SQLAlchemy is required for PostgresRunStore. "
                 "Install sqlalchemy and alembic in the AI-Linux-Assistant environment."
             )
         self.session_factory = session_factory or get_session_factory()
+        self._redis_client = redis_client
         self._ensure_run_schema()
+
+    def _publish(self, run_id, seq, event_type, code, payload_json):
+        """Publish a serialized event to the Redis fanout channel. Never raises."""
+        if self._redis_client is None:
+            return
+        try:
+            from streaming.event_serializer import serialize_run_event
+            from streaming.redis_events import publish_event
+            publish_event(self._redis_client, run_id, serialize_run_event(seq, event_type, code, payload_json))
+        except Exception:
+            pass
 
     def _get_bound_engine(self):
         bind = getattr(self.session_factory, "kw", {}).get("bind")
@@ -207,7 +219,8 @@ class PostgresRunStore:
             session.add(event)
             session.commit()
             session.refresh(event)
-            return event
+        self._publish(run_id, next_seq, event_type, code or "", payload)
+        return event
 
     def claim_next_run(self, worker_id, lease_seconds):
         now = _utc_now()
@@ -297,18 +310,20 @@ class PostgresRunStore:
             run.lease_expires_at = None
             next_seq = int(run.latest_event_seq or 0) + 1
             run.latest_event_seq = next_seq
+            error_payload = event_payload or {"message": run.error_message or "Run failed."}
             session.add(
                 ChatRunEvent(
                     run_id=run_id,
                     seq=next_seq,
                     type="error",
                     code="error",
-                    payload_json=event_payload or {"message": run.error_message or "Run failed."},
+                    payload_json=error_payload,
                 )
             )
             session.commit()
             session.refresh(run)
-            return run
+        self._publish(run_id, next_seq, "error", "error", error_payload)
+        return run
 
     def mark_cancelled(self, run_id, *, worker_id="", error_message="Run cancelled.", event_payload=None):
         with self._session() as session:
@@ -327,18 +342,20 @@ class PostgresRunStore:
             run.lease_expires_at = None
             next_seq = int(run.latest_event_seq or 0) + 1
             run.latest_event_seq = next_seq
+            cancelled_payload = event_payload or {"message": run.error_message or "Run cancelled."}
             session.add(
                 ChatRunEvent(
                     run_id=run_id,
                     seq=next_seq,
                     type="cancelled",
                     code="cancelled",
-                    payload_json=event_payload or {"message": run.error_message or "Run cancelled."},
+                    payload_json=cancelled_payload,
                 )
             )
             session.commit()
             session.refresh(run)
-            return run
+        self._publish(run_id, next_seq, "cancelled", "cancelled", cancelled_payload)
+        return run
 
     def requeue_run(self, run_id):
         with self._session() as session:
@@ -447,4 +464,5 @@ class PostgresRunStore:
             session.refresh(user_message)
             session.refresh(assistant_message)
             session.refresh(run)
-            return user_message, assistant_message
+        self._publish(run_id, next_seq, "done", "done", payload or None)
+        return user_message, assistant_message

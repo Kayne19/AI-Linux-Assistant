@@ -14,6 +14,7 @@ from persistence.postgres_memory_store import PostgresMemoryStore
 from persistence.postgres_run_store import PostgresRunStore
 from retrieval.factory import build_runtime_components
 from retrieval.vectorDB import VectorDB
+from streaming.redis_events import get_shared_client as _get_redis_client
 
 
 def _iso(value):
@@ -43,7 +44,7 @@ class ChatRunWorkerService:
     def __init__(self, worker_id=None, settings=None, run_store=None):
         self.settings = settings or SETTINGS
         self.worker_id = worker_id or os.getenv("CHAT_RUN_WORKER_ID", f"chat-worker-{uuid.uuid4().hex[:8]}")
-        self.run_store = run_store or PostgresRunStore()
+        self.run_store = run_store or PostgresRunStore(redis_client=_get_redis_client())
         self.app_store = PostgresAppStore()
         self._stop_event = threading.Event()
         self._shared_retrieval_components = build_runtime_components()

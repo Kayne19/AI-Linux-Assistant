@@ -210,6 +210,50 @@ Examples of frontend-facing statuses:
 
 The backend should not hardcode those labels.
 
+## Live Fanout via Redis
+
+When `REDIS_URL` is set, events are pushed to connected SSE clients immediately after each Postgres commit rather than on the next 500 ms poll cycle.
+
+### Architecture
+
+```
+Worker
+  └─ append_event() / mark_failed() / mark_cancelled() / complete_run_with_messages()
+       └─ INSERT INTO chat_run_events   ← Postgres, always
+       └─ PUBLISH run:{run_id}:events   ← Redis, if REDIS_URL is set
+              │
+       SSE client (api.py _stream_via_redis)
+              ├─ SUBSCRIBE run:{run_id}:events   (opened before Postgres backlog query)
+              ├─ replay backlog from Postgres via list_events_after()
+              └─ forward Redis messages with seq > last_replayed_seq
+```
+
+### Subscribe-before-replay ordering guarantee
+
+The SSE handler subscribes to the Redis channel **before** querying the Postgres backlog. Any events published during the backlog query are buffered by the Redis client and delivered after the backlog is exhausted. Duplicate coverage (seq already sent via backlog) is dropped by seq comparison.
+
+### Health-check fallback
+
+`ps.get_message(timeout=N)` is used instead of a blocking `listen()`. On each timeout the handler checks the run snapshot in Postgres. If the run has reached a terminal status without a matching terminal event in Redis (e.g. worker crashed after Postgres commit but before Redis publish), the handler synthesises the terminal event from the snapshot and closes the stream.
+
+### Degraded mode
+
+When `REDIS_URL` is absent, empty, or the Redis server is unreachable at startup, `get_shared_client()` returns `None` and the SSE path transparently falls back to the existing Postgres poll loop. No configuration change is required to operate without Redis.
+
+### Configuration
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `REDIS_URL` | _(none)_ | Redis connection URL (e.g. `redis://localhost:6379/0`). Absent = Postgres polling only. |
+
+### Shared serializer
+
+`app/streaming/event_serializer.py` contains `serialize_run_event(seq, event_type, code, payload_json)`. Both the Redis publish path (`postgres_run_store._publish`) and the Postgres replay path (`api._serialize_event_row`) call this function, so the wire format is guaranteed to be identical for live and replayed events.
+
+### Postgres remains authoritative
+
+Redis is fire-and-forget pub/sub. It stores nothing. Every durability guarantee, every replay guarantee, and every recovery guarantee continues to be provided by Postgres `chat_run_events`.
+
 ## Architectural Rules
 
 1. Streaming must not bypass the router FSM.
@@ -218,12 +262,15 @@ The backend should not hardcode those labels.
 4. Backend emits real state/event signals; frontend owns polished language.
 5. Tool and retrieval activity should remain observable.
 6. Durable replay ordering lives in `chat_run_events`, not in frontend cache state.
+7. Redis is live-notification only; Postgres is the sole source of truth and replay.
 
 ## Files To Read First
 
 1. [app/api.py](app/api.py)
 2. [app/persistence/postgres_run_store.py](app/persistence/postgres_run_store.py)
-3. [app/chat_run_worker.py](app/chat_run_worker.py)
-4. [app/orchestration/model_router.py](app/orchestration/model_router.py)
-5. [app/agents/response_agent.py](app/agents/response_agent.py)
-6. [Front-end/src/api.ts](../Front-end/src/api.ts)
+3. [app/streaming/redis_events.py](app/streaming/redis_events.py)
+4. [app/streaming/event_serializer.py](app/streaming/event_serializer.py)
+5. [app/chat_run_worker.py](app/chat_run_worker.py)
+6. [app/orchestration/model_router.py](app/orchestration/model_router.py)
+7. [app/agents/response_agent.py](app/agents/response_agent.py)
+8. [Front-end/src/api.ts](../Front-end/src/api.ts)

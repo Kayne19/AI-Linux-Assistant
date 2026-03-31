@@ -13,6 +13,8 @@ from persistence.postgres_run_store import (
     RunRequeueError,
     TERMINAL_RUN_STATUSES,
 )
+from streaming.event_serializer import serialize_run_event
+from streaming.redis_events import get_shared_client as _get_redis_client
 
 try:
     from fastapi import FastAPI, HTTPException
@@ -243,18 +245,7 @@ def _client_request_id(raw_value: str | None):
 
 
 def _serialize_event_row(event_row):
-    payload = event_row.payload_json or {}
-    if event_row.type == "state":
-        return {"type": "state", "seq": event_row.seq, "code": event_row.code}
-    if event_row.type == "event":
-        return {"type": "event", "seq": event_row.seq, "code": event_row.code, "payload": payload}
-    if event_row.type == "done":
-        return {"type": "done", "seq": event_row.seq, **payload}
-    if event_row.type == "error":
-        return {"type": "error", "seq": event_row.seq, "message": payload.get("message", "")}
-    if event_row.type == "cancelled":
-        return {"type": "cancelled", "seq": event_row.seq, "message": payload.get("message", "Run cancelled.")}
-    return {"type": event_row.type, "seq": event_row.seq, "code": event_row.code, "payload": payload}
+    return serialize_run_event(event_row.seq, event_row.type, event_row.code, event_row.payload_json)
 
 
 def _terminal_event_from_snapshot(run, app_store):
@@ -297,7 +288,7 @@ def create_app():
     _require_fastapi()
     app = FastAPI(title="AI Linux Assistant API")
     app_store = PostgresAppStore()
-    run_store = PostgresRunStore()
+    run_store = PostgresRunStore(redis_client=_get_redis_client())
 
     if CORSMiddleware is not None:
         app.add_middleware(
@@ -361,10 +352,62 @@ def create_app():
         active_by_chat = run_store.get_active_runs_for_chat_ids([chat.id for chat in chat_rows])
         return [_serialize_chat_session(chat, active_run=active_by_chat.get(chat.id)) for chat in chat_rows]
 
+    def _stream_via_redis(run_id, after_seq, redis_client):
+        """Subscribe to the Redis fanout channel, replay Postgres backlog first, then
+        forward live Redis messages. Subscribe happens BEFORE the backlog query so no
+        event can fall into the gap between the two.  Messages already covered by the
+        backlog are skipped by seq comparison."""
+        from streaming.redis_events import subscribe_run_events
+        health_poll = max(0.5, float(SETTINGS.chat_run_stream_poll_ms) / 1000.0)
+        ps = subscribe_run_events(redis_client, run_id)
+        try:
+            current_seq = max(0, int(after_seq))
+            # Replay backlog
+            for event_row in run_store.list_events_after(run_id, after_seq=current_seq, limit=1000):
+                current_seq = max(current_seq, int(event_row.seq))
+                payload = _serialize_event_row(event_row)
+                yield _sse_payload(payload)
+                if payload["type"] in {"done", "error", "cancelled"}:
+                    return
+            # Forward Redis messages
+            while True:
+                msg = ps.get_message(timeout=health_poll)
+                if msg is None:
+                    run = run_store.get_run(run_id)
+                    if run is None:
+                        yield _sse_payload({"type": "error", "message": "Run not found."})
+                        return
+                    if run.status in TERMINAL_RUN_STATUSES:
+                        fallback_payload = _terminal_event_from_snapshot(run, app_store)
+                        if fallback_payload is not None:
+                            yield _sse_payload(fallback_payload)
+                        return
+                    continue
+                if msg["type"] != "message":
+                    continue
+                data = json.loads(msg["data"])
+                if int(data.get("seq", 0)) <= current_seq:
+                    continue  # already sent via backlog
+                current_seq = int(data.get("seq", current_seq))
+                yield _sse_payload(data)
+                if data.get("type") in {"done", "error", "cancelled"}:
+                    return
+        finally:
+            ps.unsubscribe()
+            ps.close()
+
     def _stream_run(run_id, after_seq=0):
         poll_seconds = max(0.1, float(SETTINGS.chat_run_stream_poll_ms) / 1000.0)
+        redis_client = _get_redis_client()
 
         def stream():
+            if redis_client is not None:
+                try:
+                    yield from _stream_via_redis(run_id, after_seq, redis_client)
+                    return
+                except Exception:
+                    pass  # fall through to Postgres polling
+
             current_seq = max(0, int(after_seq))
             terminal_sent = False
             while True:

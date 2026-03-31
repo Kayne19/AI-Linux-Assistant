@@ -102,3 +102,4 @@ If code changes affect one of those surfaces, updating the relevant markdown is 
   - `Fixed: ...`
   - `Implemented: ...`
 - Use `none` for sections that do not apply.
+- Do NOT add a `Co-Authored-By` trailer or any attribution line to commit messages.

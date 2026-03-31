@@ -6,11 +6,21 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 ROOT_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = ROOT_DIR / "Back-end"
 FRONTEND_DIR = ROOT_DIR / "Front-end"
+
+# Load Back-end/.env before reading env vars so REDIS_URL and others are available.
+_dotenv_path = BACKEND_DIR / ".env"
+if _dotenv_path.exists():
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        _load_dotenv(_dotenv_path)
+    except ImportError:
+        pass
 
 BACKEND_HOST = os.getenv("AILA_BACKEND_HOST", "0.0.0.0")
 BACKEND_PORT = os.getenv("AILA_BACKEND_PORT", "8000")
@@ -48,6 +58,39 @@ def _spawn_process(label: str, command: list[str], cwd: Path, env: dict[str, str
     )
     threading.Thread(target=_stream_output, args=(label, process), daemon=True).start()
     return process
+
+
+def _redis_already_running(redis_url: str) -> bool:
+    """Return True if a Redis server is already reachable at redis_url."""
+    if shutil.which("redis-cli") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["redis-cli", "-u", redis_url, "ping"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return result.returncode == 0 and "PONG" in result.stdout
+    except Exception:
+        return False
+
+
+def _maybe_start_redis(backend_env: dict[str, str]) -> "subprocess.Popen[str] | None":
+    """Start redis-server if REDIS_URL is configured and Redis is not already reachable."""
+    redis_url = backend_env.get("REDIS_URL", "")
+    if not redis_url:
+        return None
+    if shutil.which("redis-server") is None:
+        print(f"[redis] REDIS_URL is set but redis-server not found on PATH — live fanout disabled")
+        return None
+    if _redis_already_running(redis_url):
+        print(f"[redis] Redis already running at {redis_url}")
+        return None
+    parsed = urlparse(redis_url)
+    port = str(parsed.port or 6379)
+    print(f"[redis] Starting redis-server on port {port}")
+    return _spawn_process("redis", ["redis-server", "--port", port], ROOT_DIR, backend_env)
 
 
 def _terminate_process(process: subprocess.Popen[str], label: str) -> None:
@@ -109,9 +152,15 @@ def main() -> None:
     print(f"  frontend http://{FRONTEND_HOST}:{FRONTEND_PORT}")
     print(f"  workers  {CHAT_WORKER_ID} x {CHAT_WORKER_PROCESS_COUNT}")
 
+    processes: list[tuple[str, subprocess.Popen[str]]] = []
+
+    redis_proc = _maybe_start_redis(backend_env)
+    if redis_proc is not None:
+        processes.append(("redis", redis_proc))
+
     backend = _spawn_process("backend", backend_command, BACKEND_DIR, backend_env)
     frontend = _spawn_process("frontend", frontend_command, FRONTEND_DIR, frontend_env)
-    processes = [
+    processes += [
         ("backend", backend),
         ("frontend", frontend),
     ]

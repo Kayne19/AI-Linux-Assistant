@@ -66,6 +66,7 @@ class AppSettings:
     chat_run_stream_poll_ms: int = 500
     chat_run_worker_poll_ms: int = 1000
     chat_run_worker_concurrency: int = 3
+    redis_url: str | None = None
 
 
 def _get_env(name, default):
@@ -195,6 +196,7 @@ def load_settings():
         chat_run_stream_poll_ms=_get_int_env("CHAT_RUN_STREAM_POLL_MS", 500),
         chat_run_worker_poll_ms=_get_int_env("CHAT_RUN_WORKER_POLL_MS", 1000),
         chat_run_worker_concurrency=_get_int_env("CHAT_RUN_WORKER_CONCURRENCY", 3),
+        redis_url=_get_env("REDIS_URL", None) or None,
     )
 
 
