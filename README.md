@@ -6,7 +6,7 @@ AI Linux Assistant is a custom, project-scoped Linux support system with:
 - persistent users, projects, chats, and memory
 - retrieval-augmented answering over an ingested document corpus
 - a React frontend
-- streaming chat responses and live backend status updates
+- streaming chat responses, Magi/council deliberation, and live backend status updates
 
 This repo is organized as a real application, not a prompt wrapper.
 
@@ -17,7 +17,7 @@ This repo is organized as a real application, not a prompt wrapper.
 - `Front-end/`
   - React + TypeScript web client
 - `run_dev.py`
-  - starts backend and frontend together for local development
+  - starts backend, chat worker, and frontend together for local development
 
 ## Start The App
 
@@ -33,6 +33,7 @@ python run_dev.py
 That starts:
 
 - FastAPI backend on port `8000`
+- chat run worker with configurable background concurrency
 - Vite frontend on port `5173`
 
 ## Backend Orientation
@@ -71,6 +72,9 @@ Project scope matters:
 - Providers own transport only.
 - Persistence layers stay persistence-only.
 - Ingestion is an operator workflow, separate from normal chat runtime.
+- Login/bootstrap is username-only today and the web UI uses `POST /auth/bootstrap` on startup.
+- Chat requests can run in normal mode or Magi council mode (`off`, `lite`, `full`).
+- Web chat execution now uses durable Postgres-backed chat runs processed by a separate worker.
 
 ## Documentation Rule
 

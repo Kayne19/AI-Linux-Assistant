@@ -41,6 +41,25 @@ It should not delegate workflow ownership to helpers or provider adapters.
 
 If a behavior materially changes the lifecycle of a turn, it belongs in the router or in a router-owned phase.
 
+### 1a. Durable Run State Owns Concurrency Policy
+
+Durable chat-run state does not replace the router.
+
+It owns:
+
+- run records
+- idempotent create-run semantics
+- one-active-run-per-chat enforcement
+- configurable per-user active-run caps
+- claimability
+- durable event persistence
+
+Workers do not become a second orchestrator.
+
+They claim eligible runs, execute the router FSM, heartbeat leases, and publish durable events.
+
+The router still owns the workflow of the turn that is running inside that worker.
+
 ### 2. Important Work Must Be Visible
 
 Important backend behavior should appear as explicit phases, traces, events, or persisted state transitions.
@@ -225,6 +244,24 @@ Owns:
 - routing domain logic
 - session bootstrap
 - history preparation
+- run cancellation checkpoints consumed by router-owned phases
+
+### Durable Run Execution
+
+[chat_run_worker.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/chat_run_worker.py)
+
+Owns:
+
+- execution placement outside the web process
+- claiming eligible runs
+- lease heartbeats
+- stale-run recovery/failure handling
+- worker-local runtime reuse boundaries
+
+Important:
+
+- per-worker heavyweight retrieval/runtime components may be reused
+- per-run router instances, listeners, and mutable turn state must stay isolated
 
 ### Agents
 
@@ -241,7 +278,15 @@ Owns:
 
 [agents/magi](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/magi)
 
-The Magi system is an alternative response mode toggled per-turn via `magi=True` on `ask_question()` / the API. Instead of a single responder, it runs a bounded deliberation protocol with four roles:
+The Magi system is an alternative response mode toggled per-turn via the `magi` flag on `ask_question()` / the API.
+
+Current modes:
+
+- `off`: normal single-responder flow
+- `lite`: smaller-model council with fewer discussion rounds
+- `full`: full council with the main Magi role settings
+
+Instead of a single responder, Magi runs a bounded deliberation protocol with four roles:
 
 | Role | Purpose |
 |---|---|
@@ -250,21 +295,22 @@ The Magi system is an alternative response mode toggled per-turn via `magi=True`
 | **Historian** | Ground truth — retrieves project memory, prior actions, documentation |
 | **Arbiter** | Synthesizer — reads the full deliberation transcript, produces the final user-facing response |
 
-All roles use GPT-5.4 and have full tool access (RAG search, memory tools, history search).
+Role models are configured through `AppSettings`; `full` and `lite` use different role defaults. All roles have the same tool surface as the standard responder (RAG search, memory tools when available, history search, and provider-native web search when the worker supports it).
 
 **Protocol:**
 
 1. **Opening Arguments** — Eager → Skeptic → Historian each produce a structured position (JSON with `position`, `confidence`, `key_claims`)
-2. **Discussion** (bounded, up to `magi_max_discussion_rounds`) — Each role responds only if adding new information. Early-stops when no role contributes new info.
-3. **Arbiter Synthesis** — Reads the full transcript + original context, produces the final response using `CHATBOT_SYSTEM_PROMPT + MAGI_ARBITER_PROMPT`
+2. **Discussion** (bounded, up to `magi_max_discussion_rounds` or `magi_lite_max_discussion_rounds`) — Each role responds only if adding new information. Early-stops when no role contributes new info.
+3. **Closing Arguments** — Eager → Skeptic → Historian produce a final position after discussion.
+4. **Arbiter Synthesis** — Reads the full transcript + original context and produces the final user-facing response.
 
-**FSM:** `MagiState` enum mirrors `ResponseState`. The router appends `MAGI_` prefixed trace markers via `_handle_magi_state`. States: `OPENING_ARGUMENTS`, `ROLE_EAGER`, `ROLE_SKEPTIC`, `ROLE_HISTORIAN`, `DISCUSSION`, `DISCUSSION_EAGER`, `DISCUSSION_SKEPTIC`, `DISCUSSION_HISTORIAN`, `ARBITER`, `COMPLETE`, `ERROR`.
+**FSM:** `MagiState` is explicit and traceable. The router appends `MAGI_`-prefixed trace markers via `_handle_magi_state`. Current states include `OPENING_ARGUMENTS`, `ROLE_EAGER`, `ROLE_SKEPTIC`, `ROLE_HISTORIAN`, `DISCUSSION`, `DISCUSSION_EAGER`, `DISCUSSION_SKEPTIC`, `DISCUSSION_HISTORIAN`, `CLOSING_ARGUMENTS`, `CLOSING_EAGER`, `CLOSING_SKEPTIC`, `CLOSING_HISTORIAN`, `ARBITER`, `COMPLETE`, `ERROR`.
 
-**Streaming:** Each role's position text is emitted as an SSE event (`magi_role_complete`) with a `text` field so the frontend can display the deliberation in real time. The Arbiter's final response streams token-by-token via `generate_text_stream`.
+**Streaming:** Each role emits lifecycle events (`magi_phase`, `magi_role_start`, `magi_role_complete`) and live text deltas (`magi_role_text_delta`) so the frontend can render the council in real time. The Arbiter's final response streams through the normal text-delta channel.
 
 **Router integration:** The `MagiSystem` is lazily constructed on first Magi turn and cached. It plugs into `_generate_response` as an alternative to `self.responder` — no new router states needed.
 
-**Settings:** `magi_eager`, `magi_skeptic`, `magi_historian`, `magi_arbiter` (each a `RoleModelSettings`), `magi_max_discussion_rounds` (default 2). Override via env vars: `MAGI_EAGER_PROVIDER`, `MAGI_EAGER_MODEL`, etc.
+**Settings:** `magi_eager`, `magi_skeptic`, `magi_historian`, `magi_arbiter`, `magi_max_discussion_rounds`, plus the matching `magi_lite_*` role settings and `magi_lite_max_discussion_rounds`. Override via env vars such as `MAGI_EAGER_PROVIDER`, `MAGI_EAGER_MODEL`, `MAGI_LITE_EAGER_PROVIDER`, and `MAGI_LITE_MAX_DISCUSSION_ROUNDS`.
 
 ### Providers
 

@@ -1,122 +1,101 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Use this file for shared workflow and doc routing when working in this repository. Keep subsystem detail in the dedicated markdown files.
 
-## Environment
+## Core Workflow
 
-All Python commands must run inside the `AI-Linux-Assistant` conda environment:
-```bash
-conda activate AI-Linux-Assistant
-```
+- Run backend Python commands inside the `AI-Linux-Assistant` conda environment.
+- Before planning or implementing, read the markdown files that cover the surface you are about to change.
+- When editing code, re-check the relevant markdown before finishing.
+- If code changes affect a documented surface, update the relevant markdown in the same pass.
+- If repository workflow or agent instructions change, update both `AGENTS.md` and `CLAUDE.md` in the same pass.
+
+## Task Routing
+
+- General repo orientation:
+  - [README.md](/home/kayne19/projects/AI-Linux-Assistant/README.md)
+- Backend orchestration, FSM ownership, providers, Magi boundaries:
+  - [Back-end/ARCHITECTURE.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/ARCHITECTURE.md)
+- Memory extraction, resolution, storage, or prompt usage:
+  - [Back-end/MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/MEMORY.md)
+- Retrieval, LanceDB, embeddings, reranking, retrieval providers:
+  - [Back-end/RETRIEVAL.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/RETRIEVAL.md)
+- Ingestion pipeline, registry updates, indexing flow:
+  - [Back-end/INGESTION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/INGESTION.md)
+- FastAPI routes, request/response models, bootstrap/message API behavior:
+  - [Back-end/API.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/API.md)
+- SSE events, streaming lifecycle, live status behavior:
+  - [Back-end/STREAMING.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/STREAMING.md)
+- Frontend React state, optimistic streaming UI, council rendering:
+  - [Front-end/FRONTEND.md](/home/kayne19/projects/AI-Linux-Assistant/Front-end/FRONTEND.md)
+- Router evals and regression runners:
+  - [Back-end/evals/README.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/evals/README.md)
 
 ## Common Commands
 
 ```bash
-# Run full dev stack (FastAPI backend + Vite frontend)
+conda activate AI-Linux-Assistant
+
+# Full dev stack
 python run_dev.py
 
-# Run CLI assistant loop
+# Backend entry points
 cd Back-end && python app/main.py
-
-# Run curses TUI (router state + tool visibility)
 cd Back-end && python app/AI_Generated_TUI.py
+cd Back-end && python -m uvicorn api:create_app --factory --app-dir app --host 0.0.0.0 --port 8000 --reload
+cd Back-end && python app/chat_run_worker.py
 
-# Run all tests
+# Tests
 cd Back-end && python -m pytest tests/
-
-# Run a single test file
 cd Back-end && python -m pytest tests/test_router_runtime.py
 
-# Start backend API only
-cd Back-end && python -m uvicorn api:create_app --factory --app-dir app --host 0.0.0.0 --port 8000 --reload
-
-# Database schema init
-cd Back-end && python scripts/db/init_postgres_schema.py
-
-# Router evaluation
+# Evals
 cd Back-end && python scripts/eval/evaluate_router.py
 cd Back-end && python scripts/eval/evaluate_router_deep.py
 
-# Document ingestion
+# Ingestion / DB
 cd Back-end && python scripts/ingest/ingest_pipeline.py
+cd Back-end && python scripts/db/init_postgres_schema.py
 ```
 
-`run_dev.py` supports `AILA_BACKEND_PORT` (default 8000) and `AILA_FRONTEND_PORT` (default 5173) env overrides.
+## Testing Expectations
 
-## Architecture
+- Tests live under `Back-end/tests/` and should be named `test_*.py`.
+- Coverage priorities are router flow, prompt regressions, provider tool-loop behavior, retrieval behavior, and the memory pipeline (`extract -> resolve -> commit`).
+- Durable chat-run behavior should cover idempotent create-run, per-chat/per-user concurrency policy, event replay ordering, and terminalization (`completed` / `failed` / `cancelled`).
+- When changing FSMs, update tests to assert the expected state trace.
+- When changing memory behavior, cover both committed and unresolved/conflict outcomes.
+- Keep tests importable and plain-assert friendly in case `pytest` is unavailable locally.
 
-The system is built around **explicit state machines and observable phases**. The core principle: make it easy to answer "what phase is running, what component owns it, where did state change."
+## Configuration And Security
 
-### Router FSM (`Back-end/app/orchestration/model_router.py`)
+- Store secrets in `Back-end/.env`; do not commit them.
+- Keep default role/provider/model configuration centralized in [Back-end/app/config/settings.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/config/settings.py).
+- Retrieval runtime/index configuration lives in [Back-end/app/retrieval/config.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/config.py).
+- Retrieval device placement may be overridden with `VECTORDB_EMBED_DEVICE` and `VECTORDB_RERANK_DEVICE`.
 
-The router is the top-level orchestration layer and owns the entire turn lifecycle. It runs through these states in order:
+## Documentation Maintenance
 
-`START → LOAD_MEMORY → SUMMARIZE_CONVERSATION_HISTORY → CLASSIFY → DECIDE_RAG → REWRITE_QUERY → RETRIEVE_CONTEXT → GENERATE_RESPONSE → SUMMARIZE_RETRIEVED_DOCS → UPDATE_HISTORY → DECIDE_MEMORY → EXTRACT_MEMORY → RESOLVE_MEMORY → COMMIT_MEMORY → DONE`
+Important maintained docs:
 
-State transitions are **conditional** — the trace reflects only actual work performed. Key skip paths:
-- No memory store → skip `LOAD_MEMORY`
-- `no_rag` label → skip `REWRITE_QUERY` and `RETRIEVE_CONTEXT`
-- Empty retrieved docs → skip `SUMMARIZE_RETRIEVED_DOCS`
-- No memory store or extractor → `DECIDE_MEMORY` skips to `DONE`
-- Memory extraction **never** skips based on labels when a store is present
+- [README.md](/home/kayne19/projects/AI-Linux-Assistant/README.md)
+- [Back-end/ARCHITECTURE.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/ARCHITECTURE.md)
+- [Back-end/MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/MEMORY.md)
+- [Back-end/RETRIEVAL.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/RETRIEVAL.md)
+- [Back-end/INGESTION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/INGESTION.md)
+- [Back-end/API.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/API.md)
+- [Back-end/STREAMING.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/STREAMING.md)
+- [Front-end/FRONTEND.md](/home/kayne19/projects/AI-Linux-Assistant/Front-end/FRONTEND.md)
+- [Back-end/evals/README.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/evals/README.md)
 
-The router calls agents and providers as injected dependencies — it does not delegate workflow control to them.
+If code changes affect one of those surfaces, updating the relevant markdown is part of the implementation.
 
-### Magi System (`Back-end/app/agents/magi/`)
+## Commits
 
-Alternative response mode toggled per-turn (`magi=True`). Runs a bounded multi-agent deliberation: Eager (hypothesis) → Skeptic (critique) → Historian (ground truth) → optional discussion rounds → Arbiter (synthesis). All roles use GPT-5.4 with full tool access. Has its own `MagiState` FSM with `MAGI_` prefixed trace markers. Deliberation text streams to the frontend via SSE events.
-
-### Layer Boundaries (enforce strictly)
-
-| Layer | Location | Owns | Must NOT |
-|---|---|---|---|
-| Router | `orchestration/model_router.py` | State transitions, phase ordering, memory pipeline | Contain provider-specific logic |
-| Agents | `agents/` | Task-shaped reasoning (classify, respond, extract, resolve) | Hardcode a provider; accept injected workers |
-| Providers | `providers/` | Transport/API calls, request formatting, tool-call mechanics | Mutate router state or write to persistence |
-| Persistence | `persistence/` | DB queries, storage, merge logic | Contain extraction/policy logic |
-| Retrieval | `retrieval/` | Vector search, RAG orchestration | Drive router state directly |
-
-### Product Data Model
-
-- `user` → `project` → `chat_session` → `chat_message`
-- Memory is project-scoped: facts, issues, attempts, constraints
-- Projects own settings and RAG context
-
-### Entry Points
-
-- `app/main.py` — CLI loop (bootstraps user/project/chat via `orchestration/session_bootstrap.py`, then loops on `router.ask_question()`)
-- `app/api.py` — FastAPI factory (`create_app()`); both blocking (`POST /chats/{id}/messages`) and streaming SSE (`POST /chats/{id}/messages/stream`) endpoints
-- `app/AI_Generated_TUI.py` — curses TUI
-
-### Configuration
-
-- `Back-end/app/config/settings.py` — `AppSettings` dataclass with per-role model/provider defaults (classifier, responder, extractor, etc.). Override via env vars: `CLASSIFIER_PROVIDER`, `CLASSIFIER_MODEL`, etc.
-- `Back-end/.env` — secrets (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, etc.)
-- `Back-end/app/retrieval/vectorDB.py` — LanceDB path and embed/rerank device; override via `VECTORDB_EMBED_DEVICE`, `VECTORDB_RERANK_DEVICE`
-
-### Frontend
-
-React 18 + TypeScript + Vite. Thin client — mirrors the backend product model. Key files: `src/App.tsx`, `src/api.ts`, `src/streamStatusText.ts`. Run with `npm run dev` from `Front-end/`.
-
-### Database
-
-PostgreSQL (Neon cloud) with SQLAlchemy ORM and Alembic migrations (`Back-end/alembic.ini`). Local vector store: LanceDB (`Back-end/lancedb_data/`).
-
-## Testing
-
-- Tests in `Back-end/tests/`, named `test_*.py`
-- Coverage priorities: router state traces, prompt regressions, provider tool-call formatting, memory pipeline (`extract → resolve → commit`)
-- When changing an FSM: assert the expected state trace — trace regressions matter
-- When changing memory behavior: test both committed and unresolved/conflict outcomes
-- `in_memory_memory_store.py` is the test double for the Postgres memory store
-
-## Documentation
-
-When a change alters any of these surfaces, update the corresponding doc in the same pass:
-`README.md`, `Back-end/ARCHITECTURE.md`, `Back-end/MEMORY.md`, `Back-end/RETRIEVAL.md`, `Back-end/INGESTION.md`, `Back-end/API.md`, `Back-end/STREAMING.md`, `Front-end/FRONTEND.md`
-
-## Coding Conventions
-
-- 4-space indentation
-- `snake_case` for functions/variables/files, `PascalCase` for classes, `UPPER_SNAKE_CASE` for constants
-- Imports: standard library → third-party → local
+- For substantial completed changes or multi-step implemented plans, make a git commit unless the user explicitly says not to.
+- For those larger implementation commits, use this format:
+  - `Added: ...`
+  - `Removed: ...`
+  - `Fixed: ...`
+  - `Implemented: ...`
+- Use `none` for sections that do not apply.

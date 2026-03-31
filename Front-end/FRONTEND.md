@@ -11,6 +11,7 @@ The frontend is a React + TypeScript client for:
 - chat selection/creation/edit/delete
 - message history display
 - streaming chat UI
+- Magi council mode toggling and deliberation display
 - live backend status rendering
 
 It is intentionally thin relative to the backend.
@@ -26,11 +27,14 @@ This is the main application surface.
 It currently owns:
 
 - login state
+- bootstrap loading from the backend
 - project list state
 - selected project/chat state
 - chat list caching by project
-- message list rendering
+- per-chat message caching
+- per-chat run/reconnect state
 - optimistic streaming message behavior
+- council panel state and live council-entry rendering
 - sidebar state and edit dialogs
 
 This file is the main stateful UI container.
@@ -40,8 +44,11 @@ This file is the main stateful UI container.
 Owns API access:
 
 - blocking JSON requests
-- streaming chat request handling
+- durable run creation
+- run snapshot/cancel requests
+- run-event streaming and replay attach
 - SSE parsing
+- startup bootstrap calls
 
 The frontend does not call the router directly. It only talks to FastAPI.
 
@@ -67,6 +74,7 @@ The frontend mirrors the backend product model:
 - project
 - chat session
 - messages
+- chat run
 
 Important:
 
@@ -80,13 +88,21 @@ The frontend should not attempt to manage project memory directly.
 
 When a message is sent:
 
-1. The frontend creates optimistic temporary user and assistant messages.
-2. It opens the streaming API request.
-3. Backend states/events update the visible live status.
-4. Text deltas append into the optimistic assistant message.
-5. When `done` arrives, the optimistic pair is replaced by the final persisted backend messages.
+1. The frontend creates or reuses a durable run with a `client_request_id`.
+2. It stores optimistic state keyed by `chatId`, not in one global in-flight slot.
+3. It attaches to that run’s SSE event stream.
+4. Backend states/events update the visible live status.
+5. If Magi is enabled, council role events populate the live council panel.
+6. Text deltas append into the optimistic assistant message for that chat.
+7. When `done` arrives, the optimistic pair is replaced by the final persisted backend messages.
 
 This avoids the earlier end-of-stream flash and keeps the backend as the source of truth.
+
+When the user switches away from a running chat:
+
+- the run continues server-side
+- the visible SSE attachment may be dropped
+- reopening the chat replays missed events from `after_seq`
 
 ## Ownership Rules
 
@@ -94,6 +110,8 @@ This avoids the earlier end-of-stream flash and keeps the backend as the source 
 
 - human-readable status labels
 - temporary optimistic rendering
+- per-chat attach/reconnect UX
+- council UI rendering for live/persisted deliberation
 - layout/state for sidebar/dialogs
 - local UX polish
 
@@ -110,7 +128,9 @@ This avoids the earlier end-of-stream flash and keeps the backend as the source 
 
 1. `src/App.tsx` is still large and could eventually be split.
 2. The frontend is intentionally not a general-purpose state machine; the backend remains the real control plane.
-3. The current UI is usable, but still product-iteration code rather than a finished design system.
+3. Council rendering lives in `App.tsx` today rather than in isolated components.
+4. Hidden chats rely on run snapshot state rather than live SSE until reopened.
+5. The current UI is usable, but still product-iteration code rather than a finished design system.
 
 ## Safe Change Guidelines
 

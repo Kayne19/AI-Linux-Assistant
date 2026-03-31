@@ -1,6 +1,7 @@
 import json
 
 from orchestration.history_preparer import PreparedHistory
+from orchestration.run_control import call_with_optional_cancel_check, invoke_cancel_check
 from prompting.magi_prompts import (
     MAGI_CLOSING_PROMPT_TEMPLATE,
     MAGI_DISCUSSION_PROMPT_TEMPLATE,
@@ -15,12 +16,13 @@ class MagiRole:
     role_name = "role"
     system_prompt = ""
 
-    def __init__(self, worker, tools=None, tool_handler=None, max_tool_rounds=4, event_listener=None):
+    def __init__(self, worker, tools=None, tool_handler=None, max_tool_rounds=4, event_listener=None, cancel_check=None):
         self.worker = worker
         self.tools = tools or []
         self.tool_handler = tool_handler
         self.max_tool_rounds = max_tool_rounds
         self.event_listener = event_listener
+        self.cancel_check = cancel_check
 
     def _emit_event(self, event_type, payload):
         if self.event_listener is not None:
@@ -88,7 +90,10 @@ USER QUESTION:
         user_message = self._build_opening_message(
             user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text,
         )
-        raw = self._get_generate_fn(event_listener)(
+        invoke_cancel_check(self.cancel_check, f"before_model_call:{self.role_name}:opening")
+        raw = call_with_optional_cancel_check(
+            self._get_generate_fn(event_listener),
+            cancel_check=self.cancel_check,
             system_prompt=self.system_prompt,
             user_message=user_message,
             history=summarized_conversation_history.recent_turns if summarized_conversation_history else [],
@@ -97,6 +102,7 @@ USER QUESTION:
             max_tool_rounds=self.max_tool_rounds,
             event_listener=listener,
         )
+        invoke_cancel_check(self.cancel_check, f"after_model_call:{self.role_name}:opening")
         return self._parse_response(raw)
 
     def discuss(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", transcript="", round_number=1, event_listener=None):
@@ -114,7 +120,10 @@ USER QUESTION:
             transcript=transcript,
             role_reminder=ROLE_REMINDERS.get(self.role_name, ""),
         )
-        raw = self._get_generate_fn(event_listener)(
+        invoke_cancel_check(self.cancel_check, f"before_model_call:{self.role_name}:discussion")
+        raw = call_with_optional_cancel_check(
+            self._get_generate_fn(event_listener),
+            cancel_check=self.cancel_check,
             system_prompt=self.system_prompt,
             user_message=discussion_prompt,
             history=summarized_conversation_history.recent_turns if summarized_conversation_history else [],
@@ -123,6 +132,7 @@ USER QUESTION:
             max_tool_rounds=self.max_tool_rounds,
             event_listener=listener,
         )
+        invoke_cancel_check(self.cancel_check, f"after_model_call:{self.role_name}:discussion")
         parsed = self._parse_response(raw)
         if "new_information" not in parsed:
             parsed["new_information"] = bool(parsed.get("position", "").strip())
@@ -136,7 +146,10 @@ USER QUESTION:
             user_query=user_query,
             transcript=transcript,
         )
-        raw = self._get_generate_fn(event_listener)(
+        invoke_cancel_check(self.cancel_check, f"before_model_call:{self.role_name}:closing")
+        raw = call_with_optional_cancel_check(
+            self._get_generate_fn(event_listener),
+            cancel_check=self.cancel_check,
             system_prompt=self.system_prompt,
             user_message=closing_prompt,
             history=[],
@@ -145,6 +158,7 @@ USER QUESTION:
             max_tool_rounds=0,
             event_listener=listener,
         )
+        invoke_cancel_check(self.cancel_check, f"after_model_call:{self.role_name}:closing")
         return self._parse_response(raw)
 
     def _forward_worker_event(self, event_type, payload):

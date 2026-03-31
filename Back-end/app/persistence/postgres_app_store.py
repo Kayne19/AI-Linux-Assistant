@@ -198,6 +198,10 @@ class PostgresAppStore:
             )
             return list(session.scalars(stmt))
 
+    def get_message(self, message_id):
+        with self._session() as session:
+            return session.scalar(select(ChatMessage).where(ChatMessage.id == message_id))
+
     def append_message(self, chat_session_id, role, content, council_entries=None):
         with self._session() as session:
             chat_session = session.scalar(select(ChatSession).where(ChatSession.id == chat_session_id))

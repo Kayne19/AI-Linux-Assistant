@@ -2,7 +2,7 @@ import { CSSProperties, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, us
 import { api } from "./api";
 import { renderMessageContent } from "./renderMessage";
 import { getStreamStatusAliases, getStreamStatusKey, getStreamStatusLabel } from "./streamStatusText";
-import type { ChatMessage, ChatSession, Project, StreamStatusEvent, User } from "./types";
+import type { ChatMessage, ChatRun, ChatSession, Project, StreamStatusEvent, User } from "./types";
 
 type AsyncState = "idle" | "loading" | "error";
 
@@ -14,6 +14,18 @@ type CouncilEntry = {
   text: string;
   complete: boolean;
   streamBuffer?: string;
+};
+
+type ChatRunUIState = {
+  runId: string;
+  clientRequestId: string;
+  pendingContent: string;
+  streamStatus: StreamStatusEvent | null;
+  streamingAssistantId: number | null;
+  optimisticUserId: number;
+  optimisticAssistantId: number;
+  lastSeenSeq: number;
+  councilEntries: CouncilEntry[];
 };
 
 
@@ -82,6 +94,18 @@ function formatMessageTimestamp(value: string) {
   }).format(date);
 }
 
+function optimisticIdsForRun(runId: string) {
+  let hash = 0;
+  for (let index = 0; index < runId.length; index += 1) {
+    hash = (hash * 31 + runId.charCodeAt(index)) >>> 0;
+  }
+  const base = -(hash || Date.now());
+  return {
+    userId: base,
+    assistantId: base - 1,
+  };
+}
+
 export default function App() {
   const [usernameInput, setUsernameInput] = useState("");
   const [projectNameInput, setProjectNameInput] = useState("");
@@ -98,7 +122,8 @@ export default function App() {
   const [chatListsByProject, setChatListsByProject] = useState<Record<string, ChatSession[]>>({});
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string>("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messagesByChat, setMessagesByChat] = useState<Record<string, ChatMessage[]>>({});
+  const [runUiByChat, setRunUiByChat] = useState<Record<string, ChatRunUIState>>({});
   const [showCreateProjectDialog, setShowCreateProjectDialog] = useState(false);
   const [editingProjectId, setEditingProjectId] = useState<string>("");
   const [editingChatId, setEditingChatId] = useState<string>("");
@@ -107,8 +132,6 @@ export default function App() {
   const [creatingChat, setCreatingChat] = useState(false);
   const [status, setStatus] = useState<AsyncState>("idle");
   const [error, setError] = useState("");
-  const [streamStatus, setStreamStatus] = useState<StreamStatusEvent | null>(null);
-  const [streamingAssistantId, setStreamingAssistantId] = useState<number | null>(null);
   const [statusAliasIndex, setStatusAliasIndex] = useState(0);
   const [councilMode, setCouncilMode] = useState<"off" | "full" | "lite">("off");
   const [councilActive, setCouncilActive] = useState(false);
@@ -123,6 +146,8 @@ export default function App() {
   const stickToBottomRef = useRef(true);
   const councilFeedRef = useRef<HTMLDivElement | null>(null);
   const councilEndRef = useRef<HTMLDivElement | null>(null);
+  const streamControllersRef = useRef<Record<string, AbortController>>({});
+  const previousSelectedChatIdRef = useRef("");
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) || null,
@@ -132,6 +157,11 @@ export default function App() {
     () => chats.find((chat) => chat.id === selectedChatId) || null,
     [chats, selectedChatId],
   );
+  const messages = selectedChatId ? (messagesByChat[selectedChatId] || []) : [];
+  const selectedRunUi = selectedChatId ? (runUiByChat[selectedChatId] || null) : null;
+  const streamStatus = selectedRunUi?.streamStatus ?? null;
+  const streamingAssistantId = selectedRunUi?.streamingAssistantId ?? null;
+  const selectedChatBusy = Boolean(selectedChat?.active_run_id || selectedRunUi);
 
   async function reloadProjects(userId: string) {
     const nextProjects = await api.listProjects(userId);
@@ -162,8 +192,79 @@ export default function App() {
 
   async function reloadMessages(chatId: string) {
     const nextMessages = await api.listMessages(chatId);
-    setMessages(nextMessages);
+    setMessagesByChat((current) => ({
+      ...current,
+      [chatId]: nextMessages,
+    }));
     return nextMessages;
+  }
+
+  function setMessagesForChat(chatId: string, updater: (current: ChatMessage[]) => ChatMessage[]) {
+    setMessagesByChat((current) => ({
+      ...current,
+      [chatId]: updater(current[chatId] || []),
+    }));
+  }
+
+  function setRunUiForChat(
+    chatId: string,
+    updater: (current: ChatRunUIState | undefined) => ChatRunUIState | undefined,
+  ) {
+    setRunUiByChat((current) => {
+      const nextValue = updater(current[chatId]);
+      if (!nextValue) {
+        const next = { ...current };
+        delete next[chatId];
+        return next;
+      }
+      return {
+        ...current,
+        [chatId]: nextValue,
+      };
+    });
+  }
+
+  function ensureOptimisticMessages(chatId: string, run: ChatRun) {
+    const optimisticIds = optimisticIdsForRun(run.id);
+    const optimisticUserMessage: ChatMessage = {
+      id: optimisticIds.userId,
+      session_id: chatId,
+      role: "user",
+      content: run.request_content,
+      created_at: run.created_at || new Date().toISOString(),
+    };
+    const optimisticAssistantMessage: ChatMessage = {
+      id: optimisticIds.assistantId,
+      session_id: chatId,
+      role: "assistant",
+      content: run.partial_assistant_text || "",
+      created_at: run.created_at || new Date().toISOString(),
+    };
+    setMessagesForChat(chatId, (current) => [
+      ...current.filter((message) => message.id >= 0),
+      optimisticUserMessage,
+      optimisticAssistantMessage,
+    ]);
+    setRunUiForChat(chatId, (current) => ({
+      runId: run.id,
+      clientRequestId: run.client_request_id,
+      pendingContent: run.request_content,
+      streamStatus: run.latest_state_code ? { source: "state", code: run.latest_state_code } : { source: "state", code: "START" },
+      streamingAssistantId: optimisticIds.assistantId,
+      optimisticUserId: optimisticIds.userId,
+      optimisticAssistantId: optimisticIds.assistantId,
+      lastSeenSeq: Math.max(current?.lastSeenSeq || 0, run.latest_event_seq || 0),
+      councilEntries: current?.councilEntries || [],
+    }));
+  }
+
+  function clearRunUi(chatId: string) {
+    const controller = streamControllersRef.current[chatId];
+    if (controller) {
+      controller.abort();
+      delete streamControllersRef.current[chatId];
+    }
+    setRunUiForChat(chatId, () => undefined);
   }
 
   function scrollMessagesToBottom(behavior: ScrollBehavior = "auto") {
@@ -191,14 +292,6 @@ export default function App() {
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
-  }
-
-  function enqueueStreamDelta(messageId: number, delta: string) {
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === messageId ? { ...message, content: message.content + delta } : message,
-      ),
-    );
   }
 
   useEffect(() => {
@@ -251,14 +344,15 @@ export default function App() {
     setCouncilActive(false);
     setCouncilEntries([]);
     if (!selectedChatId) {
-      setMessages([]);
       return;
     }
 
-    void reloadMessages(selectedChatId).catch((err: Error) => {
-      setError(err.message);
-      setStatus("error");
-    });
+    if (!messagesByChat[selectedChatId]) {
+      void reloadMessages(selectedChatId).catch((err: Error) => {
+        setError(err.message);
+        setStatus("error");
+      });
+    }
   }, [selectedChatId]);
 
   useEffect(() => {
@@ -266,9 +360,9 @@ export default function App() {
       return;
     }
     requestAnimationFrame(() => {
-      scrollMessagesToBottom(status === "loading" ? "auto" : messages.length > 0 ? "smooth" : "auto");
+      scrollMessagesToBottom(selectedChatBusy ? "auto" : messages.length > 0 ? "smooth" : "auto");
     });
-  }, [messages, status]);
+  }, [messages, selectedChatBusy]);
 
   useEffect(() => {
     stickToBottomRef.current = true;
@@ -278,13 +372,13 @@ export default function App() {
   }, [selectedChatId]);
 
   useEffect(() => {
-    if (status !== "loading") {
+    if (!selectedChatBusy) {
       return;
     }
     requestAnimationFrame(() => {
       scrollMessagesToBottom("auto");
     });
-  }, [status, streamStatus]);
+  }, [selectedChatBusy, streamStatus]);
 
   useEffect(() => {
     councilEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -295,7 +389,7 @@ export default function App() {
 
   useEffect(() => {
     setStatusAliasIndex(0);
-    if (status !== "loading" || liveStatusAliases.length <= 1) {
+    if (!selectedChatBusy || liveStatusAliases.length <= 1) {
       return;
     }
 
@@ -306,7 +400,7 @@ export default function App() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [liveStatusKey, liveStatusAliases, status]);
+  }, [liveStatusKey, liveStatusAliases, selectedChatBusy]);
 
   useEffect(() => {
     function onPointerMove(event: PointerEvent) {
@@ -331,6 +425,210 @@ export default function App() {
       window.removeEventListener("pointerup", onPointerUp);
     };
   }, [sidebarCollapsed]);
+
+  function updateChatRunStatus(chatId: string, activeRunId: string | null, activeRunStatus: string | null) {
+    const apply = (items: ChatSession[]) =>
+      items.map((chat) =>
+        chat.id === chatId ? { ...chat, active_run_id: activeRunId, active_run_status: activeRunStatus } : chat,
+      );
+    setChats((current) => apply(current));
+    setChatListsByProject((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([projectId, items]) => [projectId, apply(items)]),
+      ),
+    );
+  }
+
+  async function attachRunStream(chatId: string, run: ChatRun) {
+    if (!selectedChatId || selectedChatId !== chatId) {
+      return;
+    }
+    if (streamControllersRef.current[chatId]) {
+      return;
+    }
+    ensureOptimisticMessages(chatId, run);
+    const controller = new AbortController();
+    streamControllersRef.current[chatId] = controller;
+
+    try {
+      await api.streamRun(
+        run.id,
+        {
+          onSequence: (seq) => {
+            setRunUiForChat(chatId, (current) =>
+              current ? { ...current, lastSeenSeq: Math.max(current.lastSeenSeq, seq) } : current,
+            );
+          },
+          onState: (code) =>
+            setRunUiForChat(chatId, (current) =>
+              current ? { ...current, streamStatus: { source: "state", code } } : current,
+            ),
+          onEvent: (code, payload) => {
+            if (code !== "text_delta") {
+              setRunUiForChat(chatId, (current) =>
+                current ? { ...current, streamStatus: { source: "event", code, payload } } : current,
+              );
+            }
+            if (code === "magi_role_start" && payload) {
+              const role = String(payload.role || "");
+              const phase = String(payload.phase || "");
+              const round = typeof payload.round === "number" ? payload.round : undefined;
+              const entryId = `${phase}-${role}-${round ?? 0}`;
+              setRunUiForChat(chatId, (current) =>
+                current
+                  ? {
+                      ...current,
+                      councilEntries: [
+                        ...current.councilEntries.filter((entry) => entry.entryId !== entryId),
+                        { entryId, role, phase, round, text: "", complete: false },
+                      ],
+                    }
+                  : current,
+              );
+            }
+            if (code === "magi_role_text_delta" && payload) {
+              const role = String(payload.role || "");
+              const phase = String(payload.phase || "");
+              const round = typeof payload.round === "number" ? payload.round : undefined;
+              const delta = String(payload.delta || "");
+              const entryId = `${phase}-${role}-${round ?? 0}`;
+              setRunUiForChat(chatId, (current) =>
+                current
+                  ? {
+                      ...current,
+                      councilEntries: current.councilEntries.map((entry) =>
+                        entry.entryId === entryId
+                          ? { ...entry, streamBuffer: (entry.streamBuffer ?? "") + delta }
+                          : entry,
+                      ),
+                    }
+                  : current,
+              );
+            }
+            if (code === "magi_role_complete" && payload) {
+              const role = String(payload.role || "");
+              const phase = String(payload.phase || "");
+              const round = typeof payload.round === "number" ? payload.round : undefined;
+              const text = String(payload.text || "");
+              const entryId = `${phase}-${role}-${round ?? 0}`;
+              setRunUiForChat(chatId, (current) =>
+                current
+                  ? {
+                      ...current,
+                      councilEntries: current.councilEntries.map((entry) =>
+                        entry.entryId === entryId ? { ...entry, text, complete: true, streamBuffer: undefined } : entry,
+                      ),
+                    }
+                  : current,
+              );
+            }
+          },
+          onTextDelta: (delta) => {
+            setRunUiForChat(chatId, (current) =>
+              current ? { ...current, streamStatus: { source: "event", code: "text_delta" } } : current,
+            );
+            setMessagesForChat(chatId, (current) =>
+              current.map((message) =>
+                message.id === optimisticIdsForRun(run.id).assistantId ? { ...message, content: message.content + delta } : message,
+              ),
+            );
+          },
+          onDone: async (payload) => {
+            setMessagesForChat(chatId, (current) => [
+              ...current.filter((message) => message.id >= 0),
+              payload.user_message,
+              payload.assistant_message,
+            ]);
+            clearRunUi(chatId);
+            updateChatRunStatus(chatId, null, null);
+            if (selectedProjectId) {
+              await reloadChats(selectedProjectId);
+            }
+          },
+          onCancelled: (message) => {
+            setMessagesForChat(chatId, (current) => current.filter((messageItem) => messageItem.id >= 0));
+            clearRunUi(chatId);
+            updateChatRunStatus(chatId, null, null);
+            setError(message);
+          },
+          onError: (message) => {
+            setMessagesForChat(chatId, (current) => current.filter((messageItem) => messageItem.id >= 0));
+            clearRunUi(chatId);
+            updateChatRunStatus(chatId, null, null);
+            setError(message);
+          },
+        },
+        {
+          afterSeq: runUiByChat[chatId]?.lastSeenSeq || 0,
+          signal: controller.signal,
+        },
+      );
+    } catch (err) {
+      const name = (err as Error).name || "";
+      if (name !== "AbortError") {
+        setError((err as Error).message);
+      }
+    } finally {
+      if (streamControllersRef.current[chatId] === controller) {
+        delete streamControllersRef.current[chatId];
+      }
+    }
+  }
+
+  useEffect(() => {
+    const previousChatId = previousSelectedChatIdRef.current;
+    if (previousChatId && previousChatId !== selectedChatId) {
+      const controller = streamControllersRef.current[previousChatId];
+      if (controller) {
+        controller.abort();
+        delete streamControllersRef.current[previousChatId];
+      }
+    }
+    previousSelectedChatIdRef.current = selectedChatId;
+  }, [selectedChatId]);
+
+  useEffect(() => {
+    if (!selectedChatId || !selectedChat?.active_run_id) {
+      return;
+    }
+    void api.getRun(selectedChat.active_run_id)
+      .then((run) => {
+        ensureOptimisticMessages(selectedChatId, run);
+        return attachRunStream(selectedChatId, run);
+      })
+      .catch((err: Error) => {
+        setError(err.message);
+      });
+  }, [selectedChatId, selectedChat?.active_run_id]);
+
+  useEffect(() => {
+    if (viewingCouncilMessageId !== null) {
+      return;
+    }
+    if (!selectedRunUi) {
+      setCouncilEntries([]);
+      setCouncilActive(false);
+      return;
+    }
+    setCouncilEntries(selectedRunUi.councilEntries);
+    setCouncilActive(selectedRunUi.councilEntries.length > 0 || selectedChatBusy);
+  }, [selectedRunUi, viewingCouncilMessageId, selectedChatBusy]);
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      return;
+    }
+    const hasActiveRuns = chats.some((chat) => chat.active_run_id);
+    if (!hasActiveRuns) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      void reloadChats(selectedProjectId).catch(() => undefined);
+    }, 2000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [chats, selectedProjectId]);
 
   function startSidebarResize() {
     if (sidebarCollapsed) {
@@ -358,7 +656,8 @@ export default function App() {
       setChatListsByProject(result.chats_by_project);
       setSelectedProjectId(result.projects[0]?.id || "");
       setSelectedChatId("");
-      setMessages([]);
+      setMessagesByChat({});
+      setRunUiByChat({});
       setStatus("idle");
     } catch (err) {
       setError((err as Error).message);
@@ -457,7 +756,8 @@ export default function App() {
       if (selectedProjectId === editingProjectId) {
         setSelectedProjectId("");
         setSelectedChatId("");
-        setMessages([]);
+        setMessagesByChat({});
+        setRunUiByChat({});
       }
       closeEditProjectDialog();
       await reloadProjects(user.id);
@@ -509,7 +809,12 @@ export default function App() {
       await api.deleteChat(editingChatId);
       if (selectedChatId === editingChatId) {
         setSelectedChatId("");
-        setMessages([]);
+        setMessagesByChat((current) => {
+          const next = { ...current };
+          delete next[editingChatId];
+          return next;
+        });
+        clearRunUi(editingChatId);
       }
       closeEditChatDialog();
       await reloadChats(selectedProjectId);
@@ -537,111 +842,47 @@ export default function App() {
     setViewingCouncilMessageId(message.id);
   }
 
+  async function handleCancelActiveRun() {
+    const runId = selectedChat?.active_run_id || selectedRunUi?.runId;
+    if (!runId || !selectedChatId) {
+      return;
+    }
+    try {
+      await api.cancelRun(runId);
+      updateChatRunStatus(selectedChatId, runId, "cancel_requested");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   async function handleSendMessage(event: FormEvent) {
     event.preventDefault();
-    if (!selectedChatId || !messageInput.trim()) return;
-    setStatus("loading");
+    if (!selectedChatId || !messageInput.trim() || selectedChatBusy) return;
     setError("");
-    setStreamStatus({ source: "state", code: "START" });
     const content = messageInput;
-    const optimisticUserMessage: ChatMessage = {
-      id: -Date.now(),
-      session_id: selectedChatId,
-      role: "user",
-      content,
-      created_at: new Date().toISOString(),
-    };
-    const optimisticAssistantMessage: ChatMessage = {
-      id: optimisticUserMessage.id - 1,
-      session_id: selectedChatId,
-      role: "assistant",
-      content: "",
-      created_at: new Date().toISOString(),
-    };
+    const clientRequestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     try {
       setMessageInput("");
-      setStreamingAssistantId(optimisticAssistantMessage.id);
       if (councilMode !== "off") {
         setCouncilActive(true);
         setCouncilPanelCollapsed(false);
         setCouncilEntries([]);
         setViewingCouncilMessageId(null);
       }
-      setMessages((current) => [...current, optimisticUserMessage, optimisticAssistantMessage]);
       stickToBottomRef.current = true;
       requestAnimationFrame(() => {
         scrollMessagesToBottom("smooth");
       });
-      const response = await api.streamMessage(selectedChatId, content, {
-        onState: (code) => setStreamStatus({ source: "state", code }),
-        onEvent: (code, payload) => {
-          if (code !== "text_delta") {
-            setStreamStatus({ source: "event", code, payload });
-          }
-          if (code === "magi_role_start" && payload) {
-            const role = String(payload.role || "");
-            const phase = String(payload.phase || "");
-            const round = typeof payload.round === "number" ? payload.round : undefined;
-            const entryId = `${phase}-${role}-${round ?? 0}`;
-            setCouncilEntries((current) => [
-              ...current.filter((e) => e.entryId !== entryId),
-              { entryId, role, phase, round, text: "", complete: false },
-            ]);
-          }
-          if (code === "magi_role_text_delta" && payload) {
-            const role = String(payload.role || "");
-            const phase = String(payload.phase || "");
-            const round = typeof payload.round === "number" ? payload.round : undefined;
-            const delta = String(payload.delta || "");
-            const entryId = `${phase}-${role}-${round ?? 0}`;
-            setCouncilEntries((current) =>
-              current.map((e) =>
-                e.entryId === entryId
-                  ? { ...e, streamBuffer: (e.streamBuffer ?? "") + delta }
-                  : e,
-              ),
-            );
-          }
-          if (code === "magi_role_complete" && payload) {
-            const role = String(payload.role || "");
-            const phase = String(payload.phase || "");
-            const round = typeof payload.round === "number" ? payload.round : undefined;
-            const entryId = `${phase}-${role}-${round ?? 0}`;
-            const text = String(payload.text || "");
-            setCouncilEntries((current) =>
-              current.map((e) => (e.entryId === entryId ? { ...e, text, complete: true, streamBuffer: undefined } : e)),
-            );
-          }
-        },
-        onTextDelta: (delta) => enqueueStreamDelta(optimisticAssistantMessage.id, delta),
-        onError: (message) => setError(message),
-      }, councilMode);
-      setMessages((current) => [
-        ...current.filter(
-          (message) =>
-            message.id !== optimisticUserMessage.id && message.id !== optimisticAssistantMessage.id,
-        ),
-        response.user_message,
-        response.assistant_message,
-      ]);
-      if (selectedProjectId) {
-        await reloadChats(selectedProjectId);
-      }
-      setStreamStatus(null);
-      setStreamingAssistantId(null);
-      setStatus("idle");
+      const run = await api.createRun(selectedChatId, content, {
+        magi: councilMode,
+        clientRequestId,
+      });
+      updateChatRunStatus(selectedChatId, run.id, run.status);
+      ensureOptimisticMessages(selectedChatId, run);
+      await attachRunStream(selectedChatId, run);
     } catch (err) {
-      setMessages((current) =>
-        current.filter(
-          (message) =>
-            message.id !== optimisticUserMessage.id && message.id !== optimisticAssistantMessage.id,
-        ),
-      );
       setMessageInput(content);
       setError((err as Error).message);
-      setStreamStatus(null);
-      setStreamingAssistantId(null);
-      setStatus("error");
     }
   }
 
@@ -1011,7 +1252,7 @@ export default function App() {
                             <span className="message-time">{formatMessageTimestamp(message.created_at)}</span>
                           </div>
                         ) : null}
-                        {message.id === streamingAssistantId && status === "loading" ? (
+                        {message.id === streamingAssistantId && selectedChatBusy ? (
                           <>
                             <div className="message-role">{liveStatusLabel}</div>
                             <div className={`message-status-subtext ${message.content.trim() ? "inline" : ""}`}>
@@ -1070,6 +1311,11 @@ export default function App() {
                   </svg>
                   {councilMode === "lite" ? "Council Lite" : "Council"}
                 </button>
+                {selectedChatBusy ? (
+                  <button type="button" className="ghost-button compact" onClick={handleCancelActiveRun}>
+                    Cancel run
+                  </button>
+                ) : null}
               </div>
               <textarea
                 ref={textareaRef}
@@ -1077,14 +1323,14 @@ export default function App() {
                 onChange={(event) => { setMessageInput(event.target.value); autoResizeTextarea(); }}
                 onKeyDown={handleComposerKeyDown}
                 placeholder={composerPlaceholder}
-                disabled={!selectedChatId || status === "loading"}
+                disabled={!selectedChatId || selectedChatBusy}
               />
               <div className="composer-actions">
                 <button
                   type="submit"
                   className="composer-send"
                   aria-label="Send message"
-                  disabled={!selectedChatId || !messageInput.trim() || status === "loading"}
+                  disabled={!selectedChatId || !messageInput.trim() || selectedChatBusy}
                 >
                   <svg viewBox="0 0 20 20" aria-hidden="true" className="send-icon">
                     <path

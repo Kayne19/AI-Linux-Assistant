@@ -1,5 +1,6 @@
 from retrieval.config import LEGACY_EMBED_MODEL, LEGACY_EMBED_PROVIDER, load_retrieval_config
 from retrieval.factory import build_runtime_components
+from retrieval.search_pipeline import RetrievalSearchPipeline
 from utils.debug_utils import debug_print
 
 
@@ -7,21 +8,35 @@ class VectorDB:
     LEGACY_EMBED_PROVIDER = LEGACY_EMBED_PROVIDER
     LEGACY_EMBED_MODEL = LEGACY_EMBED_MODEL
 
-    def __init__(self, embedding_provider=None, reranker_provider=None):
+    def __init__(self, embedding_provider=None, reranker_provider=None, runtime_components=None):
         debug_print("🤖 Loading Models...")
         self._event_listener = None
-        components = build_runtime_components(
-            config=load_retrieval_config(),
-            embedding_provider=embedding_provider,
-            reranker_provider=reranker_provider,
-            event_listener=self._event_listener,
-        )
+        if runtime_components is None:
+            components = build_runtime_components(
+                config=load_retrieval_config(),
+                embedding_provider=embedding_provider,
+                reranker_provider=reranker_provider,
+                event_listener=self._event_listener,
+            )
+        else:
+            components = runtime_components
         self.config = components["config"]
         self.embedding_provider = components["embedding_provider"]
         self.reranker_provider = components["reranker_provider"]
         self._store = components["store"]
         self._metadata_store = components["metadata_store"]
-        self._search_pipeline = components["search_pipeline"]
+        self._search_pipeline = RetrievalSearchPipeline(
+            store=self._store,
+            metadata_store=self._metadata_store,
+            embedding_provider=self.embedding_provider,
+            reranker_provider=self.reranker_provider,
+            event_listener=self._event_listener,
+            initial_fetch=self.config.initial_fetch,
+            final_top_k=self.config.final_top_k,
+            neighbor_pages=self.config.neighbor_pages,
+            max_expanded=self.config.max_expanded,
+            source_profile_sample=self.config.source_profile_sample,
+        )
 
         self.DB_PATH = self.config.db_path
         self.TABLE_NAME = self.config.table_name

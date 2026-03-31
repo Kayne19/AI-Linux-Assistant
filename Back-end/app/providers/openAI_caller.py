@@ -3,6 +3,8 @@ import hashlib
 import re
 import time
 
+from orchestration.run_control import invoke_cancel_check
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional dependency in some test/runtime environments
@@ -89,12 +91,13 @@ class OpenAICaller:
             raise ValueError(f"OpenAI worker received tool call '{tool_name}' without a tool handler.")
         return tool_handler(tool_name, tool_args)
 
-    def _build_tool_outputs(self, tool_calls, tool_handler):
+    def _build_tool_outputs(self, tool_calls, tool_handler, cancel_check=None):
         outputs = []
         for tool_call in tool_calls:
             tool_name = getattr(tool_call, "name", "unknown_tool")
             tool_args = self._parse_tool_arguments(getattr(tool_call, "arguments", {}))
             tool_result = self._run_tool_handler(tool_handler, tool_name, tool_args)
+            invoke_cancel_check(cancel_check, f"after_tool:{tool_name}")
             if not isinstance(tool_result, str):
                 tool_result = json.dumps(tool_result)
             outputs.append(
@@ -279,6 +282,7 @@ class OpenAICaller:
         max_tool_rounds=8,
         enable_web_search=False,
         event_listener=None,
+        cancel_check=None,
         cache_config=None,
     ):
         translated_tools = self._maybe_append_native_web_search(
@@ -300,6 +304,7 @@ class OpenAICaller:
         )
         request_kwargs["input"] = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
 
+        invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
             event_listener("request_submitted", {"round": 0})
         response = self._create_response_with_retries(
@@ -307,6 +312,7 @@ class OpenAICaller:
             event_listener=event_listener,
             round_number=0,
         )
+        invoke_cancel_check(cancel_check, "after_model_call")
         self._emit_prompt_cache_metrics_if_present(response, event_listener, 0)
         web_search_calls = self._extract_web_search_calls(response)
         if web_search_calls and event_listener is not None:
@@ -335,6 +341,7 @@ class OpenAICaller:
                     },
                 )
 
+            invoke_cancel_check(cancel_check, "before_tool_call")
             followup_kwargs = self._build_request_kwargs(
                 system_prompt,
                 translated_tools,
@@ -349,15 +356,17 @@ class OpenAICaller:
                 )
             )
             followup_kwargs["previous_response_id"] = response.id
-            followup_kwargs["input"] = self._build_tool_outputs(tool_calls, tool_handler)
+            followup_kwargs["input"] = self._build_tool_outputs(tool_calls, tool_handler, cancel_check=cancel_check)
             if event_listener is not None:
                 event_listener("tool_results_submitted", {"round": tool_rounds})
 
+            invoke_cancel_check(cancel_check, "before_model_call")
             response = self._create_response_with_retries(
                 followup_kwargs,
                 event_listener=event_listener,
                 round_number=tool_rounds,
             )
+            invoke_cancel_check(cancel_check, "after_model_call")
             self._emit_prompt_cache_metrics_if_present(response, event_listener, tool_rounds)
             web_search_calls = self._extract_web_search_calls(response)
             if web_search_calls and event_listener is not None:
@@ -387,6 +396,7 @@ class OpenAICaller:
         max_tool_rounds=8,
         enable_web_search=False,
         event_listener=None,
+        cancel_check=None,
         cache_config=None,
     ):
         translated_tools = self._maybe_append_native_web_search(
@@ -408,6 +418,7 @@ class OpenAICaller:
         )
         request_kwargs["input"] = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
 
+        invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
             event_listener("request_submitted", {"round": 0})
         response = self._stream_response_with_retries(
@@ -415,6 +426,7 @@ class OpenAICaller:
             event_listener=event_listener,
             round_number=0,
         )
+        invoke_cancel_check(cancel_check, "after_model_call")
         self._emit_prompt_cache_metrics_if_present(response, event_listener, 0)
         web_search_calls = self._extract_web_search_calls(response)
         if web_search_calls and event_listener is not None:
@@ -443,6 +455,7 @@ class OpenAICaller:
                     },
                 )
 
+            invoke_cancel_check(cancel_check, "before_tool_call")
             followup_kwargs = self._build_request_kwargs(
                 system_prompt,
                 translated_tools,
@@ -457,15 +470,17 @@ class OpenAICaller:
                 )
             )
             followup_kwargs["previous_response_id"] = response.id
-            followup_kwargs["input"] = self._build_tool_outputs(tool_calls, tool_handler)
+            followup_kwargs["input"] = self._build_tool_outputs(tool_calls, tool_handler, cancel_check=cancel_check)
             if event_listener is not None:
                 event_listener("tool_results_submitted", {"round": tool_rounds})
 
+            invoke_cancel_check(cancel_check, "before_model_call")
             response = self._stream_response_with_retries(
                 followup_kwargs,
                 event_listener=event_listener,
                 round_number=tool_rounds,
             )
+            invoke_cancel_check(cancel_check, "after_model_call")
             self._emit_prompt_cache_metrics_if_present(response, event_listener, tool_rounds)
             web_search_calls = self._extract_web_search_calls(response)
             if web_search_calls and event_listener is not None:

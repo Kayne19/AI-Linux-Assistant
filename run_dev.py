@@ -16,6 +16,7 @@ BACKEND_HOST = os.getenv("AILA_BACKEND_HOST", "0.0.0.0")
 BACKEND_PORT = os.getenv("AILA_BACKEND_PORT", "8000")
 FRONTEND_HOST = os.getenv("AILA_FRONTEND_HOST", "0.0.0.0")
 FRONTEND_PORT = os.getenv("AILA_FRONTEND_PORT", "5173")
+CHAT_WORKER_ID = os.getenv("CHAT_RUN_WORKER_ID", "dev-chat-worker")
 
 
 def _require_path(path: Path, label: str) -> None:
@@ -97,17 +98,26 @@ def main() -> None:
         "--port",
         FRONTEND_PORT,
     ]
+    worker_command = [
+        sys.executable,
+        "app/chat_run_worker.py",
+    ]
 
     print("Starting AI Linux Assistant dev stack")
     print(f"  backend  http://{BACKEND_HOST}:{BACKEND_PORT}")
     print(f"  frontend http://{FRONTEND_HOST}:{FRONTEND_PORT}")
+    print(f"  worker   {CHAT_WORKER_ID}")
 
     backend = _spawn_process("backend", backend_command, BACKEND_DIR, backend_env)
     frontend = _spawn_process("frontend", frontend_command, FRONTEND_DIR, frontend_env)
+    worker_env = backend_env.copy()
+    worker_env["CHAT_RUN_WORKER_ID"] = CHAT_WORKER_ID
+    worker = _spawn_process("worker", worker_command, BACKEND_DIR, worker_env)
 
     processes = [
         ("backend", backend),
         ("frontend", frontend),
+        ("worker", worker),
     ]
 
     def _shutdown(*_args) -> None:

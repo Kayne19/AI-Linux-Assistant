@@ -1,6 +1,8 @@
 import json
 from enum import Enum, auto
 
+from orchestration.run_control import invoke_cancel_check
+
 
 class MagiState(Enum):
     OPENING_ARGUMENTS = auto()
@@ -33,6 +35,7 @@ class MagiSystem:
         max_discussion_rounds=2,
         state_listener=None,
         event_listener=None,
+        cancel_check=None,
     ):
         self.eager = eager
         self.skeptic = skeptic
@@ -42,6 +45,7 @@ class MagiSystem:
         self.state_listener = state_listener
         self.event_listener = event_listener
         self.last_council_entries = []
+        self.cancel_check = cancel_check
 
     def _set_state(self, state, payload=None):
         if self.state_listener is not None:
@@ -70,6 +74,9 @@ class MagiSystem:
             else:
                 self._emit_event(event_type, payload)
         return listener
+
+    def _check_cancel(self, checkpoint):
+        invoke_cancel_check(self.cancel_check, checkpoint)
 
     def _format_position(self, role_name, parsed):
         position = parsed.get("position", "")
@@ -113,6 +120,7 @@ class MagiSystem:
         return "\n".join(sections).strip()
 
     def _run_opening_arguments(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text):
+        self._check_cancel("before_magi_opening_arguments")
         self._set_state(MagiState.OPENING_ARGUMENTS)
         self._emit_event("magi_phase", {"phase": "opening_arguments"})
         positions = []
@@ -124,6 +132,7 @@ class MagiSystem:
         ]
 
         for role_name, role_agent, state in roles:
+            self._check_cancel(f"before_magi_role:{role_name}:opening_arguments")
             self._set_state(state)
             self._emit_event("magi_role_start", {"role": role_name, "phase": "opening_arguments"})
             parsed = role_agent.opening_argument(
@@ -138,6 +147,7 @@ class MagiSystem:
                 "position_length": len(position_text),
             })
             positions.append((role_name, parsed))
+            self._check_cancel(f"after_magi_role:{role_name}:opening_arguments")
 
         return positions
 
@@ -145,6 +155,7 @@ class MagiSystem:
         discussion_rounds = []
 
         for round_num in range(1, self.max_discussion_rounds + 1):
+            self._check_cancel(f"before_magi_discussion_round:{round_num}")
             self._set_state(MagiState.DISCUSSION, {"round": round_num})
             self._emit_event("magi_phase", {"phase": "discussion", "round": round_num})
 
@@ -159,6 +170,7 @@ class MagiSystem:
             ]
 
             for role_name, role_agent, state in role_states:
+                self._check_cancel(f"before_magi_role:{role_name}:discussion:{round_num}")
                 self._set_state(state, {"round": round_num})
                 self._emit_event("magi_role_start", {"role": role_name, "phase": "discussion", "round": round_num})
                 parsed = role_agent.discuss(
@@ -183,6 +195,7 @@ class MagiSystem:
                 round_positions.append((role_name, parsed))
                 if new_info:
                     contributors.append(role_name)
+                self._check_cancel(f"after_magi_role:{role_name}:discussion:{round_num}")
 
             discussion_rounds.append(round_positions)
             early_stop = len(contributors) == 0
@@ -198,6 +211,7 @@ class MagiSystem:
         return discussion_rounds
 
     def _run_closing_arguments(self, user_query, opening_positions, discussion_rounds):
+        self._check_cancel("before_magi_closing_arguments")
         self._set_state(MagiState.CLOSING_ARGUMENTS)
         self._emit_event("magi_phase", {"phase": "closing_arguments"})
         closing_positions = []
@@ -208,6 +222,7 @@ class MagiSystem:
             ("historian", self.historian, MagiState.CLOSING_HISTORIAN),
         ]
         for role_name, role_agent, state in roles:
+            self._check_cancel(f"before_magi_role:{role_name}:closing_arguments")
             self._set_state(state)
             self._emit_event("magi_role_start", {"role": role_name, "phase": "closing_arguments"})
             parsed = role_agent.closing_argument(
@@ -222,9 +237,11 @@ class MagiSystem:
                 "position_length": len(position_text),
             })
             closing_positions.append((role_name, parsed))
+            self._check_cancel(f"after_magi_role:{role_name}:closing_arguments")
         return closing_positions
 
     def _run_arbiter(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, opening_positions, discussion_rounds, closing_positions=None, stream=False):
+        self._check_cancel("before_magi_arbiter")
         self._set_state(MagiState.ARBITER)
         self._emit_event("magi_phase", {"phase": "arbiter"})
 
@@ -243,6 +260,7 @@ class MagiSystem:
 
         self._emit_event("magi_synthesis_complete", {"response_length": len(response or "")})
         self._set_state(MagiState.COMPLETE)
+        self._check_cancel("after_magi_arbiter")
         return response
 
     def _build_council_entries(self, opening_positions, discussion_rounds, closing_positions=None):

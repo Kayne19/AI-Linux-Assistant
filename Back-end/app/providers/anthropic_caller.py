@@ -2,6 +2,8 @@ import importlib
 import json
 import os
 
+from orchestration.run_control import invoke_cancel_check
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional dependency in some test/runtime environments
@@ -216,6 +218,7 @@ class AnthropicCaller:
         max_tool_rounds=8,
         enable_web_search=False,
         event_listener=None,
+        cancel_check=None,
         cache_config=None,
     ):
         # Anthropic prompt caching is intentionally not wired yet.
@@ -227,6 +230,7 @@ class AnthropicCaller:
         )
         messages = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
 
+        invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
             event_listener("request_submitted", {"round": 0})
 
@@ -239,6 +243,7 @@ class AnthropicCaller:
             event_listener,
             0,
         )
+        invoke_cancel_check(cancel_check, "after_model_call")
 
         tool_calls = self._extract_tool_calls(response)
         tool_rounds = 0
@@ -258,6 +263,7 @@ class AnthropicCaller:
                     },
                 )
 
+            invoke_cancel_check(cancel_check, "before_tool_call")
             messages = messages + [
                 self._assistant_message_from_response(response),
                 self._tool_result_message(tool_calls, tool_handler),
@@ -265,6 +271,7 @@ class AnthropicCaller:
             if event_listener is not None:
                 event_listener("tool_results_submitted", {"round": tool_rounds})
 
+            invoke_cancel_check(cancel_check, "before_model_call")
             response, messages = self._request_until_not_paused(
                 system_prompt,
                 translated_tools,
@@ -274,6 +281,7 @@ class AnthropicCaller:
                 event_listener,
                 tool_rounds,
             )
+            invoke_cancel_check(cancel_check, "after_model_call")
             model_response = self._extract_text(response) or model_response
             tool_calls = self._extract_tool_calls(response)
 
@@ -293,6 +301,7 @@ class AnthropicCaller:
         max_tool_rounds=8,
         enable_web_search=False,
         event_listener=None,
+        cancel_check=None,
         cache_config=None,
     ):
         # cache_config accepted but not yet wired for Anthropic.
@@ -302,6 +311,7 @@ class AnthropicCaller:
         )
         messages = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
 
+        invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
             event_listener("request_submitted", {"round": 0})
 
@@ -314,6 +324,7 @@ class AnthropicCaller:
             event_listener,
             0,
         )
+        invoke_cancel_check(cancel_check, "after_model_call")
 
         tool_calls = self._extract_tool_calls(response)
         tool_rounds = 0
@@ -333,6 +344,7 @@ class AnthropicCaller:
                     },
                 )
 
+            invoke_cancel_check(cancel_check, "before_tool_call")
             messages = messages + [
                 self._assistant_message_from_response(response),
                 self._tool_result_message(tool_calls, tool_handler),
@@ -340,6 +352,7 @@ class AnthropicCaller:
             if event_listener is not None:
                 event_listener("tool_results_submitted", {"round": tool_rounds})
 
+            invoke_cancel_check(cancel_check, "before_model_call")
             response, messages = self._stream_response_until_not_paused(
                 system_prompt,
                 translated_tools,
@@ -349,6 +362,7 @@ class AnthropicCaller:
                 event_listener,
                 tool_rounds,
             )
+            invoke_cancel_check(cancel_check, "after_model_call")
             model_response = self._extract_text(response) or model_response
             tool_calls = self._extract_tool_calls(response)
 

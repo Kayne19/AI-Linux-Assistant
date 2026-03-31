@@ -8,6 +8,7 @@ from agents.context_agent import Contextualizer
 from providers.openAI_caller import OpenAIWorker
 from agents.response_agent import ResponseAgent
 from orchestration.routing_registry import get_allowed_labels, get_searchable_labels, get_skip_rag_labels
+from orchestration.run_control import RunCancelledError, invoke_cancel_check
 from config.settings import SETTINGS
 from agents.summarizers import ContextSummarizer, HistorySummarizer
 from retrieval.vectorDB import VectorDB
@@ -80,6 +81,8 @@ class ModelRouter:
         memory_extractor=None,
         chat_store=None,
         chat_session_id=None,
+        cancel_check=None,
+        persist_turn_messages=True,
     ):
         self.chat_store = chat_store
         self.chat_session_id = chat_session_id
@@ -96,6 +99,8 @@ class ModelRouter:
             memory_extractor,
             build_default=self.memory_store is not None,
         )
+        self.cancel_check = cancel_check
+        self.persist_turn_messages = persist_turn_messages
         self.memory_resolver = MemoryResolver()
         self.current_state = RouterState.DONE
         self.current_turn = None
@@ -152,10 +157,14 @@ class ModelRouter:
         try:
             while state not in {RouterState.DONE, RouterState.ERROR}:
                 try:
+                    self._check_cancel(f"before_state:{state.name}")
                     action = self.state_actions[state]
                     state = action(turn)
+                    self._check_cancel(f"after_state:{state.name}")
                     self._set_state(state, turn)
 
+                except RunCancelledError:
+                    raise
                 except Exception as exc:
                     turn.error = str(exc)
                     state = RouterState.ERROR
@@ -183,6 +192,9 @@ class ModelRouter:
         turn.state_trace.append(state.name)
         if self.state_listener is not None:
             self.state_listener(state, turn)
+
+    def _check_cancel(self, checkpoint):
+        invoke_cancel_check(self.cancel_check, checkpoint)
 
     def _append_trace_marker(self, marker):
         if self.current_turn is not None:
@@ -303,6 +315,7 @@ class ModelRouter:
             max_tool_rounds=self.response_tool_rounds,
             state_listener=self._handle_responder_state,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
 
     def _build_magi_responder(self):
@@ -313,21 +326,25 @@ class ModelRouter:
             worker=self._build_worker(None, self.settings.magi_eager),
             tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
         skeptic = MagiSkeptic(
             worker=self._build_worker(None, self.settings.magi_skeptic),
             tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
         historian = MagiHistorian(
             worker=self._build_worker(None, self.settings.magi_historian),
             tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
         arbiter = MagiArbiter(
             worker=self._build_worker(None, self.settings.magi_arbiter),
             tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
         return MagiSystem(
             eager=eager,
@@ -337,6 +354,7 @@ class ModelRouter:
             max_discussion_rounds=self.settings.magi_max_discussion_rounds,
             state_listener=self._handle_magi_state,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
 
     def _build_magi_lite_responder(self):
@@ -347,21 +365,25 @@ class ModelRouter:
             worker=self._build_worker(None, self.settings.magi_lite_eager),
             tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
         skeptic = MagiSkeptic(
             worker=self._build_worker(None, self.settings.magi_lite_skeptic),
             tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
         historian = MagiHistorian(
             worker=self._build_worker(None, self.settings.magi_lite_historian),
             tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
         arbiter = MagiArbiter(
             worker=self._build_worker(None, self.settings.magi_lite_arbiter),
             tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
         return MagiSystem(
             eager=eager,
@@ -371,6 +393,7 @@ class ModelRouter:
             max_discussion_rounds=self.settings.magi_lite_max_discussion_rounds,
             state_listener=self._handle_magi_state,
             event_listener=self._emit_event,
+            cancel_check=self.cancel_check,
         )
 
     def _build_history_summarizer(self, history_summarizer):
@@ -511,6 +534,7 @@ class ModelRouter:
         return memory_store
 
     def _handle_responder_tool_call(self, tool_name, tool_args):
+        self._check_cancel(f"before_tool:{tool_name}")
         self._emit_event("tool_start", {"name": tool_name, "args": tool_args})
 
         try:
@@ -559,6 +583,7 @@ class ModelRouter:
                 "tool_complete",
                 {"name": tool_name, "result_size": result_size},
             )
+        self._check_cancel(f"after_tool:{tool_name}")
         return result
 
     def _search_conversation_history(self, query, max_results=5):
@@ -683,6 +708,7 @@ class ModelRouter:
         return RouterState.UPDATE_HISTORY
 
     def _generate_response(self, turn):
+        self._check_cancel("before_generate_response")
         if self._magi_active == "full":
             if self.magi_responder is None:
                 self.magi_responder = self._build_magi_responder()
@@ -700,12 +726,14 @@ class ModelRouter:
             turn.summarized_conversation_history,
             turn.memory_snapshot_text,
         )
+        self._check_cancel("after_generate_response")
         turn.council_entries = list(getattr(responder, "last_council_entries", None) or [])
         if not (turn.retrieved_docs or "").strip():
             return RouterState.UPDATE_HISTORY
         return RouterState.SUMMARIZE_RETRIEVED_DOCS
 
     def _update_history(self, turn):
+        self._check_cancel("before_update_history")
         turn.persisted_user_message = self.update_history("user", turn.user_question)
         turn.persisted_assistant_message = self.update_history("model", turn.response, council_entries=turn.council_entries or None)
         return RouterState.DECIDE_MEMORY
@@ -778,7 +806,7 @@ class ModelRouter:
 
     def update_history(self, role, content, council_entries=None):
         self.conversation_history.append((role, content))
-        if self.chat_store is not None and self.chat_session_id:
+        if self.persist_turn_messages and self.chat_store is not None and self.chat_session_id:
             append_fn = getattr(self.chat_store, "append_message_fast", self.chat_store.append_message)
             return append_fn(self.chat_session_id, role, content, council_entries=council_entries)
         return None

@@ -1,5 +1,7 @@
 import json
 
+from orchestration.run_control import invoke_cancel_check
+
 try:
     import ollama
 except ImportError:  # pragma: no cover - optional dependency in some test/runtime environments
@@ -27,6 +29,7 @@ class LocalCaller:
         max_tool_rounds=8,
         enable_web_search=False,
         event_listener=None,
+        cancel_check=None,
         cache_config=None,
     ):
         system_message = {
@@ -48,6 +51,7 @@ class LocalCaller:
         try:
             if ollama is None:
                 raise RuntimeError("Ollama SDK is not installed. Install the 'ollama' package to use this provider.")
+            invoke_cancel_check(cancel_check, "before_model_call")
             if event_listener is not None:
                 event_listener("request_submitted", {"round": 0})
             request_kwargs = {
@@ -60,6 +64,7 @@ class LocalCaller:
                 request_kwargs["options"] = {"temperature": temperature}
 
             response = ollama.chat(**request_kwargs)
+            invoke_cancel_check(cancel_check, "after_model_call")
             message = response.get("message", {})
             model_response = message.get("content", "")
             tool_calls = self._normalize_tool_calls(message.get("tool_calls") or [])
@@ -86,6 +91,7 @@ class LocalCaller:
                 if self._tool_handler is None:
                     raise ValueError("Local worker received tool calls without a tool handler.")
 
+                invoke_cancel_check(cancel_check, "before_tool_call")
                 assistant_message = {
                     "role": "assistant",
                     "content": message.get("content", ""),
@@ -109,7 +115,9 @@ class LocalCaller:
                     followup_kwargs["tools"] = translated_tools
                 if temperature is not None:
                     followup_kwargs["options"] = {"temperature": temperature}
+                invoke_cancel_check(cancel_check, "before_model_call")
                 response = ollama.chat(**followup_kwargs)
+                invoke_cancel_check(cancel_check, "after_model_call")
                 message = response.get("message", {})
                 model_response = message.get("content", model_response)
                 tool_calls = self._normalize_tool_calls(message.get("tool_calls") or [])

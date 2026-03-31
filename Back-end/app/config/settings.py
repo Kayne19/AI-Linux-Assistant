@@ -61,6 +61,11 @@ class AppSettings:
         default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "high")
     )
     magi_lite_max_discussion_rounds: int = 2
+    max_active_runs_per_user_default: int = 3
+    chat_run_lease_seconds: int = 30
+    chat_run_stream_poll_ms: int = 500
+    chat_run_worker_poll_ms: int = 1000
+    chat_run_worker_concurrency: int = 3
 
 
 def _get_env(name, default):
@@ -185,6 +190,11 @@ def load_settings():
             reasoning_effort=_get_env("MAGI_LITE_ARBITER_REASONING_EFFORT", "high"),
         ),
         magi_lite_max_discussion_rounds=_get_int_env("MAGI_LITE_MAX_DISCUSSION_ROUNDS", 2),
+        max_active_runs_per_user_default=_get_int_env("MAX_ACTIVE_RUNS_PER_USER_DEFAULT", 3),
+        chat_run_lease_seconds=_get_int_env("CHAT_RUN_LEASE_SECONDS", 30),
+        chat_run_stream_poll_ms=_get_int_env("CHAT_RUN_STREAM_POLL_MS", 500),
+        chat_run_worker_poll_ms=_get_int_env("CHAT_RUN_WORKER_POLL_MS", 1000),
+        chat_run_worker_concurrency=_get_int_env("CHAT_RUN_WORKER_CONCURRENCY", 3),
     )
 
 

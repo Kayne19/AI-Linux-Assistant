@@ -1,6 +1,7 @@
 from enum import Enum, auto
 
 from orchestration.history_preparer import PreparedHistory
+from orchestration.run_control import call_with_optional_cancel_check, invoke_cancel_check
 from providers.openAI_caller import OpenAIWorker
 from prompting.prompts import CHATBOT_SYSTEM_PROMPT
 
@@ -26,6 +27,7 @@ class ResponseAgent:
         enable_native_web_search=True,
         state_listener=None,
         event_listener=None,
+        cancel_check=None,
     ):
         self.worker = worker or OpenAIWorker()
         self.chatbot_prompt = chatbot_prompt
@@ -35,6 +37,7 @@ class ResponseAgent:
         self.enable_native_web_search = enable_native_web_search
         self.state_listener = state_listener
         self.event_listener = event_listener
+        self.cancel_check = cancel_check
 
     def _set_state(self, state, payload=None):
         if self.state_listener is not None:
@@ -79,7 +82,10 @@ class ResponseAgent:
         """
         self._set_state(ResponseState.PREPARE_REQUEST, {})
         try:
-            response = self.worker.generate_text(
+            invoke_cancel_check(self.cancel_check, "before_model_call")
+            response = call_with_optional_cancel_check(
+                self.worker.generate_text,
+                cancel_check=self.cancel_check,
                 system_prompt=self.chatbot_prompt,
                 user_message=current_turn_content,
                 history=summarized_conversation_history.recent_turns,
@@ -93,6 +99,7 @@ class ResponseAgent:
                     "scope": "chat_responder",
                 },
             )
+            invoke_cancel_check(self.cancel_check, "after_model_call")
         except Exception:
             self._set_state(ResponseState.ERROR, {})
             raise
@@ -126,7 +133,10 @@ class ResponseAgent:
         try:
             stream_method = getattr(self.worker, "generate_text_stream", None)
             if callable(stream_method):
-                response = stream_method(
+                invoke_cancel_check(self.cancel_check, "before_model_call")
+                response = call_with_optional_cancel_check(
+                    stream_method,
+                    cancel_check=self.cancel_check,
                     system_prompt=self.chatbot_prompt,
                     user_message=current_turn_content,
                     history=summarized_conversation_history.recent_turns,
@@ -140,6 +150,7 @@ class ResponseAgent:
                         "scope": "chat_responder",
                     },
                 )
+                invoke_cancel_check(self.cancel_check, "after_model_call")
             else:
                 response = self.call_api(
                     user_query,

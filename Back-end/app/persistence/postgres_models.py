@@ -94,6 +94,7 @@ class ChatSession(Base):
 
     project = relationship("Project", back_populates="chat_sessions")
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
+    chat_runs = relationship("ChatRun", back_populates="chat_session", cascade="all, delete-orphan")
 
 
 class ChatMessage(Base):
@@ -107,6 +108,57 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     session = relationship("ChatSession", back_populates="messages")
+
+
+class ChatRun(Base):
+    __tablename__ = "chat_runs"
+    __table_args__ = (
+        UniqueConstraint("chat_session_id", "client_request_id", name="uq_chat_runs_chat_client_request"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    chat_session_id: Mapped[str] = mapped_column(String(36), ForeignKey("chat_sessions.id"), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    request_content: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    magi: Mapped[str] = mapped_column(String(16), default="off", nullable=False)
+    client_request_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    latest_state_code: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    latest_event_seq: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    partial_assistant_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    final_user_message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("chat_messages.id"))
+    final_assistant_message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("chat_messages.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+    chat_session = relationship("ChatSession", back_populates="chat_runs")
+    events = relationship("ChatRunEvent", back_populates="run", cascade="all, delete-orphan")
+
+
+class ChatRunEvent(Base):
+    __tablename__ = "chat_run_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "seq", name="uq_chat_run_events_run_seq"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("chat_runs.id"), nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    type: Mapped[str] = mapped_column(String(16), nullable=False)
+    code: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    run = relationship("ChatRun", back_populates="events")
 
 
 class ProjectFact(Base):

@@ -1,71 +1,101 @@
-# Repository Guidelines
+# Agent Guide
 
-## Project Structure & Module Organization
-- `Back-end/app/`: Python runtime for the assistant. Entry points remain `app/main.py` and `app/AI_Generated_TUI.py`.
-- `Back-end/app/orchestration/`: Router, history preparation, routing registry, and session bootstrap.
-- `Back-end/app/agents/`: Task-shaped agents such as classifier, contextualizer, responder, summarizers, and memory extraction/resolution.
-- `Back-end/app/providers/`: Model provider transport layers such as OpenAI, Anthropic, and local workers.
-- `Back-end/app/retrieval/`: Vector DB orchestration and retrieval-provider adapters.
-- `Back-end/app/persistence/`: SQLite/Postgres persistence and app-store layers.
-- `Back-end/app/prompting/`, `Back-end/app/config/`, `Back-end/app/utils/`: prompts, settings, and utilities.
-- `Back-end/scripts/`: Operational scripts grouped by purpose:
-  - `scripts/eval/`
-  - `scripts/ingest/`
-  - `scripts/db/`
-  - older variants live under `scripts/deprecated/`
-- `Back-end/data/`: Source PDFs used for retrieval-augmented generation (RAG).
-- `Back-end/lancedb_data/` and `Back-end/chroma_db/`: Local vector database artifacts.
-- `Back-end/extracted_*.json` and `Back-end/doc_context.txt`: Preprocessed datasets and context outputs.
-- `Proposal.pdf`: Local project proposal reference (ignored by git).
+Use this file for shared agent workflow and doc routing. Keep subsystem detail in the dedicated markdown files.
 
-## Architecture Priorities
-- The project is intentionally organized around explicit state machines and traceability. Prefer making lifecycle phases visible in the router trace over hiding important work inside helpers or side effects.
-- `Back-end/app/orchestration/model_router.py` is the top-level orchestration layer. The router should own workflow phases and state transitions, not provider-specific execution details.
-- Task agents should stay task-shaped, not provider-shaped. Current examples include classifier, contextualizer, responder, and memory extractor. They should accept injected workers instead of hardcoding a provider.
-- Provider workers in `Back-end/app/providers/` should own transport/API behavior only. They should not mutate router state or persistent storage directly.
-- Persistence/query layers in `Back-end/app/persistence/` should stay persistence/query-only. For example, `memory_store.py` should store, merge, and query memory, while extraction/policy live in separate modules.
-- If a subsystem has meaningful internal phases, prefer explicit modeling. The responder already has visible substates, and the memory pipeline is now represented as explicit router states (`LOAD_MEMORY`, `EXTRACT_MEMORY`, `RESOLVE_MEMORY`, `COMMIT_MEMORY`).
-- Tool use should be observable. If a model can call tools, keep those calls visible through emitted events and trace markers rather than burying them in silent helper logic.
-- Avoid “magic” behavior. Future agents should prefer architecture that makes it easy to answer: what phase is running, what component owns it, and where state changed.
+## Core Workflow
 
-## Build, Test, and Development Commands
-- `conda activate AI-Linux-Assistant`: Required before running Python tooling for this project.
-- Always run Python commands, tests, evals, and scripts inside the `AI-Linux-Assistant` conda environment. If a command fails in a different environment, switch first instead of debugging the wrong runtime.
-- `python app/main.py` (run from `Back-end/`): Launches the CLI assistant loop.
-- `python app/AI_Generated_TUI.py` (run from `Back-end/`): Launches the curses-based TUI with router state and tool visibility.
-- `python scripts/eval/evaluate_router.py` (run from `Back-end/`): Runs the repeatable router evaluation battery and writes JSON results to `Back-end/evals/`.
-- `python scripts/eval/evaluate_router_deep.py` (run from `Back-end/`): Runs the deeper scenario-style evaluation battery.
-- `python scripts/ingest/chatGPT_PDF_intake.py`: Ingests PDFs into cleaned JSON (read the script before running; it writes outputs).
-- `python scripts/ingest/context_enrichment.py`: Enriches context fields for RAG (writes `extracted_*` files).
-- `python scripts/ingest/ingest_pipeline.py`: End-to-end ingestion and registry update flow.
-- `python scripts/db/init_postgres_schema.py`: Initializes the Postgres schema.
-- No build system is defined; use a Python virtualenv and install dependencies as needed.
+- Run backend Python commands inside the `AI-Linux-Assistant` conda environment.
+- Before planning or implementing, read the markdown files that cover the surface you are about to change.
+- When editing code, re-check the relevant markdown before finishing.
+- If code changes affect a documented surface, update the relevant markdown in the same pass.
+- If repository workflow or agent instructions change, update both `AGENTS.md` and `CLAUDE.md` in the same pass.
 
-## Coding Style & Naming Conventions
-- Indentation: 4 spaces; keep lines concise and readable.
-- Naming: `snake_case` for functions/variables/files, `PascalCase` for classes, `UPPER_SNAKE_CASE` for constants.
-- Keep imports grouped by standard library, third-party, then local modules.
-- Avoid adding non-ASCII characters unless a file already uses them.
+## Task Routing
 
-## Testing Guidelines
-- Automated tests now live under `Back-end/tests/`. Name new files `test_*.py`.
-- `pytest` is the intended test runner, but it may not be installed in every local environment. Keep test modules importable and plain-assert friendly so they can still be executed with a small direct harness when needed.
-- Current coverage focuses on router flow, prompt regressions, and provider tool-loop behavior. Prefer expanding those areas before adding broad integration tests.
-- Prefer unit tests around `VectorDB` ingestion/retrieval behavior, router state transitions, provider/tool-call formatting, and the memory pipeline (`extract -> resolve -> commit`).
-- When changing FSMs, update tests to assert the expected state trace. Trace regressions matter in this codebase.
-- When changing memory behavior, test both committed and unresolved outcomes. Candidate/conflict handling is part of the architecture, not an implementation detail.
+- General repo orientation:
+  - [README.md](/home/kayne19/projects/AI-Linux-Assistant/README.md)
+- Backend orchestration, FSM ownership, providers, Magi boundaries:
+  - [Back-end/ARCHITECTURE.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/ARCHITECTURE.md)
+- Memory extraction, resolution, storage, or prompt usage:
+  - [Back-end/MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/MEMORY.md)
+- Retrieval, LanceDB, embeddings, reranking, retrieval providers:
+  - [Back-end/RETRIEVAL.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/RETRIEVAL.md)
+- Ingestion pipeline, registry updates, indexing flow:
+  - [Back-end/INGESTION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/INGESTION.md)
+- FastAPI routes, request/response models, bootstrap/message API behavior:
+  - [Back-end/API.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/API.md)
+- SSE events, streaming lifecycle, live status behavior:
+  - [Back-end/STREAMING.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/STREAMING.md)
+- Frontend React state, optimistic streaming UI, council rendering:
+  - [Front-end/FRONTEND.md](/home/kayne19/projects/AI-Linux-Assistant/Front-end/FRONTEND.md)
+- Router evals and regression runners:
+  - [Back-end/evals/README.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/evals/README.md)
 
-## Configuration & Security
-- Store secrets in `Back-end/.env` (e.g., `GOOGLE_API_KEY`); do not commit them.
-- Default role/provider/model selection is centralized in `Back-end/app/config/settings.py`; prefer changing defaults there or via `.env` overrides instead of scattering model choices across modules.
-- Model and DB paths are still configured in `Back-end/app/retrieval/vectorDB.py` (e.g., `lancedb_data`, `extracted_clean_final.json`). Update carefully and document changes in PRs.
-- `VectorDB` supports `VECTORDB_EMBED_DEVICE` and `VECTORDB_RERANK_DEVICE` environment overrides. The eval runner may use these to control retrieval device placement.
+## Common Commands
 
-## Commit & Pull Request Guidelines
-- No commit history is available in this repo; use short, imperative commit subjects (e.g., "Add vector DB ingest guard").
-- PRs should include: a clear description, commands run, and notes about any data/regeneration steps. Screenshots are unnecessary unless you change UI outputs.
+```bash
+conda activate AI-Linux-Assistant
+
+# Full dev stack
+python run_dev.py
+
+# Backend entry points
+cd Back-end && python app/main.py
+cd Back-end && python app/AI_Generated_TUI.py
+cd Back-end && python -m uvicorn api:create_app --factory --app-dir app --host 0.0.0.0 --port 8000 --reload
+cd Back-end && python app/chat_run_worker.py
+
+# Tests
+cd Back-end && python -m pytest tests/
+cd Back-end && python -m pytest tests/test_router_runtime.py
+
+# Evals
+cd Back-end && python scripts/eval/evaluate_router.py
+cd Back-end && python scripts/eval/evaluate_router_deep.py
+
+# Ingestion / DB
+cd Back-end && python scripts/ingest/ingest_pipeline.py
+cd Back-end && python scripts/db/init_postgres_schema.py
+```
+
+## Testing Expectations
+
+- Tests live under `Back-end/tests/` and should be named `test_*.py`.
+- Coverage priorities are router flow, prompt regressions, provider tool-loop behavior, retrieval behavior, and the memory pipeline (`extract -> resolve -> commit`).
+- Durable chat-run behavior should cover idempotent create-run, per-chat/per-user concurrency policy, event replay ordering, and terminalization (`completed` / `failed` / `cancelled`).
+- When changing FSMs, update tests to assert the expected state trace.
+- When changing memory behavior, cover both committed and unresolved/conflict outcomes.
+- Keep tests importable and plain-assert friendly in case `pytest` is unavailable locally.
+
+## Configuration And Security
+
+- Store secrets in `Back-end/.env`; do not commit them.
+- Keep default role/provider/model configuration centralized in [Back-end/app/config/settings.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/config/settings.py).
+- Retrieval runtime/index configuration lives in [Back-end/app/retrieval/config.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/config.py).
+- Retrieval device placement may be overridden with `VECTORDB_EMBED_DEVICE` and `VECTORDB_RERANK_DEVICE`.
 
 ## Documentation Maintenance
-- Keep relevant markdown docs up to date when architecture, subsystem behavior, or developer workflow changes.
-- The important handoff docs currently include `README.md`, `Back-end/ARCHITECTURE.md`, `Back-end/MEMORY.md`, `Back-end/RETRIEVAL.md`, `Back-end/INGESTION.md`, `Back-end/API.md`, `Back-end/STREAMING.md`, and `Front-end/FRONTEND.md`.
-- If a change alters one of those surfaces and the markdown is not updated in the same pass, treat that as incomplete work.
+
+Important maintained docs:
+
+- [README.md](/home/kayne19/projects/AI-Linux-Assistant/README.md)
+- [Back-end/ARCHITECTURE.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/ARCHITECTURE.md)
+- [Back-end/MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/MEMORY.md)
+- [Back-end/RETRIEVAL.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/RETRIEVAL.md)
+- [Back-end/INGESTION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/INGESTION.md)
+- [Back-end/API.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/API.md)
+- [Back-end/STREAMING.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/STREAMING.md)
+- [Front-end/FRONTEND.md](/home/kayne19/projects/AI-Linux-Assistant/Front-end/FRONTEND.md)
+- [Back-end/evals/README.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/evals/README.md)
+
+If code changes affect one of those surfaces, updating the relevant markdown is part of the implementation.
+
+## Commits
+
+- For substantial completed changes or multi-step implemented plans, make a git commit unless the user explicitly says not to.
+- For those larger implementation commits, use this format:
+  - `Added: ...`
+  - `Removed: ...`
+  - `Fixed: ...`
+  - `Implemented: ...`
+- Use `none` for sections that do not apply.
