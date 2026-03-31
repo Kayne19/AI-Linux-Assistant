@@ -2,7 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from persistence.database import Base
-from persistence.postgres_models import ChatSession, Project, User
+from persistence.postgres_models import ChatMessage, ChatSession, Project, User
 from persistence.postgres_run_store import (
     ActiveChatRunExistsError,
     ActiveRunLimitExceededError,
@@ -32,6 +32,35 @@ def _seed_chat(session_factory, username="kayne", project_name="Debian", title="
         session.refresh(project)
         session.refresh(chat)
         return user, project, chat
+
+
+def test_run_store_initializes_missing_run_tables_for_existing_schema():
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            User.__table__,
+            Project.__table__,
+            ChatSession.__table__,
+            ChatMessage.__table__,
+        ],
+    )
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+
+    run_store = PostgresRunStore(session_factory=session_factory)
+    user, project, chat = _seed_chat(session_factory)
+
+    run = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="hello",
+        magi="off",
+        client_request_id="same-token",
+        max_active_runs_per_user=3,
+    )
+
+    assert run.id
 
 
 def test_run_store_reuses_same_client_request_id_per_chat():

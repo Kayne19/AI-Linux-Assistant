@@ -133,6 +133,7 @@ The run store owns:
 - one-active-run-per-chat enforcement
 - configurable per-user active-run cap enforcement
 - run snapshots for reconnect and operator/debug inspection
+- startup-time creation of missing durable run tables for older databases
 
 Current implementation:
 

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from persistence.database import get_session_factory
+from persistence.database import Base, get_engine, get_session_factory
 
 try:
     from sqlalchemy import and_, func, or_, select
@@ -49,6 +49,24 @@ class PostgresRunStore:
                 "Install sqlalchemy and alembic in the AI-Linux-Assistant environment."
             )
         self.session_factory = session_factory or get_session_factory()
+        self._ensure_run_schema()
+
+    def _get_bound_engine(self):
+        bind = getattr(self.session_factory, "kw", {}).get("bind")
+        if bind is not None:
+            return bind
+
+        with self.session_factory() as session:
+            bind = session.get_bind()
+        return bind or get_engine()
+
+    def _ensure_run_schema(self):
+        engine = self._get_bound_engine()
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[ChatRun.__table__, ChatRunEvent.__table__],
+            checkfirst=True,
+        )
 
     def _session(self):
         return self.session_factory()
