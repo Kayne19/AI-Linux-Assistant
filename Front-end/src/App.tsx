@@ -34,6 +34,12 @@ type PendingTextDeltaBatch = {
   frameId: number | null;
 };
 
+type CheckpointSeed = {
+  runId: string;
+  seq: number;
+  text: string;
+};
+
 
 function formatChatTimestamp(value: string) {
   if (!value) {
@@ -158,6 +164,8 @@ export default function App() {
   const councilEndRef = useRef<HTMLDivElement | null>(null);
   const streamControllersRef = useRef<Record<string, AbortController>>({});
   const pendingTextDeltaBatchesRef = useRef<Record<string, PendingTextDeltaBatch>>({});
+  const streamingActiveRef = useRef<Record<string, boolean>>({});
+  const lastCheckpointRef = useRef<Record<string, CheckpointSeed>>({});
   const previousSelectedChatIdRef = useRef("");
 
   const selectedProject = useMemo(
@@ -255,6 +263,22 @@ export default function App() {
     );
   }
 
+  function setCheckpointSeed(chatId: string, runId: string, seq: number, text: string) {
+    lastCheckpointRef.current[chatId] = {
+      runId,
+      seq: Math.max(0, seq),
+      text,
+    };
+  }
+
+  function getCheckpointSeed(chatId: string, runId: string) {
+    const checkpoint = lastCheckpointRef.current[chatId];
+    if (!checkpoint || checkpoint.runId !== runId) {
+      return null;
+    }
+    return checkpoint;
+  }
+
   function queueTextDelta(chatId: string, assistantId: number, delta: string) {
     if (!delta) {
       return;
@@ -301,6 +325,15 @@ export default function App() {
   );
 
   function ensureOptimisticMessages(chatId: string, run: ChatRun) {
+    const checkpointSeed = getCheckpointSeed(chatId, run.id);
+    if (!checkpointSeed) {
+      delete lastCheckpointRef.current[chatId];
+    }
+    streamingActiveRef.current[chatId] = false;
+    const seedText =
+      checkpointSeed && checkpointSeed.seq >= (run.latest_event_seq || 0)
+        ? checkpointSeed.text
+        : run.partial_assistant_text || checkpointSeed?.text || "";
     const optimisticIds = optimisticIdsForRun(run.id);
     const optimisticUserMessage: ChatMessage = {
       id: optimisticIds.userId,
@@ -313,7 +346,7 @@ export default function App() {
       id: optimisticIds.assistantId,
       session_id: chatId,
       role: "assistant",
-      content: run.partial_assistant_text || "",
+      content: seedText,
       created_at: run.created_at || new Date().toISOString(),
     };
     setMessagesForChat(chatId, (current) => [
@@ -329,7 +362,7 @@ export default function App() {
       streamingAssistantId: optimisticIds.assistantId,
       optimisticUserId: optimisticIds.userId,
       optimisticAssistantId: optimisticIds.assistantId,
-      lastSeenSeq: Math.max(current?.lastSeenSeq || 0, run.latest_event_seq || 0),
+      lastSeenSeq: Math.max(current?.lastSeenSeq || 0, checkpointSeed?.seq || 0, run.latest_event_seq || 0),
       councilEntries: current?.councilEntries || [],
     }));
   }
@@ -340,6 +373,7 @@ export default function App() {
       controller.abort();
       delete streamControllersRef.current[chatId];
     }
+    streamingActiveRef.current[chatId] = false;
     clearPendingTextDeltaBatch(chatId);
     setRunUiForChat(chatId, () => undefined);
   }
@@ -525,8 +559,10 @@ export default function App() {
     }
     ensureOptimisticMessages(chatId, run);
     const optimisticAssistantId = optimisticIdsForRun(run.id).assistantId;
+    const checkpointSeed = getCheckpointSeed(chatId, run.id);
     const controller = new AbortController();
     streamControllersRef.current[chatId] = controller;
+    streamingActiveRef.current[chatId] = false;
 
     try {
       await api.streamRun(
@@ -601,13 +637,20 @@ export default function App() {
               );
             }
           },
-          onTextCheckpoint: (text) => {
+          onTextCheckpoint: (text, seq) => {
+            setCheckpointSeed(chatId, run.id, seq, text);
+            if (streamingActiveRef.current[chatId]) {
+              return;
+            }
             applyTextCheckpoint(chatId, optimisticAssistantId, text);
           },
           onTextDelta: (delta) => {
+            streamingActiveRef.current[chatId] = true;
             queueTextDelta(chatId, optimisticAssistantId, delta);
           },
           onDone: async (payload) => {
+            streamingActiveRef.current[chatId] = false;
+            delete lastCheckpointRef.current[chatId];
             clearPendingTextDeltaBatch(chatId);
             setMessagesForChat(chatId, (current) => [
               ...current.filter((message) => message.id >= 0),
@@ -621,6 +664,8 @@ export default function App() {
             }
           },
           onCancelled: (message) => {
+            streamingActiveRef.current[chatId] = false;
+            delete lastCheckpointRef.current[chatId];
             clearPendingTextDeltaBatch(chatId);
             setMessagesForChat(chatId, (current) => current.filter((messageItem) => messageItem.id >= 0));
             clearRunUi(chatId);
@@ -628,6 +673,8 @@ export default function App() {
             setError(message);
           },
           onError: (message) => {
+            streamingActiveRef.current[chatId] = false;
+            delete lastCheckpointRef.current[chatId];
             clearPendingTextDeltaBatch(chatId);
             setMessagesForChat(chatId, (current) => current.filter((messageItem) => messageItem.id >= 0));
             clearRunUi(chatId);
@@ -636,7 +683,7 @@ export default function App() {
           },
         },
         {
-          afterSeq: runUiByChat[chatId]?.lastSeenSeq || 0,
+          afterSeq: checkpointSeed?.seq || 0,
           signal: controller.signal,
         },
       );
@@ -646,6 +693,7 @@ export default function App() {
         setError((err as Error).message);
       }
     } finally {
+      streamingActiveRef.current[chatId] = false;
       if (streamControllersRef.current[chatId] === controller) {
         delete streamControllersRef.current[chatId];
       }
@@ -660,6 +708,7 @@ export default function App() {
         controller.abort();
         delete streamControllersRef.current[previousChatId];
       }
+      streamingActiveRef.current[previousChatId] = false;
     }
     previousSelectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);

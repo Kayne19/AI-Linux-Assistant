@@ -19,7 +19,7 @@ Current streaming covers:
 - durable run-event replay and live follow
 - live router state updates emitted by the claimed worker
 - live backend event updates emitted by the claimed worker
-- live text deltas for the responder path
+- live `text_delta` events for the responder path over Redis fanout
 - durable `text_checkpoint` events for reconnect/replay
 - live Magi council role deltas/events when `magi` is `lite` or `full`
 - final persisted message handoff at completion
@@ -132,6 +132,7 @@ For partial assistant text:
 - `text_delta` is live fanout
 - `text_checkpoint` is the durable replay source
 - reconnecting clients rebuild text from checkpoints, then only forward newer live delta windows
+- active clients should render `text_delta` directly and treat checkpoints as reconnect seeds, not as live display replacements
 
 ### Worker
 
@@ -203,7 +204,7 @@ Owns:
 
 - per-chat temporary run state
 - optimistic temporary user/assistant messages
-- replacing optimistic assistant text from `text_checkpoint`
+- seeding optimistic assistant text from `text_checkpoint` during replay/reconnect
 - batching rapid `text_delta` appends into the in-progress assistant message
 - rendering Magi council progress when present
 - mapping backend event codes into human labels
@@ -227,6 +228,22 @@ That replacement rule is important:
 
 - backend owns persisted truth
 - frontend owns temporary rendering
+
+## Live Vs Durable Text
+
+Text streaming intentionally uses two paths:
+
+- live display path: worker publishes `text_delta` events to Redis immediately, SSE forwards them, and the frontend appends them with `requestAnimationFrame` batching
+- durable replay path: worker writes `text_checkpoint` events to Postgres roughly once per second or once a buffered chunk reaches the byte threshold
+
+Frontend rule:
+
+- while a live stream is actively receiving `text_delta`, checkpoint events should be recorded for reconnect state but must not replace the visible assistant text
+- when replaying after reconnect, checkpoints seed the visible text until live deltas resume
+
+Fallback rule:
+
+- without Redis, SSE falls back to Postgres polling, so clients only see checkpoint-style progress rather than smooth live deltas
 
 ## Human Labels
 

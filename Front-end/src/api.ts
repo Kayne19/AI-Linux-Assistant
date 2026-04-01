@@ -37,7 +37,7 @@ type StreamHandlers = {
   onState?: (code: string) => void;
   onEvent?: (code: string, payload?: Record<string, unknown>) => void;
   onTextDelta?: (delta: string) => void;
-  onTextCheckpoint?: (text: string, payload?: Record<string, unknown>) => void;
+  onTextCheckpoint?: (text: string, seq: number, payload?: Record<string, unknown>) => void;
   onDone?: (payload: SendMessageResponse) => void;
   onError?: (message: string) => void;
   onCancelled?: (message: string) => void;
@@ -108,7 +108,7 @@ async function readEventStream(
             }
           } else if (event.code === "text_checkpoint") {
             const text = typeof event.payload?.text === "string" ? event.payload.text : "";
-            handlers.onTextCheckpoint?.(text, event.payload);
+            handlers.onTextCheckpoint?.(text, event.seq, event.payload);
           }
           handlers.onEvent?.(event.code, event.payload);
         } else if (event.type === "done") {
@@ -274,7 +274,7 @@ export const api = {
               }
             } else if (event.code === "text_checkpoint") {
               const text = typeof event.payload?.text === "string" ? event.payload.text : "";
-              handlers.onTextCheckpoint?.(text, event.payload);
+              handlers.onTextCheckpoint?.(text, event.seq, event.payload);
             }
             handlers.onEvent?.(event.code, event.payload);
           } else if (event.type === "done") {

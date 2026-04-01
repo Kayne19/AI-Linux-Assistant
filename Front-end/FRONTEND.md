@@ -104,8 +104,8 @@ When a message is sent:
 3. It attaches to that run’s SSE event stream.
 4. Backend states/events update the visible live status.
 5. If Magi is enabled, council role events populate the live council panel.
-6. `text_checkpoint` events replace the optimistic assistant text with the durable checkpoint payload.
-7. Rapid `text_delta` events are batched with `requestAnimationFrame` before the optimistic assistant text is appended.
+6. During active streaming, rapid `text_delta` events are batched with `requestAnimationFrame` before the optimistic assistant text is appended.
+7. `text_checkpoint` events are tracked for reconnect seeding and are only applied to visible text while replaying after a reconnect.
 8. When `done` arrives, the optimistic pair is replaced by the final persisted backend messages.
 
 This avoids the earlier end-of-stream flash and keeps the backend as the source of truth.
@@ -114,7 +114,7 @@ When the user switches away from a running chat:
 
 - the run continues server-side
 - the visible SSE attachment may be dropped
-- reopening the chat replays missed events from `after_seq`
+- reopening the chat seeds from the latest durable checkpoint and then resumes live deltas
 
 ## Ownership Rules
 

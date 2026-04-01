@@ -20,7 +20,7 @@ from streaming.redis_events import get_shared_client as _get_redis_client
 class _DeltaBuffer:
     """Fan out live text immediately and durably checkpoint it in batches."""
 
-    def __init__(self, run_id, run_store, redis_publish_fn, flush_interval=0.2, flush_bytes=200):
+    def __init__(self, run_id, run_store, redis_publish_fn, flush_interval=1.0, flush_bytes=200):
         self._run_id = run_id
         self._run_store = run_store
         self._redis_publish = redis_publish_fn
