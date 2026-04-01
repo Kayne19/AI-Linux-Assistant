@@ -8,6 +8,7 @@ Covers:
 - get_redis_client() returns None when url is absent or redis-py is missing
 """
 import json
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, call, patch
 
 from sqlalchemy import create_engine
@@ -71,37 +72,56 @@ def _make_run(store, sf):
 # ---------------------------------------------------------------------------
 
 def test_serialize_state():
-    result = serialize_run_event(1, "state", "CLASSIFY", None)
-    assert result == {"type": "state", "seq": 1, "code": "CLASSIFY"}
+    created_at = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+    result = serialize_run_event(1, "state", "CLASSIFY", None, created_at=created_at)
+    assert result == {"type": "state", "seq": 1, "code": "CLASSIFY", "created_at": created_at.isoformat()}
 
 
 def test_serialize_event():
-    result = serialize_run_event(2, "event", "text_delta", {"delta": "hi"})
-    assert result == {"type": "event", "seq": 2, "code": "text_delta", "payload": {"delta": "hi"}}
+    created_at = datetime(2026, 4, 1, 12, 1, tzinfo=timezone.utc)
+    result = serialize_run_event(2, "event", "text_delta", {"delta": "hi"}, created_at=created_at)
+    assert result == {
+        "type": "event",
+        "seq": 2,
+        "code": "text_delta",
+        "payload": {"delta": "hi"},
+        "created_at": created_at.isoformat(),
+    }
 
 
 def test_serialize_done_spreads_payload():
+    created_at = datetime(2026, 4, 1, 12, 2, tzinfo=timezone.utc)
     payload = {"user_message": {"id": 1}, "assistant_message": {"id": 2}, "debug": {}}
-    result = serialize_run_event(3, "done", "done", payload)
+    result = serialize_run_event(3, "done", "done", payload, created_at=created_at)
     assert result["type"] == "done"
     assert result["seq"] == 3
+    assert result["created_at"] == created_at.isoformat()
     assert result["user_message"] == {"id": 1}
     assert result["assistant_message"] == {"id": 2}
 
 
 def test_serialize_error():
-    result = serialize_run_event(4, "error", "error", {"message": "boom"})
-    assert result == {"type": "error", "seq": 4, "message": "boom"}
+    created_at = datetime(2026, 4, 1, 12, 3, tzinfo=timezone.utc)
+    result = serialize_run_event(4, "error", "error", {"message": "boom"}, created_at=created_at)
+    assert result == {"type": "error", "seq": 4, "message": "boom", "created_at": created_at.isoformat()}
 
 
 def test_serialize_cancelled():
-    result = serialize_run_event(5, "cancelled", "cancelled", {"message": "gone"})
-    assert result == {"type": "cancelled", "seq": 5, "message": "gone"}
+    created_at = datetime(2026, 4, 1, 12, 4, tzinfo=timezone.utc)
+    result = serialize_run_event(5, "cancelled", "cancelled", {"message": "gone"}, created_at=created_at)
+    assert result == {"type": "cancelled", "seq": 5, "message": "gone", "created_at": created_at.isoformat()}
 
 
 def test_serialize_unknown_type():
-    result = serialize_run_event(6, "custom", "x", {"k": "v"})
-    assert result == {"type": "custom", "seq": 6, "code": "x", "payload": {"k": "v"}}
+    created_at = datetime(2026, 4, 1, 12, 5, tzinfo=timezone.utc)
+    result = serialize_run_event(6, "custom", "x", {"k": "v"}, created_at=created_at)
+    assert result == {
+        "type": "custom",
+        "seq": 6,
+        "code": "x",
+        "payload": {"k": "v"},
+        "created_at": created_at.isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +190,7 @@ def test_append_event_publishes_to_redis():
     assert payload["type"] == "state"
     assert payload["code"] == "START"
     assert payload["seq"] == 1
+    assert payload["created_at"]
 
 
 def test_mark_failed_publishes_error_event():
@@ -184,6 +205,7 @@ def test_mark_failed_publishes_error_event():
     payload = json.loads(mock_redis.publish.call_args[0][1])
     assert payload["type"] == "error"
     assert payload["message"] == "oops"
+    assert payload["created_at"]
 
 
 def test_mark_cancelled_publishes_cancelled_event():
@@ -198,6 +220,7 @@ def test_mark_cancelled_publishes_cancelled_event():
     payload = json.loads(mock_redis.publish.call_args[0][1])
     assert payload["type"] == "cancelled"
     assert payload["message"] == "bye"
+    assert payload["created_at"]
 
 
 def test_complete_run_publishes_done_event():
@@ -220,6 +243,7 @@ def test_complete_run_publishes_done_event():
     assert payload["type"] == "done"
     assert "user_message" in payload
     assert "assistant_message" in payload
+    assert payload["created_at"]
 
 
 def test_publish_failure_does_not_crash_append_event():

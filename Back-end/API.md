@@ -61,6 +61,7 @@ Projects are the memory boundary for chats.
 - `GET /projects/{project_id}/chats`
 - `POST /projects/{project_id}/chats`
 - `GET /chats/{chat_session_id}`
+- `GET /chats/{chat_session_id}/runs`
 - `PATCH /chats/{chat_session_id}`
 - `DELETE /chats/{chat_session_id}`
 
@@ -87,6 +88,22 @@ Current request body:
 - `content: str`
 - `magi: "off" | "lite" | "full"` (defaults to `"off"`)
 - `client_request_id: str` for idempotent create-run semantics
+
+`GET /chats/{chat_session_id}/runs` is the chat-scoped run history endpoint used by the dev/admin debug drawer.
+
+Current query params:
+
+- `page: int = 1`
+- `page_size: int = 20`
+- `status: str | None = None`
+
+Current response body:
+
+- `runs: list[ChatRunResponse]`
+- `total: int`
+- `page: int`
+- `page_size: int`
+- `has_more: bool`
 
 ## Backend Ownership
 
@@ -162,6 +179,7 @@ Current top-level API models include:
 - `ProjectResponse`
 - `ChatSessionResponse`
 - `ChatRunResponse`
+- `ChatRunListResponse`
 - `ChatMessageResponse`
 - `AssistantDebugResponse`
 - `SendMessageResponse`
@@ -174,6 +192,8 @@ Current notable fields:
 - `AssistantDebugResponse` includes `state_trace`, `tool_events`, `retrieval_query`, and `retrieved_sources`.
 - `ChatSessionResponse.active_run_id` / `active_run_status` expose per-chat background activity.
 - `ChatRunResponse.latest_*` fields are snapshot conveniences; `chat_run_events` remains the replay source of truth.
+- Run-event payloads returned by `/runs/{run_id}/events` and `/runs/{run_id}/events/stream` include durable `created_at` timestamps so the frontend can compute timing diagnostics from backend event time.
+- `GET /runs/{run_id}/events` supports `after_seq` plus `limit`, and serialized run events include `created_at` for operator/debug timing inspection.
 
 ## Important Rules
 

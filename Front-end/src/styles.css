@@ -647,6 +647,13 @@ textarea:focus {
   border-top: 1px solid var(--border);
 }
 
+.sidebar-footer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .collapse-button {
   background: none;
   border: none;
@@ -662,6 +669,23 @@ textarea:focus {
 .collapse-button:hover {
   background: none;
   color: var(--muted);
+}
+
+.debug-chip {
+  border: 1px solid var(--border-mid);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--accent-text);
+  padding: 0.38rem 0.55rem;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.debug-chip:hover,
+.debug-chip.active {
+  background: rgba(123, 104, 238, 0.12);
+  border-color: rgba(169, 158, 245, 0.32);
+  color: var(--text);
 }
 
 .compact {

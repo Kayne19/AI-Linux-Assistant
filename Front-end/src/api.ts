@@ -1,9 +1,11 @@
 import type {
   BootstrapResponse,
   ChatMessage,
+  ChatRunListResponse,
   ChatRun,
   ChatSession,
   Project,
+  RunEvent,
   SendMessageResponse,
   User,
 } from "./types";
@@ -27,15 +29,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-type BackendStreamEvent =
-  | { type: "state"; seq?: number; code: string }
-  | { type: "event"; seq?: number; code: string; payload?: Record<string, unknown> }
-  | ({ type: "done"; seq?: number } & SendMessageResponse)
-  | { type: "error"; seq?: number; message: string }
-  | { type: "cancelled"; seq?: number; message: string };
+type BackendStreamEvent = RunEvent;
 
 type StreamHandlers = {
   onSequence?: (seq: number) => void;
+  onRunEvent?: (event: BackendStreamEvent) => void;
   onState?: (code: string) => void;
   onEvent?: (code: string, payload?: Record<string, unknown>) => void;
   onTextDelta?: (delta: string) => void;
@@ -99,6 +97,7 @@ async function readEventStream(
         if (typeof event.seq === "number") {
           handlers.onSequence?.(event.seq);
         }
+        handlers.onRunEvent?.(event);
         if (event.type === "state") {
           handlers.onState?.(event.code);
         } else if (event.type === "event") {
@@ -182,6 +181,15 @@ export const api = {
       method: "DELETE",
     }),
   getChat: (chatId: string) => request<ChatSession>(`/chats/${chatId}`),
+  listRuns: (chatId: string, options: { page?: number; pageSize?: number; status?: string } = {}) => {
+    const params = new URLSearchParams();
+    params.set("page", String(Math.max(1, options.page || 1)));
+    params.set("page_size", String(Math.max(1, options.pageSize || 20)));
+    if ((options.status || "").trim()) {
+      params.set("status", (options.status || "").trim());
+    }
+    return request<ChatRunListResponse>(`/chats/${chatId}/runs?${params.toString()}`);
+  },
   listMessages: (chatId: string) => request<ChatMessage[]>(`/chats/${chatId}/messages`),
   sendMessage: (chatId: string, content: string, clientRequestId?: string) =>
     request<SendMessageResponse>(`/chats/${chatId}/messages`, {
@@ -198,6 +206,12 @@ export const api = {
       }),
     }),
   getRun: (runId: string) => request<ChatRun>(`/runs/${runId}`),
+  listRunEvents: (runId: string, options: { afterSeq?: number; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    params.set("after_seq", String(Math.max(0, options.afterSeq || 0)));
+    params.set("limit", String(Math.min(1000, Math.max(1, options.limit || 200))));
+    return request<RunEvent[]>(`/runs/${runId}/events?${params.toString()}`);
+  },
   cancelRun: (runId: string) =>
     request<ChatRun>(`/runs/${runId}/cancel`, {
       method: "POST",
@@ -249,6 +263,7 @@ export const api = {
           if (typeof event.seq === "number") {
             handlers.onSequence?.(event.seq);
           }
+          handlers.onRunEvent?.(event);
           if (event.type === "state") {
             handlers.onState?.(event.code);
           } else if (event.type === "event") {

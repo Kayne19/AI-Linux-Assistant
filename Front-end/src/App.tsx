@@ -1,5 +1,6 @@
 import { CSSProperties, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import { DebugPanel } from "./debug/DebugPanel";
 import { renderMessageContent } from "./renderMessage";
 import { getStreamStatusAliases, getStreamStatusKey, getStreamStatusLabel } from "./streamStatusText";
 import type { ChatMessage, ChatRun, ChatSession, Project, StreamStatusEvent, User } from "./types";
@@ -112,6 +113,9 @@ function optimisticIdsForRun(runId: string) {
 }
 
 export default function App() {
+  const isDebugMode =
+    import.meta.env.DEV ||
+    (typeof window !== "undefined" && window.localStorage.getItem("ala_debug") === "1");
   const [usernameInput, setUsernameInput] = useState("");
   const [projectNameInput, setProjectNameInput] = useState("");
   const [projectDescriptionInput, setProjectDescriptionInput] = useState("");
@@ -143,6 +147,7 @@ export default function App() {
   const [councilPanelCollapsed, setCouncilPanelCollapsed] = useState(false);
   const [councilEntries, setCouncilEntries] = useState<CouncilEntry[]>([]);
   const [viewingCouncilMessageId, setViewingCouncilMessageId] = useState<number | null>(null);
+  const [debugPanelOpen, setDebugPanelOpen] = useState(false);
 
   const dragStateRef = useRef<{ active: boolean; width: number }>({ active: false, width: 244 });
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1182,14 +1187,25 @@ export default function App() {
 
             </div>
             <div className="sidebar-footer">
-              <button
-                type="button"
-                className="collapse-button"
-                onClick={() => setSidebarCollapsed(true)}
-                aria-label="Collapse sidebar"
-              >
-                « collapse
-              </button>
+              <div className="sidebar-footer-actions">
+                {isDebugMode ? (
+                  <button
+                    type="button"
+                    className={`debug-chip${debugPanelOpen ? " active" : ""}`}
+                    onClick={() => setDebugPanelOpen((current) => !current)}
+                  >
+                    [DBG]
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="collapse-button"
+                  onClick={() => setSidebarCollapsed(true)}
+                  aria-label="Collapse sidebar"
+                >
+                  « collapse
+                </button>
+              </div>
             </div>
             
           </>
@@ -1417,6 +1433,7 @@ export default function App() {
           </div>
         </form>
       </main>
+      {debugPanelOpen && isDebugMode ? <DebugPanel chatId={selectedChatId} onClose={() => setDebugPanelOpen(false)} /> : null}
     </div>
     {showCreateProjectDialog ? (
       <div className="dialog-backdrop" onClick={() => setShowCreateProjectDialog(false)}>

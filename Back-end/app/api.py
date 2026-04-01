@@ -114,6 +114,14 @@ class ChatRunResponse(BaseModel):
     final_assistant_message_id: int | None = None
 
 
+class ChatRunListResponse(BaseModel):
+    runs: list[ChatRunResponse]
+    total: int
+    page: int
+    page_size: int
+    has_more: bool
+
+
 class ChatSessionResponse(BaseModel):
     id: str
     project_id: str
@@ -246,17 +254,25 @@ def _client_request_id(raw_value: str | None):
 
 
 def _serialize_event_row(event_row):
-    return serialize_run_event(event_row.seq, event_row.type, event_row.code, event_row.payload_json)
+    return serialize_run_event(
+        event_row.seq,
+        event_row.type,
+        event_row.code,
+        event_row.payload_json,
+        created_at=getattr(event_row, "created_at", None),
+    )
 
 
 def _terminal_event_from_snapshot(run, app_store):
+    terminal_created_at = _iso(getattr(run, "finished_at", None) or getattr(run, "updated_at", None))
     if run.status == "completed" and run.final_user_message_id and run.final_assistant_message_id:
         user_message = app_store.get_message(run.final_user_message_id)
         assistant_message = app_store.get_message(run.final_assistant_message_id)
         if user_message is None or assistant_message is None:
-            return {"type": "error", "message": "Run completed without persisted messages."}
+            return {"type": "error", "message": "Run completed without persisted messages.", "created_at": terminal_created_at}
         return {
             "type": "done",
+            "created_at": terminal_created_at,
             "user_message": _model_dump(_serialize_message(user_message)),
             "assistant_message": _model_dump(_serialize_message(assistant_message)),
             "debug": {
@@ -267,9 +283,9 @@ def _terminal_event_from_snapshot(run, app_store):
             },
         }
     if run.status == "cancelled":
-        return {"type": "cancelled", "message": run.error_message or "Run cancelled."}
+        return {"type": "cancelled", "message": run.error_message or "Run cancelled.", "created_at": terminal_created_at}
     if run.status == "failed":
-        return {"type": "error", "message": run.error_message or "Run failed."}
+        return {"type": "error", "message": run.error_message or "Run failed.", "created_at": terminal_created_at}
     return None
 
 
@@ -595,6 +611,25 @@ def create_app():
             raise HTTPException(status_code=404, detail="Chat session not found.")
         return [_serialize_message(message) for message in messages]
 
+    @app.get("/chats/{chat_session_id}/runs", response_model=ChatRunListResponse)
+    def list_chat_runs(chat_session_id: str, page: int = 1, page_size: int = 20, status: str | None = None):
+        _chat_context_or_404(chat_session_id)
+        normalized_page = max(1, int(page))
+        normalized_page_size = min(100, max(1, int(page_size)))
+        runs, total = run_store.list_runs_for_chat(
+            chat_session_id,
+            page=normalized_page,
+            page_size=normalized_page_size,
+            status=status,
+        )
+        return ChatRunListResponse(
+            runs=[_serialize_run(run) for run in runs],
+            total=total,
+            page=normalized_page,
+            page_size=normalized_page_size,
+            has_more=(normalized_page * normalized_page_size) < total,
+        )
+
     @app.post("/chats/{chat_session_id}/runs", response_model=ChatRunResponse)
     def create_run(chat_session_id: str, request: RunCreateRequest):
         run = _create_or_reuse_run(chat_session_id, request)
@@ -608,11 +643,12 @@ def create_app():
         return _serialize_run(run)
 
     @app.get("/runs/{run_id}/events")
-    def list_run_events(run_id: str, after_seq: int = 0):
+    def list_run_events(run_id: str, after_seq: int = 0, limit: int = 200):
         run = run_store.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found.")
-        events = run_store.list_events_after(run_id, after_seq=after_seq)
+        normalized_limit = min(1000, max(1, int(limit)))
+        events = run_store.list_events_after(run_id, after_seq=after_seq, limit=normalized_limit)
         return [_serialize_event_row(event) for event in events]
 
     @app.get("/runs/{run_id}/events/stream")

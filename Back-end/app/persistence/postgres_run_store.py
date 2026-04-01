@@ -52,14 +52,18 @@ class PostgresRunStore:
         self._redis_client = redis_client
         self._ensure_run_schema()
 
-    def _publish(self, run_id, seq, event_type, code, payload_json):
+    def _publish(self, run_id, seq, event_type, code, payload_json, created_at=None):
         """Publish a serialized event to the Redis fanout channel. Never raises."""
         if self._redis_client is None:
             return
         try:
             from streaming.event_serializer import serialize_run_event
             from streaming.redis_events import publish_event
-            publish_event(self._redis_client, run_id, serialize_run_event(seq, event_type, code, payload_json))
+            publish_event(
+                self._redis_client,
+                run_id,
+                serialize_run_event(seq, event_type, code, payload_json, created_at=created_at),
+            )
         except Exception:
             pass
 
@@ -183,6 +187,32 @@ class PostgresRunStore:
             results.setdefault(row.chat_session_id, row)
         return results
 
+    def list_runs_for_chat(self, chat_session_id, page=1, page_size=20, status=None):
+        page = max(1, int(page))
+        page_size = max(1, int(page_size))
+        offset = (page - 1) * page_size
+        with self._session() as session:
+            filters = [ChatRun.chat_session_id == chat_session_id]
+            normalized_status = (status or "").strip()
+            if normalized_status:
+                filters.append(ChatRun.status == normalized_status)
+
+            total = session.scalar(
+                select(func.count())
+                .select_from(ChatRun)
+                .where(*filters)
+            ) or 0
+            runs = list(
+                session.scalars(
+                    select(ChatRun)
+                    .where(*filters)
+                    .order_by(ChatRun.created_at.desc(), ChatRun.id.desc())
+                    .offset(offset)
+                    .limit(page_size)
+                )
+            )
+        return runs, int(total)
+
     def list_events_after(self, run_id, after_seq=0, limit=200):
         with self._session() as session:
             stmt = (
@@ -225,7 +255,7 @@ class PostgresRunStore:
             session.add(event)
             session.commit()
             session.refresh(event)
-        self._publish(run_id, next_seq, event_type, code or "", payload)
+        self._publish(run_id, next_seq, event_type, code or "", payload, created_at=event.created_at)
         return event
 
     def append_text_checkpoint(self, run_id, delta_chunk, window):
@@ -257,7 +287,7 @@ class PostgresRunStore:
             session.add(event)
             session.commit()
             session.refresh(event)
-        self._publish(run_id, next_seq, "event", "text_checkpoint", payload)
+        self._publish(run_id, next_seq, "event", "text_checkpoint", payload, created_at=event.created_at)
         return event
 
     def claim_next_run(self, worker_id, lease_seconds):
@@ -333,6 +363,7 @@ class PostgresRunStore:
             return bool(run.cancel_requested)
 
     def mark_failed(self, run_id, *, worker_id="", error_message="", event_payload=None):
+        created_at = None
         with self._session() as session:
             run = session.scalar(select(ChatRun).where(ChatRun.id == run_id).with_for_update())
             if run is None:
@@ -349,21 +380,23 @@ class PostgresRunStore:
             next_seq = int(run.latest_event_seq or 0) + 1
             run.latest_event_seq = next_seq
             error_payload = event_payload or {"message": run.error_message or "Run failed."}
-            session.add(
-                ChatRunEvent(
-                    run_id=run_id,
-                    seq=next_seq,
-                    type="error",
-                    code="error",
-                    payload_json=error_payload,
-                )
+            event = ChatRunEvent(
+                run_id=run_id,
+                seq=next_seq,
+                type="error",
+                code="error",
+                payload_json=error_payload,
             )
+            session.add(event)
+            session.flush()
+            created_at = event.created_at
             session.commit()
             session.refresh(run)
-        self._publish(run_id, next_seq, "error", "error", error_payload)
+        self._publish(run_id, next_seq, "error", "error", error_payload, created_at=created_at)
         return run
 
     def mark_cancelled(self, run_id, *, worker_id="", error_message="Run cancelled.", event_payload=None):
+        created_at = None
         with self._session() as session:
             run = session.scalar(select(ChatRun).where(ChatRun.id == run_id).with_for_update())
             if run is None:
@@ -381,18 +414,19 @@ class PostgresRunStore:
             next_seq = int(run.latest_event_seq or 0) + 1
             run.latest_event_seq = next_seq
             cancelled_payload = event_payload or {"message": run.error_message or "Run cancelled."}
-            session.add(
-                ChatRunEvent(
-                    run_id=run_id,
-                    seq=next_seq,
-                    type="cancelled",
-                    code="cancelled",
-                    payload_json=cancelled_payload,
-                )
+            event = ChatRunEvent(
+                run_id=run_id,
+                seq=next_seq,
+                type="cancelled",
+                code="cancelled",
+                payload_json=cancelled_payload,
             )
+            session.add(event)
+            session.flush()
+            created_at = event.created_at
             session.commit()
             session.refresh(run)
-        self._publish(run_id, next_seq, "cancelled", "cancelled", cancelled_payload)
+        self._publish(run_id, next_seq, "cancelled", "cancelled", cancelled_payload, created_at=created_at)
         return run
 
     def requeue_run(self, run_id):
@@ -424,6 +458,7 @@ class PostgresRunStore:
         council_entries=None,
         done_payload=None,
     ):
+        created_at = None
         with self._session() as session:
             run = session.scalar(select(ChatRun).where(ChatRun.id == run_id).with_for_update())
             if run is None:
@@ -489,18 +524,19 @@ class PostgresRunStore:
                 "created_at": _iso(assistant_message.created_at),
                 "council_entries": assistant_message.council_entries or None,
                 }
-            session.add(
-                ChatRunEvent(
-                    run_id=run_id,
-                    seq=next_seq,
-                    type="done",
-                    code="done",
-                    payload_json=payload or None,
-                )
+            event = ChatRunEvent(
+                run_id=run_id,
+                seq=next_seq,
+                type="done",
+                code="done",
+                payload_json=payload or None,
             )
+            session.add(event)
+            session.flush()
+            created_at = event.created_at
             session.commit()
             session.refresh(user_message)
             session.refresh(assistant_message)
             session.refresh(run)
-        self._publish(run_id, next_seq, "done", "done", payload or None)
+        self._publish(run_id, next_seq, "done", "done", payload or None, created_at=created_at)
         return user_message, assistant_message

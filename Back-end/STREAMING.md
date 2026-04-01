@@ -55,6 +55,10 @@ The stream currently sends JSON payloads shaped like:
 - `type: "done"`
 - `type: "error"`
 - `type: "cancelled"`
+- `seq: int`
+- `created_at: str`
+- `seq: int`
+- `created_at: str`
 
 `state` events represent router state transitions.
 
@@ -72,6 +76,12 @@ The stream currently sends JSON payloads shaped like:
 `error` reports backend failure.
 
 `cancelled` reports a run that observed `cancel_requested` at a safe checkpoint and terminated without normal completion persistence.
+
+That same serialized event shape is reused for:
+
+- `GET /runs/{run_id}/events`
+- `GET /runs/{run_id}/events/stream`
+- Redis fanout payloads
 
 ## Backend Flow
 
@@ -199,6 +209,19 @@ Owns:
 - mapping backend event codes into human labels
 - reconnecting with `after_seq` when a running chat is reopened
 - replacing optimistic messages with the final persisted backend messages at completion
+
+### Debug Drawer
+
+[Front-end/src/debug/](../Front-end/src/debug/)
+
+Owns the dev/admin run inspector UI. It reuses the same durable run APIs and SSE stream as the normal chat UX:
+
+- `GET /chats/{chat_session_id}/runs`
+- `GET /runs/{run_id}`
+- `GET /runs/{run_id}/events?after_seq=...&limit=...`
+- `GET /runs/{run_id}/events/stream`
+
+It does not introduce a separate debug transport.
 
 That replacement rule is important:
 

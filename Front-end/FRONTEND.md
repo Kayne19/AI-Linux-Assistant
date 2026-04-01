@@ -36,6 +36,7 @@ It currently owns:
 - optimistic streaming message behavior
 - council panel state and live council-entry rendering
 - sidebar state and edit dialogs
+- debug drawer toggle state
 
 This file is the main stateful UI container.
 
@@ -65,6 +66,16 @@ This is where product voice for streaming statuses belongs.
 ### `src/styles.css`
 
 Owns the current app layout and visual treatment.
+
+### `src/debug/`
+
+Owns the dev/admin debug drawer:
+
+- chat-scoped run history
+- per-run snapshot and event inspection
+- timing calculations
+- live SSE attach/reconnect for active runs
+- client-side event tab filtering
 
 ## Application Model
 
@@ -113,6 +124,7 @@ When the user switches away from a running chat:
 - temporary optimistic rendering
 - per-chat attach/reconnect UX
 - council UI rendering for live/persisted deliberation
+- dev-only debug inspection UX
 - layout/state for sidebar/dialogs
 - local UX polish
 
@@ -131,7 +143,8 @@ When the user switches away from a running chat:
 2. The frontend is intentionally not a general-purpose state machine; the backend remains the real control plane.
 3. Council rendering lives in `App.tsx` today rather than in isolated components.
 4. Hidden chats rely on run snapshot state rather than live SSE until reopened.
-5. The current UI is usable, but still product-iteration code rather than a finished design system.
+5. The debug drawer is intentionally operator-focused rather than a polished end-user surface.
+6. The current UI is usable, but still product-iteration code rather than a finished design system.
 
 ## Safe Change Guidelines
 
@@ -140,7 +153,8 @@ If you modify the frontend, preserve these invariants:
 1. Frontend talks only to FastAPI.
 2. Backend remains the source of truth for persisted messages.
 3. Human status labels remain frontend-owned.
-4. Do not reimplement backend routing or memory logic in React.
+4. The debug drawer should reuse the durable run APIs rather than invent a parallel debug channel.
+5. Do not reimplement backend routing or memory logic in React.
 
 ## Files To Read First
 
@@ -150,3 +164,4 @@ If you modify the frontend, preserve these invariants:
 4. [src/streamStatusText.ts](src/streamStatusText.ts)
 5. [src/renderMessage.tsx](src/renderMessage.tsx)
 6. [src/styles.css](src/styles.css)
+7. [src/debug/DebugPanel.tsx](src/debug/DebugPanel.tsx)

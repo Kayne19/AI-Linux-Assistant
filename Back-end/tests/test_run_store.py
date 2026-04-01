@@ -1,8 +1,10 @@
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from persistence.database import Base
-from persistence.postgres_models import ChatMessage, ChatSession, Project, User
+from persistence.postgres_models import ChatMessage, ChatRun, ChatSession, Project, User
 from persistence.postgres_run_store import (
     ActiveChatRunExistsError,
     ActiveRunLimitExceededError,
@@ -210,3 +212,147 @@ def test_run_store_terminal_events_stay_monotonic():
 
     assert [event.seq for event in events] == [1, 2]
     assert events[-1].type == "cancelled"
+
+
+def test_list_runs_for_chat_paginates_orders_and_filters():
+    run_store, session_factory = _build_run_store()
+    user, project, chat = _seed_chat(session_factory)
+
+    first = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="first",
+        magi="off",
+        client_request_id="token-1",
+        max_active_runs_per_user=3,
+    )
+    run_store.mark_failed(first.id, error_message="boom")
+
+    second = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="second",
+        magi="off",
+        client_request_id="token-2",
+        max_active_runs_per_user=3,
+    )
+    run_store.mark_cancelled(second.id, error_message="stop")
+
+    third = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="third",
+        magi="off",
+        client_request_id="token-3",
+        max_active_runs_per_user=3,
+    )
+
+    base_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with session_factory() as session:
+        runs = {
+            row.id: row
+            for row in session.query(ChatRun).filter(ChatRun.id.in_([first.id, second.id, third.id])).all()
+        }
+        runs[first.id].created_at = base_time
+        runs[second.id].created_at = base_time + timedelta(minutes=1)
+        runs[third.id].created_at = base_time + timedelta(minutes=2)
+        session.commit()
+
+    first_page, total = run_store.list_runs_for_chat(chat.id, page=1, page_size=2)
+    second_page, second_total = run_store.list_runs_for_chat(chat.id, page=2, page_size=2)
+    failed_runs, failed_total = run_store.list_runs_for_chat(chat.id, page=1, page_size=10, status="failed")
+
+    assert total == 3
+    assert second_total == 3
+    assert [run.id for run in first_page] == [third.id, second.id]
+    assert [run.id for run in second_page] == [first.id]
+
+    assert failed_total == 1
+    assert [run.id for run in failed_runs] == [first.id]
+
+
+def test_run_store_lists_runs_for_chat_newest_first_with_pagination():
+    run_store, session_factory = _build_run_store()
+    user, project, chat = _seed_chat(session_factory)
+
+    first = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="first",
+        magi="off",
+        client_request_id="token-1",
+        max_active_runs_per_user=3,
+    )
+    run_store.mark_failed(first.id, error_message="first failed")
+
+    second = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="second",
+        magi="off",
+        client_request_id="token-2",
+        max_active_runs_per_user=3,
+    )
+    run_store.mark_cancelled(second.id, error_message="second cancelled")
+
+    third = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="third",
+        magi="off",
+        client_request_id="token-3",
+        max_active_runs_per_user=3,
+    )
+
+    page_one, total = run_store.list_runs_for_chat(chat.id, page=1, page_size=2)
+    page_two, second_total = run_store.list_runs_for_chat(chat.id, page=2, page_size=2)
+
+    assert total == 3
+    assert second_total == 3
+    assert [run.id for run in page_one] == [third.id, second.id]
+    assert [run.id for run in page_two] == [first.id]
+
+
+def test_run_store_lists_runs_for_chat_with_status_filter():
+    run_store, session_factory = _build_run_store()
+    user, project, chat = _seed_chat(session_factory)
+
+    completed = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="done",
+        magi="off",
+        client_request_id="token-complete",
+        max_active_runs_per_user=3,
+    )
+    run_store.complete_run_with_messages(
+        completed.id,
+        worker_id="worker-1",
+        user_role="user",
+        user_content="done",
+        assistant_role="model",
+        assistant_content="done",
+    )
+
+    failed = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="fail",
+        magi="off",
+        client_request_id="token-fail",
+        max_active_runs_per_user=3,
+    )
+    run_store.mark_failed(failed.id, error_message="boom")
+
+    runs, total = run_store.list_runs_for_chat(chat.id, page=1, page_size=10, status="completed")
+
+    assert total == 1
+    assert [run.id for run in runs] == [completed.id]

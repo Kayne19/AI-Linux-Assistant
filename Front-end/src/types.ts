@@ -68,6 +68,14 @@ export type ChatRun = {
   final_assistant_message_id?: number | null;
 };
 
+export type ChatRunListResponse = {
+  runs: ChatRun[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+};
+
 export type AssistantDebug = {
   state_trace: string[];
   tool_events: Array<Record<string, unknown>>;
@@ -80,6 +88,43 @@ export type SendMessageResponse = {
   assistant_message: ChatMessage;
   debug: AssistantDebug;
 };
+
+export type RunStateEvent = {
+  type: "state";
+  seq: number;
+  code: string;
+  created_at: string;
+};
+
+export type RunGenericEvent = {
+  type: "event";
+  seq: number;
+  code: string;
+  payload?: Record<string, unknown>;
+  created_at: string;
+};
+
+export type RunDoneEvent = SendMessageResponse & {
+  type: "done";
+  seq: number;
+  created_at: string;
+};
+
+export type RunErrorEvent = {
+  type: "error";
+  seq: number;
+  message: string;
+  created_at: string;
+};
+
+export type RunCancelledEvent = {
+  type: "cancelled";
+  seq: number;
+  message: string;
+  created_at: string;
+};
+
+export type RunEvent = RunStateEvent | RunGenericEvent | RunDoneEvent | RunErrorEvent | RunCancelledEvent;
 
 export type BootstrapResponse = {
   user: User;
