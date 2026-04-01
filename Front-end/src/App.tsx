@@ -15,6 +15,7 @@ type CouncilEntry = {
   text: string;
   complete: boolean;
   streamBuffer?: string;
+  streamPreview?: string;
 };
 
 type ChatRunUIState = {
@@ -375,7 +376,14 @@ export default function App() {
               ...current,
               councilEntries: current.councilEntries.map((entry) =>
                 entry.entryId === entryId
-                  ? { ...entry, streamBuffer: (entry.streamBuffer ?? "") + bufferedDelta }
+                  ? (() => {
+                      const streamBuffer = (entry.streamBuffer ?? "") + bufferedDelta;
+                      return {
+                        ...entry,
+                        streamBuffer,
+                        streamPreview: getStreamingDisplayText(streamBuffer),
+                      };
+                    })()
                   : entry,
               ),
             }
@@ -571,7 +579,10 @@ export default function App() {
   }, [selectedChatBusy, streamStatus]);
 
   useEffect(() => {
-    councilEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    councilEndRef.current?.scrollIntoView({
+      behavior: councilEntries.some((entry) => !entry.complete) ? "auto" : "smooth",
+      block: "end",
+    });
   }, [councilEntries]);
 
   const liveStatusKey = getStreamStatusKey(streamStatus);
@@ -673,8 +684,17 @@ export default function App() {
                   ? {
                       ...current,
                       councilEntries: [
-                        ...current.councilEntries.filter((entry) => entry.entryId !== entryId),
-                        { entryId, role, phase, round, text: "", complete: false, streamBuffer: "" },
+                      ...current.councilEntries.filter((entry) => entry.entryId !== entryId),
+                        {
+                          entryId,
+                          role,
+                          phase,
+                          round,
+                          text: "",
+                          complete: false,
+                          streamBuffer: "",
+                          streamPreview: "",
+                        },
                       ],
                     }
                   : current,
@@ -700,7 +720,15 @@ export default function App() {
                   ? {
                       ...current,
                       councilEntries: current.councilEntries.map((entry) =>
-                        entry.entryId === entryId ? { ...entry, text, complete: true, streamBuffer: undefined } : entry,
+                        entry.entryId === entryId
+                          ? {
+                              ...entry,
+                              text,
+                              complete: true,
+                              streamBuffer: undefined,
+                              streamPreview: undefined,
+                            }
+                          : entry,
                       ),
                     }
                   : current,
@@ -1397,7 +1425,7 @@ export default function App() {
                       <p className="council-entry-text">{entry.text}</p>
                     ) : entry.streamBuffer ? (
                       <p className="council-entry-text streaming">
-                        {getStreamingDisplayText(entry.streamBuffer) || "…"}
+                        {entry.streamPreview || "…"}
                         <span className="stream-cursor" aria-hidden="true" />
                       </p>
                     ) : (

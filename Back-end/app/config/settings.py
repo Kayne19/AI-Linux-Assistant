@@ -49,16 +49,16 @@ class AppSettings:
     )
     magi_max_discussion_rounds: int = 3
     magi_lite_eager: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "medium")
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "low")
     )
     magi_lite_skeptic: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "high")
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "low")
     )
     magi_lite_historian: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "high")
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "low")
     )
     magi_lite_arbiter: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "high")
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "low")
     )
     magi_lite_max_discussion_rounds: int = 2
     max_active_runs_per_user_default: int = 3
@@ -173,22 +173,22 @@ def load_settings():
         magi_lite_eager=RoleModelSettings(
             provider=_get_env("MAGI_LITE_EAGER_PROVIDER", "openai"),
             model=_get_env("MAGI_LITE_EAGER_MODEL", "gpt-5.4-mini"),
-            reasoning_effort=_get_env("MAGI_LITE_EAGER_REASONING_EFFORT", "medium"),
+            reasoning_effort=_get_env("MAGI_LITE_EAGER_REASONING_EFFORT", "low"),
         ),
         magi_lite_skeptic=RoleModelSettings(
             provider=_get_env("MAGI_LITE_SKEPTIC_PROVIDER", "openai"),
             model=_get_env("MAGI_LITE_SKEPTIC_MODEL", "gpt-5.4-mini"),
-            reasoning_effort=_get_env("MAGI_LITE_SKEPTIC_REASONING_EFFORT", "high"),
+            reasoning_effort=_get_env("MAGI_LITE_SKEPTIC_REASONING_EFFORT", "low"),
         ),
         magi_lite_historian=RoleModelSettings(
             provider=_get_env("MAGI_LITE_HISTORIAN_PROVIDER", "openai"),
             model=_get_env("MAGI_LITE_HISTORIAN_MODEL", "gpt-5.4-mini"),
-            reasoning_effort=_get_env("MAGI_LITE_HISTORIAN_REASONING_EFFORT", "high"),
+            reasoning_effort=_get_env("MAGI_LITE_HISTORIAN_REASONING_EFFORT", "low"),
         ),
         magi_lite_arbiter=RoleModelSettings(
             provider=_get_env("MAGI_LITE_ARBITER_PROVIDER", "openai"),
             model=_get_env("MAGI_LITE_ARBITER_MODEL", "gpt-5.4-mini"),
-            reasoning_effort=_get_env("MAGI_LITE_ARBITER_REASONING_EFFORT", "high"),
+            reasoning_effort=_get_env("MAGI_LITE_ARBITER_REASONING_EFFORT", "low"),
         ),
         magi_lite_max_discussion_rounds=_get_int_env("MAGI_LITE_MAX_DISCUSSION_ROUNDS", 2),
         max_active_runs_per_user_default=_get_int_env("MAX_ACTIVE_RUNS_PER_USER_DEFAULT", 3),
