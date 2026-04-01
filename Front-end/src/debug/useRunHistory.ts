@@ -1,162 +1,147 @@
-import { useEffect, useState } from "react";
-
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { ChatRun } from "../types";
-import { dedupeRuns, isActiveRunStatus } from "./debugUtils";
 
-const RUNS_PAGE_SIZE = 20;
+const PAGE_SIZE = 20;
 
-type RunHistoryState = {
-  runs: ChatRun[];
-  total: number;
-  page: number;
-  hasMore: boolean;
-  loading: boolean;
-  loadingMore: boolean;
-  error: string;
-};
+function mergeRuns(currentRuns: ChatRun[], nextRuns: ChatRun[]): ChatRun[] {
+  const merged = new Map<string, ChatRun>();
+  for (const run of currentRuns) {
+    merged.set(run.id, run);
+  }
+  for (const run of nextRuns) {
+    merged.set(run.id, run);
+  }
+  return Array.from(merged.values()).sort((left, right) => {
+    const leftTime = Date.parse(left.created_at) || 0;
+    const rightTime = Date.parse(right.created_at) || 0;
+    if (rightTime !== leftTime) {
+      return rightTime - leftTime;
+    }
+    return right.id.localeCompare(left.id);
+  });
+}
 
 export function useRunHistory(chatId: string) {
-  const [state, setState] = useState<RunHistoryState>({
-    runs: [],
-    total: 0,
-    page: 1,
-    hasMore: false,
-    loading: false,
-    loadingMore: false,
-    error: "",
-  });
+  const [runs, setRuns] = useState<ChatRun[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState("");
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     if (!chatId) {
-      setState({
-        runs: [],
-        total: 0,
-        page: 1,
-        hasMore: false,
-        loading: false,
-        loadingMore: false,
-        error: "",
-      });
+      setRuns([]);
+      setPage(1);
+      setTotal(0);
+      setHasMore(false);
+      setError("");
       return;
     }
 
-    let cancelled = false;
-    setState((current) => ({ ...current, loading: true, error: "", runs: [], total: 0, page: 1, hasMore: false }));
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    setLoading(true);
+    setLoadingMore(false);
+    setError("");
+    setRuns([]);
+    setPage(1);
+    setTotal(0);
+    setHasMore(false);
 
-    void (async () => {
-      try {
-        const [chat, response] = await Promise.all([
-          api.getChat(chatId),
-          api.listRuns(chatId, { page: 1, pageSize: RUNS_PAGE_SIZE }),
-        ]);
-        let runs = dedupeRuns(response.runs);
-        if (chat.active_run_id && !runs.some((run) => run.id === chat.active_run_id)) {
-          const activeRun = await api.getRun(chat.active_run_id);
-          runs = dedupeRuns([activeRun, ...runs]);
-        }
-        if (cancelled) {
+    void api.listRuns(chatId, { page: 1, pageSize: PAGE_SIZE })
+      .then((response) => {
+        if (requestIdRef.current !== requestId) {
           return;
         }
-        setState({
-          runs,
-          total: Math.max(response.total, runs.length),
-          page: response.page,
-          hasMore: response.has_more,
-          loading: false,
-          loadingMore: false,
-          error: "",
-        });
-      } catch (error) {
-        if (cancelled) {
+        setRuns(response.runs);
+        setTotal(response.total);
+        setHasMore(response.has_more);
+      })
+      .catch((err: Error) => {
+        if (requestIdRef.current !== requestId) {
           return;
         }
-        setState((current) => ({
-          ...current,
-          loading: false,
-          loadingMore: false,
-          error: (error as Error).message,
-        }));
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+        setError(err.message);
+      })
+      .finally(() => {
+        if (requestIdRef.current === requestId) {
+          setLoading(false);
+        }
+      });
   }, [chatId]);
 
   async function loadMore() {
-    if (!chatId || state.loading || state.loadingMore || !state.hasMore) {
+    if (!chatId || loading || loadingMore || !hasMore) {
       return;
     }
-    setState((current) => ({ ...current, loadingMore: true, error: "" }));
+    const nextPage = page + 1;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    setLoadingMore(true);
+    setError("");
     try {
-      const response = await api.listRuns(chatId, { page: state.page + 1, pageSize: RUNS_PAGE_SIZE });
-      setState((current) => ({
-        ...current,
-        runs: dedupeRuns([...current.runs, ...response.runs]),
-        total: Math.max(current.total, response.total),
-        page: response.page,
-        hasMore: response.has_more,
-        loadingMore: false,
-      }));
-    } catch (error) {
-      setState((current) => ({
-        ...current,
-        loadingMore: false,
-        error: (error as Error).message,
-      }));
+      const response = await api.listRuns(chatId, { page: nextPage, pageSize: PAGE_SIZE });
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
+      setRuns((current) => mergeRuns(current, response.runs));
+      setPage(nextPage);
+      setTotal(response.total);
+      setHasMore(response.has_more);
+    } catch (err) {
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      if (requestIdRef.current === requestId) {
+        setLoadingMore(false);
+      }
     }
   }
 
-  async function refresh() {
+  async function reload() {
     if (!chatId) {
       return;
     }
-    setState((current) => ({ ...current, loading: true, error: "" }));
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    setLoading(true);
+    setLoadingMore(false);
+    setError("");
     try {
-      const [chat, response] = await Promise.all([
-        api.getChat(chatId),
-        api.listRuns(chatId, { page: 1, pageSize: RUNS_PAGE_SIZE }),
-      ]);
-      let runs = dedupeRuns(response.runs);
-      if (chat.active_run_id && !runs.some((run) => run.id === chat.active_run_id)) {
-        const activeRun = await api.getRun(chat.active_run_id);
-        runs = dedupeRuns([activeRun, ...runs]);
+      const response = await api.listRuns(chatId, { page: 1, pageSize: PAGE_SIZE });
+      if (requestIdRef.current !== requestId) {
+        return;
       }
-      setState((current) => ({
-        ...current,
-        runs,
-        total: Math.max(response.total, runs.length),
-        page: response.page,
-        hasMore: response.has_more,
-        loading: false,
-        loadingMore: false,
-        error: "",
-      }));
-    } catch (error) {
-      setState((current) => ({
-        ...current,
-        loading: false,
-        loadingMore: false,
-        error: (error as Error).message,
-      }));
+      setRuns(response.runs);
+      setPage(1);
+      setTotal(response.total);
+      setHasMore(response.has_more);
+    } catch (err) {
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      if (requestIdRef.current === requestId) {
+        setLoading(false);
+      }
     }
   }
 
-  const activeRun = state.runs.find((run) => isActiveRunStatus(run.status)) || null;
-  const historicalRuns = state.runs.filter((run) => !isActiveRunStatus(run.status));
-
   return {
-    runs: state.runs,
-    activeRun,
-    historicalRuns,
-    total: state.total,
-    hasMore: state.hasMore,
-    loading: state.loading,
-    loadingMore: state.loadingMore,
-    error: state.error,
+    runs,
+    total,
+    hasMore,
+    loading,
+    loadingMore,
+    error,
     loadMore,
-    refresh,
+    reload,
   };
 }

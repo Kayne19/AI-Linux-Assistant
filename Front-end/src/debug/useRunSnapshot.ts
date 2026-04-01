@@ -1,16 +1,12 @@
-import { useEffect, useState } from "react";
-
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { ChatRun } from "../types";
 
-export function useRunSnapshot(runId: string, initialRun: ChatRun | null) {
-  const [run, setRun] = useState<ChatRun | null>(initialRun);
+export function useRunSnapshot(runId: string) {
+  const [run, setRun] = useState<ChatRun | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    setRun(initialRun);
-  }, [initialRun, runId]);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     if (!runId) {
@@ -20,49 +16,54 @@ export function useRunSnapshot(runId: string, initialRun: ChatRun | null) {
       return;
     }
 
-    let cancelled = false;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
     setLoading(true);
     setError("");
 
     void api.getRun(runId)
       .then((nextRun) => {
-        if (cancelled) {
+        if (requestIdRef.current !== requestId) {
           return;
         }
         setRun(nextRun);
-        setLoading(false);
       })
-      .catch((nextError: Error) => {
-        if (cancelled) {
+      .catch((err: Error) => {
+        if (requestIdRef.current !== requestId) {
           return;
         }
-        setError(nextError.message);
-        setLoading(false);
+        setError(err.message);
+      })
+      .finally(() => {
+        if (requestIdRef.current === requestId) {
+          setLoading(false);
+        }
       });
-
-    return () => {
-      cancelled = true;
-    };
   }, [runId]);
 
   async function refresh() {
     if (!runId) {
-      return null;
+      return;
     }
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
     setError("");
     try {
       const nextRun = await api.getRun(runId);
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
       setRun(nextRun);
-      return nextRun;
-    } catch (nextError) {
-      setError((nextError as Error).message);
-      return null;
+    } catch (err) {
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
+      setError((err as Error).message);
     }
   }
 
   return {
     run,
-    setRun,
     loading,
     error,
     refresh,

@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-
 import type { ChatRun } from "../types";
+import { isActiveRunStatus } from "./debugUtils";
+import "./debug.css";
 import { RunInspector } from "./RunInspector";
 import { RunList } from "./RunList";
 import { useRunHistory } from "./useRunHistory";
-import "./debug.css";
 
 type DebugPanelProps = {
   chatId: string;
@@ -12,17 +12,7 @@ type DebugPanelProps = {
 };
 
 export function DebugPanel({ chatId, onClose }: DebugPanelProps) {
-  const {
-    runs,
-    activeRun,
-    historicalRuns,
-    hasMore,
-    loading,
-    loadingMore,
-    error,
-    loadMore,
-    refresh,
-  } = useRunHistory(chatId);
+  const { runs, total, hasMore, loading, loadingMore, error, loadMore, reload } = useRunHistory(chatId);
   const [selectedRunId, setSelectedRunId] = useState("");
 
   useEffect(() => {
@@ -34,52 +24,54 @@ export function DebugPanel({ chatId, onClose }: DebugPanelProps) {
       setSelectedRunId("");
       return;
     }
-    if (selectedRunId && runs.some((run) => run.id === selectedRunId)) {
+    const runIds = new Set(runs.map((run) => run.id));
+    if (selectedRunId && runIds.has(selectedRunId)) {
       return;
     }
-    setSelectedRunId(activeRun?.id || historicalRuns[0]?.id || "");
-  }, [activeRun?.id, historicalRuns, runs, selectedRunId]);
+    const activeRun = runs.find((run) => isActiveRunStatus(run.status));
+    setSelectedRunId(activeRun?.id || runs[0].id);
+  }, [runs, selectedRunId]);
 
-  const selectedRun = runs.find((run) => run.id === selectedRunId) || null;
+  function handleRunChange(nextRun: ChatRun) {
+    setSelectedRunId(nextRun.id);
+    void reload();
+  }
 
   return (
     <>
-      <button type="button" className="debug-panel-backdrop" aria-label="Close debug panel" onClick={onClose} />
+      <button type="button" className="debug-drawer-backdrop" aria-label="Close debug panel" onClick={onClose} />
       <aside className="debug-panel" aria-label="Debug panel">
         <div className="debug-panel-header">
           <div>
-            <p className="eyebrow">Dev / Admin</p>
-            <h2>Run Debug Panel</h2>
+            <p className="eyebrow">Debug</p>
+            <h2>Run inspector</h2>
           </div>
-          <button type="button" className="debug-panel-close" onClick={onClose}>
+          <button type="button" className="ghost-button compact" onClick={onClose}>
             Close
           </button>
         </div>
 
         {!chatId ? (
-          <div className="debug-panel-empty">
-            <p>Select a chat to inspect its runs.</p>
-          </div>
+          <div className="debug-panel-empty">Select a chat to inspect its runs.</div>
         ) : (
-          <div className="debug-panel-grid">
-            <RunList
-              activeRun={activeRun}
-              historicalRuns={historicalRuns}
-              selectedRunId={selectedRunId}
-              loading={loading}
-              loadingMore={loadingMore}
-              error={error}
-              hasMore={hasMore}
-              onSelect={setSelectedRunId}
-              onLoadMore={loadMore}
-              onRefresh={() => void refresh()}
-            />
-            <RunInspector
-              runId={selectedRunId}
-              initialRun={selectedRun as ChatRun | null}
-              onRunMutated={() => void refresh()}
-              onRunTerminal={() => void refresh()}
-            />
+          <div className="debug-panel-body">
+            <div className="debug-panel-column debug-panel-history">
+              <RunList
+                runs={runs}
+                total={total}
+                selectedRunId={selectedRunId}
+                loading={loading}
+                loadingMore={loadingMore}
+                error={error}
+                hasMore={hasMore}
+                onLoadMore={loadMore}
+                onReload={reload}
+                onSelect={setSelectedRunId}
+              />
+            </div>
+            <div className="debug-panel-column debug-panel-inspector">
+              <RunInspector runId={selectedRunId} onRunChange={handleRunChange} />
+            </div>
           </div>
         )}
       </aside>

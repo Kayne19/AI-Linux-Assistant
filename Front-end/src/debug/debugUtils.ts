@@ -1,7 +1,6 @@
 import type { ChatRun, RunEvent } from "../types";
 
 export const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancel_requested"]);
-export const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 export const STREAMING_CODES = new Set(["text_delta", "text_checkpoint", "magi_role_text_delta"]);
 export const DEBUG_TABS = ["Timeline", "States", "Retrieval", "Memory", "Streaming", "Raw"] as const;
 
@@ -10,36 +9,127 @@ export type DebugTab = (typeof DEBUG_TABS)[number];
 export const TAB_FILTERS: Record<DebugTab, (event: RunEvent) => boolean> = {
   Timeline: () => true,
   States: (event) => event.type === "state",
-  Retrieval: (event) => typeof (event as { code?: unknown }).code === "string" && (event as { code: string }).code.startsWith("retrieval_"),
-  Memory: (event) => typeof (event as { code?: unknown }).code === "string" && (event as { code: string }).code.includes("memory"),
+  Retrieval: (event) => (event.type === "state" || event.type === "event") && event.code.startsWith("retrieval_"),
+  Memory: (event) => (event.type === "state" || event.type === "event") && event.code.includes("memory"),
   Streaming: (event) => event.type === "event" && STREAMING_CODES.has(event.code),
   Raw: () => true,
 };
 
-export function isActiveRunStatus(status: string | null | undefined) {
-  return ACTIVE_RUN_STATUSES.has(String(status || ""));
-}
+type StateRow = {
+  event: RunEvent;
+  durationMs: number | null;
+};
 
-export function isTerminalRunStatus(status: string | null | undefined) {
-  return TERMINAL_RUN_STATUSES.has(String(status || ""));
-}
+type RunTimings = {
+  queueWaitMs: number | null;
+  firstEventLatencyMs: number | null;
+  firstTextDeltaLatencyMs: number | null;
+  totalDurationMs: number | null;
+  timeInCurrentStateMs: number | null;
+};
 
-export function isTerminalRunEvent(event: RunEvent) {
-  return event.type === "done" || event.type === "error" || event.type === "cancelled";
-}
-
-export function parseTimestamp(value: string | null | undefined) {
+function parseTimeMs(value?: string | null): number | null {
   if (!value) {
     return null;
   }
   const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? null : parsed;
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function formatTimestamp(value: string | null | undefined) {
-  const parsed = parseTimestamp(value);
-  if (parsed === null) {
-    return "Unknown";
+export function isActiveRunStatus(status: string): boolean {
+  return ACTIVE_RUN_STATUSES.has(status);
+}
+
+export function truncateMiddle(value: string, start = 8, end = 6): string {
+  if (!value) {
+    return "—";
+  }
+  if (value.length <= start + end + 3) {
+    return value;
+  }
+  return `${value.slice(0, start)}…${value.slice(-end)}`;
+}
+
+export function mergeRunEvents(currentEvents: RunEvent[], nextEvents: RunEvent[]): RunEvent[] {
+  const merged = new Map<number, RunEvent>();
+  for (const event of currentEvents) {
+    merged.set(event.seq, event);
+  }
+  for (const event of nextEvents) {
+    merged.set(event.seq, event);
+  }
+  return Array.from(merged.values()).sort((left, right) => left.seq - right.seq);
+}
+
+export function computeTimings(run: ChatRun, events: RunEvent[], nowMs: number = Date.now()): RunTimings {
+  const createdMs = parseTimeMs(run.created_at);
+  const startedMs = parseTimeMs(run.started_at);
+  const finishedMs = parseTimeMs(run.finished_at);
+  const eventTimes = events
+    .map((event) => parseTimeMs(event.created_at))
+    .filter((value): value is number => value !== null);
+  const firstEventMs = eventTimes.length > 0 ? Math.min(...eventTimes) : null;
+  const firstTextDeltaTimes = events
+    .filter((event) => event.type === "event" && event.code === "text_delta")
+    .map((event) => parseTimeMs(event.created_at))
+    .filter((value): value is number => value !== null);
+  const firstTextDeltaMs = firstTextDeltaTimes.length > 0 ? Math.min(...firstTextDeltaTimes) : null;
+  const stateEvents = events.filter((event) => event.type === "state");
+  const latestStateEvent = stateEvents.length > 0 ? stateEvents[stateEvents.length - 1] : null;
+  const latestStateMs = latestStateEvent ? parseTimeMs(latestStateEvent.created_at) : null;
+
+  return {
+    queueWaitMs: createdMs !== null && startedMs !== null ? startedMs - createdMs : null,
+    firstEventLatencyMs: startedMs !== null && firstEventMs !== null ? firstEventMs - startedMs : null,
+    firstTextDeltaLatencyMs: startedMs !== null && firstTextDeltaMs !== null ? firstTextDeltaMs - startedMs : null,
+    totalDurationMs: startedMs !== null ? (finishedMs ?? nowMs) - startedMs : null,
+    timeInCurrentStateMs:
+      isActiveRunStatus(run.status) && latestStateMs !== null ? Math.max(0, nowMs - latestStateMs) : null,
+  };
+}
+
+export function getStateRows(events: RunEvent[]): StateRow[] {
+  const stateEvents = events.filter((event) => event.type === "state");
+  return stateEvents.map((event, index) => {
+    const currentMs = parseTimeMs(event.created_at);
+    const nextMs = parseTimeMs(stateEvents[index + 1]?.created_at);
+    return {
+      event,
+      durationMs: currentMs !== null && nextMs !== null ? Math.max(0, nextMs - currentMs) : null,
+    };
+  });
+}
+
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || Number.isNaN(ms)) {
+    return "—";
+  }
+  const absolute = Math.max(0, Math.round(ms));
+  if (absolute < 1000) {
+    return `${absolute}ms`;
+  }
+  if (absolute < 60000) {
+    const seconds = absolute / 1000;
+    return `${seconds < 10 ? seconds.toFixed(1) : seconds.toFixed(0)}s`;
+  }
+  const totalSeconds = Math.floor(absolute / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return `${minutes}m ${seconds}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return `${hours}h ${remMinutes}m`;
+}
+
+export function formatTimestamp(value?: string | null): string {
+  if (!value) {
+    return "—";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
   }
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
@@ -47,230 +137,97 @@ export function formatTimestamp(value: string | null | undefined) {
     hour: "numeric",
     minute: "2-digit",
     second: "2-digit",
-  }).format(new Date(parsed));
+  }).format(date);
 }
 
-export function formatCompactTimestamp(value: string | null | undefined) {
-  const parsed = parseTimestamp(value);
+export function formatRelativeStart(value?: string | null, nowMs: number = Date.now()): string {
+  const parsed = parseTimeMs(value);
   if (parsed === null) {
-    return "Unknown";
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(new Date(parsed));
-}
-
-export function formatDuration(value: number | null | undefined) {
-  if (value === null || value === undefined || Number.isNaN(value)) {
     return "—";
   }
-  if (value < 1000) {
-    return `${Math.round(value)}ms`;
-  }
-  if (value < 60_000) {
-    return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}s`;
-  }
-  const minutes = Math.floor(value / 60_000);
-  const seconds = Math.round((value % 60_000) / 1000);
-  return `${minutes}m ${seconds}s`;
+  return formatDuration(nowMs - parsed);
 }
 
-export function getLatencyTone(value: number | null | undefined) {
-  if (value === null || value === undefined) {
+export function getLatencyTone(ms: number | null | undefined): "ok" | "warn" | "bad" | "neutral" {
+  if (ms === null || ms === undefined || Number.isNaN(ms)) {
     return "neutral";
   }
-  if (value < 1000) {
-    return "good";
+  if (ms < 1000) {
+    return "ok";
   }
-  if (value <= 3000) {
+  if (ms <= 3000) {
     return "warn";
   }
   return "bad";
 }
 
-export function truncateId(value: string | null | undefined, size: number = 8) {
-  const text = String(value || "");
-  if (!text || text.length <= size * 2) {
-    return text || "—";
+export function getLeaseRemainingMs(run: ChatRun, nowMs: number = Date.now()): number | null {
+  const leaseMs = parseTimeMs(run.lease_expires_at);
+  if (leaseMs === null || !isActiveRunStatus(run.status)) {
+    return null;
   }
-  return `${text.slice(0, size)}…${text.slice(-size)}`;
+  return leaseMs - nowMs;
 }
 
-export async function copyText(value: string) {
-  if (!value || !navigator.clipboard) {
-    return false;
+export function getLeaseTone(ms: number | null | undefined): "ok" | "warn" | "bad" | "neutral" {
+  if (ms === null || ms === undefined) {
+    return "neutral";
   }
-  try {
-    await navigator.clipboard.writeText(value);
-    return true;
-  } catch {
-    return false;
+  if (ms > 30000) {
+    return "ok";
   }
+  if (ms >= 10000) {
+    return "warn";
+  }
+  return "bad";
 }
 
-export function getHighestSeq(events: RunEvent[]) {
-  return events.reduce((highest, event) => Math.max(highest, Number(event.seq || 0)), 0);
-}
-
-export function mergeRunEvents(current: RunEvent[], incoming: RunEvent[]) {
-  const bySeq = new Map<number, RunEvent>();
-  for (const event of current) {
-    bySeq.set(event.seq, event);
-  }
-  for (const event of incoming) {
-    bySeq.set(event.seq, event);
-  }
-  return Array.from(bySeq.values()).sort((left, right) => left.seq - right.seq);
-}
-
-export function computeTimings(run: ChatRun, events: RunEvent[], nowMs: number = Date.now()) {
-  const startedMs = parseTimestamp(run.started_at);
-  const createdMs = parseTimestamp(run.created_at);
-  const finishedMs = parseTimestamp(run.finished_at);
-
-  const queueWait = startedMs !== null && createdMs !== null ? startedMs - createdMs : null;
-
-  const eventTimes = events
-    .map((event) => parseTimestamp(event.created_at))
-    .filter((value): value is number => value !== null);
-  const firstEventMs = eventTimes.length > 0 ? Math.min(...eventTimes) : null;
-  const firstEventLatency = startedMs !== null && firstEventMs !== null ? firstEventMs - startedMs : null;
-
-  const firstTextDeltaTimes = events
-    .filter((event) => event.type === "event" && event.code === "text_delta")
-    .map((event) => parseTimestamp(event.created_at))
-    .filter((value): value is number => value !== null);
-  const firstTextDeltaMs = firstTextDeltaTimes.length > 0 ? Math.min(...firstTextDeltaTimes) : null;
-  const firstTextDeltaLatency = startedMs !== null && firstTextDeltaMs !== null ? firstTextDeltaMs - startedMs : null;
-
-  const totalDuration = startedMs !== null ? (finishedMs ?? nowMs) - startedMs : null;
-
-  const stateEvents = events.filter((event): event is Extract<RunEvent, { type: "state" }> => event.type === "state");
-  const latestStateEvent = stateEvents.reduce<Extract<RunEvent, { type: "state" }> | null>(
-    (latest, event) => (latest === null || event.seq > latest.seq ? event : latest),
-    null,
-  );
-  const latestStateMs = latestStateEvent ? parseTimestamp(latestStateEvent.created_at) : null;
-  const timeInCurrentState =
-    isActiveRunStatus(run.status) && latestStateMs !== null ? nowMs - latestStateMs : null;
-
-  return {
-    queueWait,
-    firstEventLatency,
-    firstTextDeltaLatency,
-    totalDuration,
-    timeInCurrentState,
-  };
-}
-
-export function getStateDurations(events: RunEvent[]) {
-  const stateEvents = events.filter((event): event is Extract<RunEvent, { type: "state" }> => event.type === "state");
-  const durations = new Map<number, number | null>();
-  for (let index = 0; index < stateEvents.length; index += 1) {
-    const current = stateEvents[index];
-    const next = stateEvents[index + 1];
-    const currentMs = parseTimestamp(current.created_at);
-    const nextMs = next ? parseTimestamp(next.created_at) : null;
-    durations.set(
-      current.seq,
-      currentMs !== null && nextMs !== null ? nextMs - currentMs : null,
-    );
-  }
-  return durations;
-}
-
-export function getEventTitle(event: RunEvent) {
+export function eventTitle(event: RunEvent): string {
   if (event.type === "state") {
     return event.code;
   }
-  if (event.type === "event") {
-    return event.code;
+  if (event.type === "error" || event.type === "cancelled") {
+    return event.type;
   }
   if (event.type === "done") {
     return "done";
   }
-  return event.type;
+  return event.code || event.type;
 }
 
-export function getEventSummary(event: RunEvent) {
-  if (event.type === "state") {
-    return "Router state transition";
-  }
-  if (event.type === "event") {
-    if (event.code === "text_delta") {
-      return String(event.payload?.delta || "").slice(0, 120) || "Streaming token delta";
-    }
-    if (event.code === "text_checkpoint") {
-      const text = String(event.payload?.text || "");
-      return text ? `${text.length} chars checkpointed` : "Checkpoint saved";
-    }
-    const payload = event.payload || {};
-    const keys = Object.keys(payload);
-    if (keys.length === 0) {
-      return "Event emitted";
-    }
-    return keys
-      .slice(0, 3)
-      .map((key) => `${key}: ${renderPrimitive(payload[key])}`)
-      .join(" · ");
+export function eventSummary(event: RunEvent): string {
+  if (event.type === "error" || event.type === "cancelled") {
+    return event.message || "No message";
   }
   if (event.type === "done") {
-    return `${event.assistant_message.content.length} chars persisted`;
+    const assistantText = event.assistant_message?.content || "";
+    return assistantText ? assistantText.slice(0, 160) : "Run completed.";
   }
-  return event.message || "Terminal event";
+  if (event.type === "state") {
+    return event.code;
+  }
+  if (event.payload) {
+    return JSON.stringify(event.payload).slice(0, 220);
+  }
+  return event.code || event.type;
 }
 
-export function renderPrimitive(value: unknown) {
-  if (value === null || value === undefined || value === "") {
-    return "—";
-  }
-  if (typeof value === "string") {
-    return value.length > 64 ? `${value.slice(0, 64)}…` : value;
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  if (Array.isArray(value)) {
-    return `${value.length} items`;
-  }
-  if (typeof value === "object") {
-    return `${Object.keys(value as Record<string, unknown>).length} fields`;
-  }
-  return String(value);
+export function hasErrorBanner(run: ChatRun): boolean {
+  return (run.status === "failed" || run.status === "cancelled") && Boolean(run.error_message);
 }
 
-export function getTabEvents(tab: DebugTab, events: RunEvent[]) {
-  return events.filter(TAB_FILTERS[tab]);
-}
-
-export function getLeaseRemainingMs(run: ChatRun, nowMs: number = Date.now()) {
-  const leaseExpiresMs = parseTimestamp(run.lease_expires_at);
-  if (!isActiveRunStatus(run.status) || leaseExpiresMs === null) {
-    return null;
+export function toneForStatus(status: string): "ok" | "warn" | "bad" | "neutral" {
+  if (status === "completed") {
+    return "ok";
   }
-  return leaseExpiresMs - nowMs;
-}
-
-export function sortRunsNewestFirst(runs: ChatRun[]) {
-  return [...runs].sort((left, right) => {
-    const leftMs = parseTimestamp(left.created_at) ?? 0;
-    const rightMs = parseTimestamp(right.created_at) ?? 0;
-    if (leftMs !== rightMs) {
-      return rightMs - leftMs;
-    }
-    if (left.id === right.id) {
-      return 0;
-    }
-    return left.id < right.id ? 1 : -1;
-  });
-}
-
-export function dedupeRuns(runs: ChatRun[]) {
-  const byId = new Map<string, ChatRun>();
-  for (const run of runs) {
-    byId.set(run.id, run);
+  if (status === "failed" || status === "cancelled") {
+    return "bad";
   }
-  return sortRunsNewestFirst(Array.from(byId.values()));
+  if (status === "cancel_requested" || status === "queued") {
+    return "warn";
+  }
+  if (status === "running") {
+    return "ok";
+  }
+  return "neutral";
 }

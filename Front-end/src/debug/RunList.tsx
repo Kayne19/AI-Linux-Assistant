@@ -1,125 +1,134 @@
+import { useEffect, useState } from "react";
 import type { ChatRun } from "../types";
-import {
-  formatDuration,
-  formatTimestamp,
-  isActiveRunStatus,
-  parseTimestamp,
-  truncateId,
-} from "./debugUtils";
+import { ACTIVE_RUN_STATUSES, formatRelativeStart, formatTimestamp, isActiveRunStatus, toneForStatus, truncateMiddle } from "./debugUtils";
 
 type RunListProps = {
-  activeRun: ChatRun | null;
-  historicalRuns: ChatRun[];
+  runs: ChatRun[];
+  total: number;
   selectedRunId: string;
   loading: boolean;
   loadingMore: boolean;
   error: string;
   hasMore: boolean;
-  onSelect: (runId: string) => void;
   onLoadMore: () => void;
-  onRefresh: () => void;
+  onReload: () => void;
+  onSelect: (runId: string) => void;
 };
 
 function RunCard({
   run,
   selected,
   active,
+  nowMs,
   onSelect,
 }: {
   run: ChatRun;
   selected: boolean;
   active: boolean;
-  onSelect: () => void;
+  nowMs: number;
+  onSelect: (runId: string) => void;
 }) {
-  const createdMs = parseTimestamp(run.created_at);
-  const elapsedMs = createdMs !== null ? Date.now() - createdMs : null;
-
   return (
     <button
       type="button"
       className={`debug-run-card${selected ? " selected" : ""}${active ? " active" : ""}`}
-      onClick={onSelect}
+      onClick={() => onSelect(run.id)}
     >
       <div className="debug-run-card-top">
-        <span className={`debug-badge status status-${run.status}`}>{run.status}</span>
-        {run.latest_state_code ? <span className="debug-badge state">{run.latest_state_code}</span> : null}
+        <span className={`debug-badge tone-${toneForStatus(run.status)}`}>{run.status}</span>
+        {run.latest_state_code ? <span className="debug-badge subtle">{run.latest_state_code}</span> : null}
       </div>
-      <div className="debug-run-card-title">
-        <strong>{truncateId(run.id, 6)}</strong>
-        {active ? <span className="debug-run-card-pin">active</span> : null}
-      </div>
-      <p className="debug-run-card-request">{run.request_content || "No request content"}</p>
+      <strong className="debug-run-card-title">{truncateMiddle(run.id, 6, 4)}</strong>
+      <p className="debug-run-card-copy">{run.request_content || "No request content."}</p>
       <div className="debug-run-card-meta">
-        <span>{formatTimestamp(run.created_at)}</span>
-        <span>{active && isActiveRunStatus(run.status) ? formatDuration(elapsedMs) : run.worker_id ? truncateId(run.worker_id, 5) : "idle"}</span>
+        <span>{active ? formatRelativeStart(run.created_at, nowMs) : formatTimestamp(run.created_at)}</span>
+        {run.worker_id ? <span>{truncateMiddle(run.worker_id, 6, 4)}</span> : null}
       </div>
     </button>
   );
 }
 
 export function RunList({
-  activeRun,
-  historicalRuns,
+  runs,
+  total,
   selectedRunId,
   loading,
   loadingMore,
   error,
   hasMore,
-  onSelect,
   onLoadMore,
-  onRefresh,
+  onReload,
+  onSelect,
 }: RunListProps) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const activeRun = runs.find((run) => ACTIVE_RUN_STATUSES.has(run.status)) || null;
+  const historicalRuns = runs.filter((run) => !isActiveRunStatus(run.status));
+
+  useEffect(() => {
+    if (!activeRun) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activeRun]);
+
   return (
-    <section className="debug-run-list">
-      <div className="debug-section-header">
+    <div className="debug-run-list">
+      <div className="debug-run-list-header">
         <div>
-          <p className="eyebrow">Run History</p>
-          <h3>Selected chat</h3>
+          <span className="eyebrow">Runs</span>
+          <strong>{total} captured</strong>
         </div>
-        <button type="button" className="debug-link-button" onClick={onRefresh}>
+        <button type="button" className="ghost-button compact" onClick={onReload}>
           Refresh
         </button>
       </div>
 
-      {loading ? <p className="debug-list-note">Loading runs…</p> : null}
-      {error ? <p className="debug-list-error">{error}</p> : null}
+      {loading ? <div className="debug-empty-state">Loading run history…</div> : null}
+      {error ? <div className="debug-inline-error">{error}</div> : null}
 
-      {activeRun ? (
-        <div className="debug-run-group">
-          <p className="debug-group-label">Active</p>
+      {!loading && activeRun ? (
+        <div className="debug-run-section">
+          <div className="debug-run-section-label">Active</div>
           <RunCard
             run={activeRun}
-            selected={selectedRunId === activeRun.id}
+            selected={activeRun.id === selectedRunId}
             active
-            onSelect={() => onSelect(activeRun.id)}
+            nowMs={nowMs}
+            onSelect={onSelect}
           />
         </div>
       ) : null}
 
-      <div className="debug-run-group">
-        <p className="debug-group-label">History</p>
-        {historicalRuns.length > 0 ? (
-          <div className="debug-run-list-scroll">
+      {!loading && historicalRuns.length > 0 ? (
+        <div className="debug-run-section">
+          <div className="debug-run-section-label">History</div>
+          <div className="debug-run-history">
             {historicalRuns.map((run) => (
               <RunCard
                 key={run.id}
                 run={run}
-                selected={selectedRunId === run.id}
+                selected={run.id === selectedRunId}
                 active={false}
-                onSelect={() => onSelect(run.id)}
+                nowMs={nowMs}
+                onSelect={onSelect}
               />
             ))}
           </div>
-        ) : (
-          <p className="debug-list-note">No historical runs for this chat yet.</p>
-        )}
-      </div>
+        </div>
+      ) : null}
+
+      {!loading && runs.length === 0 ? <div className="debug-empty-state">No runs recorded for this chat.</div> : null}
 
       {hasMore ? (
-        <button type="button" className="debug-load-more" onClick={onLoadMore} disabled={loadingMore}>
-          {loadingMore ? "Loading…" : "Load older runs"}
+        <button type="button" className="ghost-button compact debug-load-more" onClick={onLoadMore} disabled={loadingMore}>
+          {loadingMore ? "Loading…" : "Load more"}
         </button>
       ) : null}
-    </section>
+    </div>
   );
 }

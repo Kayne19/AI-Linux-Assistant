@@ -1,193 +1,228 @@
-import { useEffect, useMemo, useState } from "react";
-
+import { useEffect, useState } from "react";
+import { api } from "../api";
 import type { ChatRun, RunEvent } from "../types";
 import { EventTimeline } from "./EventTimeline";
 import {
-  DEBUG_TABS,
-  copyText,
   computeTimings,
+  DEBUG_TABS,
   formatDuration,
   formatTimestamp,
   getLatencyTone,
   getLeaseRemainingMs,
+  getLeaseTone,
+  hasErrorBanner,
   isActiveRunStatus,
-  truncateId,
+  toneForStatus,
+  truncateMiddle,
   type DebugTab,
 } from "./debugUtils";
+import { useRunEvents } from "./useRunEvents";
+import { useRunSnapshot } from "./useRunSnapshot";
+import { useRunStream } from "./useRunStream";
 
 type RunInspectorProps = {
-  run: ChatRun | null;
-  events: RunEvent[];
-  eventsLoading: boolean;
-  eventsError: string;
-  snapshotLoading: boolean;
-  snapshotError: string;
-  totalRuns: number;
-  onCancel: () => void;
+  runId: string;
+  onRunChange: (run: ChatRun) => void;
 };
 
-function getLeaseTone(leaseRemainingMs: number | null) {
-  if (leaseRemainingMs === null) {
-    return "neutral";
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 900);
+    } catch {
+      setCopied(false);
+    }
   }
-  if (leaseRemainingMs > 30_000) {
-    return "good";
-  }
-  if (leaseRemainingMs > 10_000) {
-    return "warn";
-  }
-  return "bad";
+
+  return (
+    <button type="button" className="debug-copy-button" onClick={handleCopy}>
+      {copied ? "copied" : "copy"}
+    </button>
+  );
 }
 
-function renderTimingValue(value: number | null, active: boolean = false) {
-  const formatted = formatDuration(value);
-  if (!active || value === null) {
-    return formatted;
-  }
-  return `∞ ${formatted}`;
+function TimingCell({
+  label,
+  value,
+  active,
+  activePrefix,
+}: {
+  label: string;
+  value: number | null;
+  active?: boolean;
+  activePrefix?: boolean;
+}) {
+  const tone = getLatencyTone(value);
+  const formatted = value === null ? "—" : `${active && activePrefix ? "∞ " : ""}${formatDuration(value)}`;
+  return (
+    <div className={`debug-timing-cell tone-${tone}`}>
+      <span>{label}</span>
+      <strong>{formatted}</strong>
+    </div>
+  );
 }
 
-export function RunInspector({
-  run,
-  events,
-  eventsLoading,
-  eventsError,
-  snapshotLoading,
-  snapshotError,
-  totalRuns,
-  onCancel,
-}: RunInspectorProps) {
-  const [activeTab, setActiveTab] = useState<DebugTab>("Timeline");
+function TimingBar({ run, events, nowMs }: { run: ChatRun; events: RunEvent[]; nowMs: number }) {
+  const timings = computeTimings(run, events, nowMs);
+  const active = isActiveRunStatus(run.status);
+
+  return (
+    <div className={`debug-timing-bar${active ? " active" : ""}`}>
+      <TimingCell label="queue_wait" value={timings.queueWaitMs} />
+      <TimingCell label="1st event" value={timings.firstEventLatencyMs} />
+      <TimingCell label="1st text_δ" value={timings.firstTextDeltaLatencyMs} />
+      {active ? <TimingCell label="in state" value={timings.timeInCurrentStateMs} /> : null}
+      <TimingCell label="total" value={timings.totalDurationMs} active={active} activePrefix={active} />
+    </div>
+  );
+}
+
+export function RunInspector({ runId, onRunChange }: RunInspectorProps) {
+  const { run, loading, error, refresh } = useRunSnapshot(runId);
+  const { events, loading: eventsLoading, error: eventsError, highestSeqSeen, appendLiveEvent, backfill } = useRunEvents(runId);
+  const [selectedTab, setSelectedTab] = useState<DebugTab>("Timeline");
   const [requestExpanded, setRequestExpanded] = useState(false);
-  const [copiedState, setCopiedState] = useState("");
-  const timings = useMemo(() => (run ? computeTimings(run, events) : null), [events, run]);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const isActive = run ? isActiveRunStatus(run.status) : false;
 
   useEffect(() => {
-    setActiveTab("Timeline");
+    setSelectedTab("Timeline");
     setRequestExpanded(false);
-    setCopiedState("");
-  }, [run?.id]);
+  }, [runId]);
 
-  async function handleCopy(label: string, value: string) {
-    const copied = await copyText(value);
-    setCopiedState(copied ? `${label} copied` : "");
+  useEffect(() => {
+    if (!run) {
+      return;
+    }
+    onRunChange(run);
+  }, [onRunChange, run]);
+
+  useEffect(() => {
+    if (!run || !isActiveRunStatus(run.status)) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [run]);
+
+  useRunStream({
+    runId,
+    enabled: Boolean(runId && isActive),
+    initialAfterSeq: highestSeqSeen,
+    onLiveEvent: appendLiveEvent,
+    onBackfill: backfill,
+    onTerminal: () => {
+      void refresh();
+    },
+  });
+
+  async function handleCancel() {
+    if (!runId) {
+      return;
+    }
+    try {
+      const nextRun = await api.cancelRun(runId);
+      onRunChange(nextRun);
+      await refresh();
+    } catch {
+      await refresh();
+    }
+  }
+
+  if (!runId) {
+    return <div className="debug-empty-state">Select a run to inspect it.</div>;
+  }
+
+  if (loading && !run) {
+    return <div className="debug-empty-state">Loading run snapshot…</div>;
   }
 
   if (!run) {
-    return (
-      <section className="debug-inspector debug-inspector-empty">
-        <p>Select a run from the list to inspect it.</p>
-      </section>
-    );
+    return <div className="debug-inline-error">{error || "Run snapshot unavailable."}</div>;
   }
 
-  const activeRun = isActiveRunStatus(run.status);
-  const leaseRemainingMs = getLeaseRemainingMs(run);
-  const timingCells = timings
-    ? [
-        { label: "queue_wait", value: timings.queueWait, active: false },
-        { label: "1st event", value: timings.firstEventLatency, active: false },
-        { label: "1st text_δ", value: timings.firstTextDeltaLatency, active: false },
-        ...(activeRun ? [{ label: "in state", value: timings.timeInCurrentState, active: false }] : []),
-        { label: "total", value: timings.totalDuration, active: activeRun },
-      ]
-    : [];
+  const leaseRemainingMs = getLeaseRemainingMs(run, nowMs);
+  const leaseTone = getLeaseTone(leaseRemainingMs);
+  const requestText = requestExpanded || run.request_content.length <= 220
+    ? run.request_content
+    : `${run.request_content.slice(0, 220)}…`;
 
   return (
-    <section className="debug-inspector">
-      <div className="debug-section-header">
-        <div>
-          <p className="eyebrow">Run Inspector</p>
-          <h3>{truncateId(run.id, 8)}</h3>
-        </div>
-        <div className="debug-header-actions">
-          <button type="button" className="debug-copy-chip" onClick={() => void handleCopy("Run id", run.id)}>
-            Copy run id
-          </button>
-          {activeRun ? (
-            <button type="button" className="debug-danger-button" onClick={onCancel}>
+    <div className="debug-run-inspector">
+      <div className="debug-inspector-header">
+        <div className="debug-inspector-topline">
+          <span className={`debug-badge tone-${toneForStatus(run.status)}`}>{run.status}</span>
+          {run.latest_state_code ? <span className="debug-badge subtle">{run.latest_state_code}</span> : null}
+          <code className="debug-run-id">{truncateMiddle(run.id, 10, 6)}</code>
+          <CopyButton value={run.id} />
+          {isActive ? (
+            <button type="button" className="ghost-button compact debug-cancel-button" onClick={handleCancel}>
               Cancel
             </button>
           ) : null}
         </div>
-      </div>
 
-      <div className="debug-run-header">
-        <div className="debug-run-header-row">
-          <span className={`debug-badge status status-${run.status}`}>{run.status}</span>
-          {run.latest_state_code ? <span className="debug-badge state">{run.latest_state_code}</span> : null}
-          {copiedState ? <span className="debug-copy-state">{copiedState}</span> : null}
-        </div>
-        <div className="debug-run-stats">
-          <span>{totalRuns} total runs</span>
-          <span>magi: {run.magi}</span>
-          <span>seq: {run.latest_event_seq}</span>
-          <span>worker: {run.worker_id ? truncateId(run.worker_id, 5) : "unclaimed"}</span>
-          <span>created: {formatTimestamp(run.created_at)}</span>
-          <span>started: {run.started_at ? formatTimestamp(run.started_at) : "—"}</span>
-          <span>finished: {run.finished_at ? formatTimestamp(run.finished_at) : "—"}</span>
-          {activeRun ? (
-            <span className={`tone-${getLeaseTone(leaseRemainingMs)}`}>lease: {formatDuration(leaseRemainingMs)}</span>
+        <div className="debug-header-grid">
+          {isActive && run.worker_id ? <div>worker: <code>{truncateMiddle(run.worker_id, 8, 6)}</code></div> : null}
+          {isActive && leaseRemainingMs !== null ? (
+            <div className={`tone-${leaseTone}`}>lease: {leaseRemainingMs > 0 ? `${formatDuration(leaseRemainingMs)} left` : "expired"}</div>
           ) : null}
-          <span>
-            client_req_id: {truncateId(run.client_request_id, 5)}{" "}
-            <button
-              type="button"
-              className="debug-copy-chip"
-              onClick={() => void handleCopy("Client request id", run.client_request_id)}
-            >
-              Copy
-            </button>
-          </span>
+          <div>magi: <code>{run.magi || "off"}</code></div>
+          <div>
+            client_req_id: <code>{truncateMiddle(run.client_request_id || "—", 8, 4)}</code>
+            {run.client_request_id ? <CopyButton value={run.client_request_id} /> : null}
+          </div>
+          <div>created: {formatTimestamp(run.created_at)}</div>
+          <div>started: {formatTimestamp(run.started_at)}</div>
+          <div>finished: {formatTimestamp(run.finished_at)}</div>
         </div>
 
         <div className="debug-request-block">
-          <div className="debug-request-head">
-            <span className="eyebrow">Request</span>
-            <button type="button" className="debug-link-button" onClick={() => setRequestExpanded((current) => !current)}>
+          <span className="debug-request-label">request</span>
+          <p>{requestText || "No request text stored."}</p>
+          {run.request_content.length > 220 ? (
+            <button type="button" className="debug-inline-link" onClick={() => setRequestExpanded((current) => !current)}>
               {requestExpanded ? "Collapse" : "Expand"}
             </button>
-          </div>
-          <p className={`debug-request-text${requestExpanded ? " expanded" : ""}`}>
-            {run.request_content || "No request content"}
-          </p>
+          ) : null}
         </div>
       </div>
 
-      {(run.status === "failed" || run.status === "cancelled") && run.error_message ? (
+      {hasErrorBanner(run) ? (
         <div className="debug-error-banner">
+          <strong>ERROR</strong>
           <p>{run.error_message}</p>
         </div>
       ) : null}
 
-      {snapshotError ? <p className="debug-list-error">{snapshotError}</p> : null}
-      {snapshotLoading ? <p className="debug-list-note">Refreshing snapshot…</p> : null}
-
-      {timingCells.length > 0 ? (
-        <div className="debug-timing-bar">
-          {timingCells.map((cell) => (
-            <div key={cell.label} className={`debug-timing-cell tone-${getLatencyTone(cell.value)}`}>
-              <span>{cell.label}</span>
-              <strong>{renderTimingValue(cell.value, cell.active)}</strong>
-            </div>
-          ))}
-        </div>
-      ) : null}
+      <TimingBar run={run} events={events} nowMs={nowMs} />
 
       <div className="debug-tab-strip">
         {DEBUG_TABS.map((tab) => (
           <button
             key={tab}
             type="button"
-            className={`debug-tab${activeTab === tab ? " active" : ""}`}
-            onClick={() => setActiveTab(tab)}
+            className={`debug-tab${selectedTab === tab ? " active" : ""}`}
+            onClick={() => setSelectedTab(tab)}
           >
             {tab}
           </button>
         ))}
       </div>
 
-      <EventTimeline events={events} tab={activeTab} loading={eventsLoading} error={eventsError} />
-    </section>
+      {error ? <div className="debug-inline-error">{error}</div> : null}
+      {eventsError ? <div className="debug-inline-error">{eventsError}</div> : null}
+      {eventsLoading && events.length === 0 ? <div className="debug-empty-state">Loading event history…</div> : null}
+
+      <EventTimeline events={events} tab={selectedTab} />
+    </div>
   );
 }
