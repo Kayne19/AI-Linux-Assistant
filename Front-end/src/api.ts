@@ -31,17 +31,66 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 type BackendStreamEvent = RunEvent;
 
-type StreamHandlers = {
+export type StreamHandlers = {
   onSequence?: (seq: number) => void;
   onRunEvent?: (event: BackendStreamEvent) => void;
   onState?: (code: string) => void;
   onEvent?: (code: string, payload?: Record<string, unknown>) => void;
   onTextDelta?: (delta: string) => void;
   onTextCheckpoint?: (text: string, seq: number, payload?: Record<string, unknown>) => void;
+  onMagiRoleTextCheckpoint?: (payload: Record<string, unknown>, seq: number) => void;
   onDone?: (payload: SendMessageResponse) => void;
   onError?: (message: string) => void;
   onCancelled?: (message: string) => void;
 };
+
+export function isTerminalRunEvent(event: BackendStreamEvent): boolean {
+  return event.type === "done" || event.type === "error" || event.type === "cancelled";
+}
+
+export function dispatchRunEvent(event: BackendStreamEvent, handlers: StreamHandlers): SendMessageResponse | null {
+  if (typeof event.seq === "number") {
+    handlers.onSequence?.(event.seq);
+  }
+  handlers.onRunEvent?.(event);
+  if (event.type === "state") {
+    handlers.onState?.(event.code);
+    return null;
+  }
+  if (event.type === "event") {
+    if (event.code === "text_delta") {
+      const delta = typeof event.payload?.delta === "string" ? event.payload.delta : "";
+      if (delta) {
+        handlers.onTextDelta?.(delta);
+      }
+    } else if (event.code === "text_checkpoint") {
+      const text = typeof event.payload?.text === "string" ? event.payload.text : "";
+      handlers.onTextCheckpoint?.(text, event.seq, event.payload);
+    } else if (event.code === "magi_role_text_checkpoint") {
+      handlers.onMagiRoleTextCheckpoint?.(event.payload || {}, event.seq);
+    }
+    handlers.onEvent?.(event.code, event.payload);
+    return null;
+  }
+  if (event.type === "done") {
+    const finalPayload = {
+      user_message: event.user_message,
+      assistant_message: event.assistant_message,
+      debug: event.debug,
+    };
+    handlers.onDone?.(finalPayload);
+    return finalPayload;
+  }
+  if (event.type === "cancelled") {
+    handlers.onCancelled?.(event.message);
+    return null;
+  }
+  if (event.type === "error") {
+    handlers.onError?.(event.message);
+    throw new Error(event.message);
+  }
+  return null;
+}
 
 function parseSseEvent(rawChunk: string): BackendStreamEvent | null {
   const dataLines = rawChunk
@@ -75,36 +124,11 @@ async function consumeEventStream(
       const event = parseSseEvent(rawChunk);
 
       if (event) {
-        if (typeof event.seq === "number") {
-          handlers.onSequence?.(event.seq);
-        }
-        handlers.onRunEvent?.(event);
-        if (event.type === "state") {
-          handlers.onState?.(event.code);
-        } else if (event.type === "event") {
-          if (event.code === "text_delta") {
-            const delta = typeof event.payload?.delta === "string" ? event.payload.delta : "";
-            if (delta) {
-              handlers.onTextDelta?.(delta);
-            }
-          } else if (event.code === "text_checkpoint") {
-            const text = typeof event.payload?.text === "string" ? event.payload.text : "";
-            handlers.onTextCheckpoint?.(text, event.seq, event.payload);
-          }
-          handlers.onEvent?.(event.code, event.payload);
-        } else if (event.type === "done") {
-          finalPayload = {
-            user_message: event.user_message,
-            assistant_message: event.assistant_message,
-            debug: event.debug,
-          };
-          handlers.onDone?.(finalPayload);
+        const dispatchedPayload = dispatchRunEvent(event, handlers);
+        if (event.type === "done") {
+          finalPayload = dispatchedPayload;
         } else if (event.type === "cancelled") {
-          handlers.onCancelled?.(event.message);
           return finalPayload;
-        } else if (event.type === "error") {
-          handlers.onError?.(event.message);
-          throw new Error(event.message);
         }
       }
 

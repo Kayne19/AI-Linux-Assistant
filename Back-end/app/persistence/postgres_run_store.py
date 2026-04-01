@@ -4,13 +4,15 @@ from persistence.database import Base, get_engine, get_session_factory
 
 try:
     from sqlalchemy import and_, func, or_, select
+    from sqlalchemy.exc import IntegrityError
 except ImportError:  # pragma: no cover - optional until SQLAlchemy is installed
     and_ = None
     func = None
     or_ = None
     select = None
+    IntegrityError = None
 
-from persistence.postgres_models import ChatMessage, ChatRun, ChatRunEvent, ChatSession
+from persistence.postgres_models import ChatMessage, ChatRun, ChatRunEvent, ChatSession, User
 
 
 ACTIVE_RUN_STATUSES = {"queued", "running", "cancel_requested"}
@@ -38,6 +40,14 @@ class RunNotFoundError(RuntimeError):
 
 
 class RunRequeueError(RuntimeError):
+    pass
+
+
+class RunOwnershipLostError(RuntimeError):
+    pass
+
+
+class RunStateConflictError(RuntimeError):
     pass
 
 
@@ -87,6 +97,28 @@ class PostgresRunStore:
     def _session(self):
         return self.session_factory()
 
+    def _load_run_for_update(self, session, run_id, *, worker_id="", require_active_owner=False):
+        if require_active_owner and worker_id:
+            run = session.scalar(
+                select(ChatRun)
+                .where(
+                    ChatRun.id == run_id,
+                    ChatRun.worker_id == worker_id,
+                    ChatRun.status.in_(ACTIVE_RUN_STATUSES),
+                    ChatRun.lease_expires_at.is_not(None),
+                    ChatRun.lease_expires_at > _utc_now(),
+                )
+                .with_for_update()
+            )
+            if run is None:
+                raise RunOwnershipLostError(f"Worker '{worker_id}' no longer owns run '{run_id}'.")
+            return run
+
+        run = session.scalar(select(ChatRun).where(ChatRun.id == run_id).with_for_update())
+        if run is None:
+            raise RunNotFoundError(f"Unknown run '{run_id}'")
+        return run
+
     def create_or_reuse_run(
         self,
         *,
@@ -99,6 +131,9 @@ class PostgresRunStore:
         max_active_runs_per_user,
     ):
         with self._session() as session:
+            session.scalar(select(User).where(User.id == user_id).with_for_update())
+            session.scalar(select(ChatSession).where(ChatSession.id == chat_session_id).with_for_update())
+
             existing = session.scalar(
                 select(ChatRun).where(
                     ChatRun.chat_session_id == chat_session_id,
@@ -141,7 +176,40 @@ class PostgresRunStore:
                 client_request_id=client_request_id,
             )
             session.add(run)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = session.scalar(
+                    select(ChatRun).where(
+                        ChatRun.chat_session_id == chat_session_id,
+                        ChatRun.client_request_id == client_request_id,
+                    )
+                )
+                if existing is not None:
+                    return existing
+                active_chat_run = session.scalar(
+                    select(ChatRun)
+                    .where(
+                        ChatRun.chat_session_id == chat_session_id,
+                        ChatRun.status.in_(ACTIVE_RUN_STATUSES),
+                    )
+                    .order_by(ChatRun.created_at.desc())
+                    .limit(1)
+                )
+                if active_chat_run is not None:
+                    raise ActiveChatRunExistsError(f"Chat '{chat_session_id}' already has an active run.")
+                active_count = session.scalar(
+                    select(func.count())
+                    .select_from(ChatRun)
+                    .where(
+                        ChatRun.user_id == user_id,
+                        ChatRun.status.in_(ACTIVE_RUN_STATUSES),
+                    )
+                ) or 0
+                if int(active_count) >= max(1, int(max_active_runs_per_user)):
+                    raise ActiveRunLimitExceededError(f"User '{user_id}' exceeded the active run limit.")
+                raise
             session.refresh(run)
         if self._redis_client is not None:
             try:
@@ -228,11 +296,7 @@ class PostgresRunStore:
 
     def append_event(self, run_id, event_type, code="", payload=None):
         with self._session() as session:
-            run = session.scalar(
-                select(ChatRun).where(ChatRun.id == run_id).with_for_update()
-            )
-            if run is None:
-                raise RunNotFoundError(f"Unknown run '{run_id}'")
+            run = self._load_run_for_update(session, run_id)
 
             next_seq = int(run.latest_event_seq or 0) + 1
             run.latest_event_seq = next_seq
@@ -258,37 +322,151 @@ class PostgresRunStore:
         self._publish(run_id, next_seq, event_type, code or "", payload, created_at=event.created_at)
         return event
 
+    def append_event_for_worker(self, run_id, worker_id, event_type, code="", payload=None):
+        with self._session() as session:
+            run = self._load_run_for_update(
+                session,
+                run_id,
+                worker_id=worker_id,
+                require_active_owner=True,
+            )
+
+            next_seq = int(run.latest_event_seq or 0) + 1
+            run.latest_event_seq = next_seq
+            if event_type == "state":
+                run.latest_state_code = code or ""
+            elif event_type == "event" and code == "text_delta":
+                delta = str((payload or {}).get("delta", "") or "")
+                if delta:
+                    run.partial_assistant_text = (run.partial_assistant_text or "") + delta
+            elif event_type == "error":
+                run.error_message = str((payload or {}).get("message", "") or "")
+
+            event = ChatRunEvent(
+                run_id=run_id,
+                seq=next_seq,
+                type=event_type,
+                code=code or "",
+                payload_json=payload or None,
+            )
+            session.add(event)
+            session.commit()
+            session.refresh(event)
+        self._publish(run_id, next_seq, event_type, code or "", payload, created_at=event.created_at)
+        return event
+
+    def _append_checkpoint_event(
+        self,
+        session,
+        run,
+        code,
+        payload,
+        *,
+        partial_assistant_delta="",
+    ):
+        partial_assistant_delta = str(partial_assistant_delta or "")
+        if partial_assistant_delta:
+            run.partial_assistant_text = (run.partial_assistant_text or "") + partial_assistant_delta
+        next_seq = int(run.latest_event_seq or 0) + 1
+        run.latest_event_seq = next_seq
+        event = ChatRunEvent(
+            run_id=run.id,
+            seq=next_seq,
+            type="event",
+            code=code,
+            payload_json=payload,
+        )
+        session.add(event)
+        session.commit()
+        session.refresh(event)
+        self._publish(run.id, next_seq, "event", code, payload, created_at=event.created_at)
+        return event
+
     def append_text_checkpoint(self, run_id, delta_chunk, window):
         """Persist buffered text deltas as one replayable checkpoint event."""
         delta_chunk = str(delta_chunk or "")
         if not delta_chunk:
             return None
         with self._session() as session:
-            run = session.scalar(
-                select(ChatRun).where(ChatRun.id == run_id).with_for_update()
-            )
-            if run is None:
-                raise RunNotFoundError(f"Unknown run '{run_id}'")
-
-            run.partial_assistant_text = (run.partial_assistant_text or "") + delta_chunk
-            next_seq = int(run.latest_event_seq or 0) + 1
-            run.latest_event_seq = next_seq
+            run = self._load_run_for_update(session, run_id)
             payload = {
-                "text": run.partial_assistant_text,
+                "text": (run.partial_assistant_text or "") + delta_chunk,
                 "window": int(window),
             }
-            event = ChatRunEvent(
-                run_id=run_id,
-                seq=next_seq,
-                type="event",
-                code="text_checkpoint",
-                payload_json=payload,
+            return self._append_checkpoint_event(
+                session,
+                run,
+                "text_checkpoint",
+                payload,
+                partial_assistant_delta=delta_chunk,
             )
-            session.add(event)
-            session.commit()
-            session.refresh(event)
-        self._publish(run_id, next_seq, "event", "text_checkpoint", payload, created_at=event.created_at)
-        return event
+
+    def append_text_checkpoint_for_worker(self, run_id, worker_id, delta_chunk, window):
+        delta_chunk = str(delta_chunk or "")
+        if not delta_chunk:
+            return None
+        with self._session() as session:
+            run = self._load_run_for_update(
+                session,
+                run_id,
+                worker_id=worker_id,
+                require_active_owner=True,
+            )
+            payload = {
+                "text": (run.partial_assistant_text or "") + delta_chunk,
+                "window": int(window),
+            }
+            return self._append_checkpoint_event(
+                session,
+                run,
+                "text_checkpoint",
+                payload,
+                partial_assistant_delta=delta_chunk,
+            )
+
+    def append_magi_role_text_checkpoint(self, run_id, role, phase, round_number, text, window):
+        text = str(text or "")
+        if not text:
+            return None
+        with self._session() as session:
+            run = self._load_run_for_update(session, run_id)
+            payload = {
+                "role": str(role or ""),
+                "phase": str(phase or ""),
+                "round": round_number,
+                "text": text,
+                "window": int(window),
+            }
+            return self._append_checkpoint_event(session, run, "magi_role_text_checkpoint", payload)
+
+    def append_magi_role_text_checkpoint_for_worker(
+        self,
+        run_id,
+        worker_id,
+        role,
+        phase,
+        round_number,
+        text,
+        window,
+    ):
+        text = str(text or "")
+        if not text:
+            return None
+        with self._session() as session:
+            run = self._load_run_for_update(
+                session,
+                run_id,
+                worker_id=worker_id,
+                require_active_owner=True,
+            )
+            payload = {
+                "role": str(role or ""),
+                "phase": str(phase or ""),
+                "round": round_number,
+                "text": text,
+                "window": int(window),
+            }
+            return self._append_checkpoint_event(session, run, "magi_role_text_checkpoint", payload)
 
     def claim_next_run(self, worker_id, lease_seconds):
         now = _utc_now()
@@ -341,7 +519,7 @@ class PostgresRunStore:
 
     def request_cancel(self, run_id):
         with self._session() as session:
-            run = session.scalar(select(ChatRun).where(ChatRun.id == run_id).with_for_update())
+            run = self._load_run_for_update(session, run_id)
             if run is None:
                 raise RunNotFoundError(f"Unknown run '{run_id}'")
             if run.status in TERMINAL_RUN_STATUSES:
@@ -352,6 +530,57 @@ class PostgresRunStore:
             session.commit()
             session.refresh(run)
             return run
+
+    def request_running_cancel(self, run_id):
+        with self._session() as session:
+            run = self._load_run_for_update(session, run_id)
+            if run.status in TERMINAL_RUN_STATUSES:
+                session.commit()
+                return run
+            if run.status not in {"running", "cancel_requested"}:
+                raise RunStateConflictError(
+                    f"Run '{run_id}' is '{run.status}' and cannot be marked cancel_requested for worker handling."
+                )
+            run.cancel_requested = True
+            run.status = "cancel_requested"
+            session.commit()
+            session.refresh(run)
+            return run
+
+    def cancel_queued_run(self, run_id, *, error_message="Run cancelled.", event_payload=None):
+        created_at = None
+        with self._session() as session:
+            run = self._load_run_for_update(session, run_id)
+            if run.status in TERMINAL_RUN_STATUSES:
+                session.commit()
+                return run
+            if run.status != "queued":
+                raise RunStateConflictError(
+                    f"Run '{run_id}' is '{run.status}' and cannot be terminalized as a queued cancellation."
+                )
+            run.status = "cancelled"
+            run.cancel_requested = True
+            run.error_message = error_message or ""
+            run.finished_at = _utc_now()
+            run.lease_expires_at = None
+            run.worker_id = ""
+            next_seq = int(run.latest_event_seq or 0) + 1
+            run.latest_event_seq = next_seq
+            cancelled_payload = event_payload or {"message": run.error_message or "Run cancelled."}
+            event = ChatRunEvent(
+                run_id=run_id,
+                seq=next_seq,
+                type="cancelled",
+                code="cancelled",
+                payload_json=cancelled_payload,
+            )
+            session.add(event)
+            session.flush()
+            created_at = event.created_at
+            session.commit()
+            session.refresh(run)
+        self._publish(run_id, next_seq, "cancelled", "cancelled", cancelled_payload, created_at=created_at)
+        return run
 
     def is_cancel_requested(self, run_id):
         with self._session() as session:
@@ -365,9 +594,12 @@ class PostgresRunStore:
     def mark_failed(self, run_id, *, worker_id="", error_message="", event_payload=None):
         created_at = None
         with self._session() as session:
-            run = session.scalar(select(ChatRun).where(ChatRun.id == run_id).with_for_update())
-            if run is None:
-                raise RunNotFoundError(f"Unknown run '{run_id}'")
+            run = self._load_run_for_update(
+                session,
+                run_id,
+                worker_id=worker_id,
+                require_active_owner=bool(worker_id),
+            )
             if run.status == "completed":
                 session.commit()
                 return run
@@ -398,9 +630,12 @@ class PostgresRunStore:
     def mark_cancelled(self, run_id, *, worker_id="", error_message="Run cancelled.", event_payload=None):
         created_at = None
         with self._session() as session:
-            run = session.scalar(select(ChatRun).where(ChatRun.id == run_id).with_for_update())
-            if run is None:
-                raise RunNotFoundError(f"Unknown run '{run_id}'")
+            run = self._load_run_for_update(
+                session,
+                run_id,
+                worker_id=worker_id,
+                require_active_owner=bool(worker_id),
+            )
             if run.status == "completed":
                 session.commit()
                 return run
@@ -460,9 +695,12 @@ class PostgresRunStore:
     ):
         created_at = None
         with self._session() as session:
-            run = session.scalar(select(ChatRun).where(ChatRun.id == run_id).with_for_update())
-            if run is None:
-                raise RunNotFoundError(f"Unknown run '{run_id}'")
+            run = self._load_run_for_update(
+                session,
+                run_id,
+                worker_id=worker_id,
+                require_active_owner=bool(worker_id),
+            )
 
             if run.final_user_message_id and run.final_assistant_message_id:
                 user_message = session.scalar(select(ChatMessage).where(ChatMessage.id == run.final_user_message_id))
@@ -540,3 +778,15 @@ class PostgresRunStore:
             session.refresh(run)
         self._publish(run_id, next_seq, "done", "done", payload or None, created_at=created_at)
         return user_message, assistant_message
+
+    def get_terminal_event(self, run_id):
+        with self._session() as session:
+            return session.scalar(
+                select(ChatRunEvent)
+                .where(
+                    ChatRunEvent.run_id == run_id,
+                    ChatRunEvent.type.in_(("done", "error", "cancelled")),
+                )
+                .order_by(ChatRunEvent.seq.desc())
+                .limit(1)
+            )

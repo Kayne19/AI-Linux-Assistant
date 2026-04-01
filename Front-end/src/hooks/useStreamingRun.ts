@@ -1,5 +1,6 @@
 import { MutableRefObject, useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { streamRunSession } from "../runStreamSession";
 import type {
   ChatMessage,
   ChatRun,
@@ -21,7 +22,9 @@ type CouncilController = {
   clearPendingCouncilDeltaBatchesForChat: (chatId: string) => void;
   handleMagiRoleStart: (chatId: string, payload: Record<string, unknown>) => void;
   handleMagiRoleTextDelta: (chatId: string, payload: Record<string, unknown>) => void;
+  handleMagiRoleTextCheckpoint: (chatId: string, payload: Record<string, unknown>) => void;
   handleMagiRoleComplete: (chatId: string, payload: Record<string, unknown>) => void;
+  hasPendingCouncilWork: (chatId: string) => boolean;
 };
 
 type UseStreamingRunOptions = {
@@ -36,6 +39,7 @@ type UseStreamingRunOptions = {
   updateChatRunStatus: (chatId: string, activeRunId: string | null, activeRunStatus: string | null) => void;
   onError: (message: string) => void;
   onTextDrainCompleteRef: MutableRefObject<(chatId: string) => void>;
+  onCouncilDrainCompleteRef: MutableRefObject<(chatId: string) => void>;
   runUiCouncilEntriesUpdaterRef: MutableRefObject<
     (chatId: string, updater: (entries: UICouncilEntry[]) => UICouncilEntry[]) => void
   >;
@@ -60,6 +64,7 @@ export function useStreamingRun({
   updateChatRunStatus,
   onError,
   onTextDrainCompleteRef,
+  onCouncilDrainCompleteRef,
   runUiCouncilEntriesUpdaterRef,
   runUiStreamStatusUpdaterRef,
 }: UseStreamingRunOptions) {
@@ -139,7 +144,14 @@ export function useStreamingRun({
 
   function handleTextDrainComplete(chatId: string) {
     const pendingDone = pendingDonePayloadsRef.current[chatId];
-    if (pendingDone) {
+    if (pendingDone && !council.hasPendingCouncilWork(chatId)) {
+      void finalizeDone(chatId, pendingDone.payload, pendingDone.selectedProjectIdAtCompletion);
+    }
+  }
+
+  function handleCouncilDrainComplete(chatId: string) {
+    const pendingDone = pendingDonePayloadsRef.current[chatId];
+    if (pendingDone && !textDelta.hasPendingDelta(chatId) && !council.hasPendingCouncilWork(chatId)) {
       void finalizeDone(chatId, pendingDone.payload, pendingDone.selectedProjectIdAtCompletion);
     }
   }
@@ -248,7 +260,7 @@ export function useStreamingRun({
     streamingActiveRef.current[chatId] = false;
 
     try {
-      await api.streamRun(
+      await streamRunSession(
         run.id,
         {
           onSequence: (seq) =>
@@ -257,7 +269,12 @@ export function useStreamingRun({
             ),
           onState: (code) => updateRunUiStreamStatus(chatId, { source: "state", code }),
           onEvent: (code, payload) => {
-            if (code !== "text_delta" && code !== "text_checkpoint" && code !== "magi_role_text_delta") {
+            if (
+              code !== "text_delta"
+              && code !== "text_checkpoint"
+              && code !== "magi_role_text_delta"
+              && code !== "magi_role_text_checkpoint"
+            ) {
               updateRunUiStreamStatus(chatId, { source: "event", code, payload });
             }
 
@@ -272,6 +289,9 @@ export function useStreamingRun({
             if (code === "magi_role_complete" && payload) {
               council.handleMagiRoleComplete(chatId, payload);
             }
+          },
+          onMagiRoleTextCheckpoint: (payload) => {
+            council.handleMagiRoleTextCheckpoint(chatId, payload);
           },
           onTextCheckpoint: (text, seq) => {
             setCheckpointSeed(chatId, run.id, seq, text);
@@ -288,7 +308,7 @@ export function useStreamingRun({
             streamingActiveRef.current[chatId] = false;
             delete lastCheckpointRef.current[chatId];
 
-            if (textDelta.hasPendingDelta(chatId)) {
+            if (textDelta.hasPendingDelta(chatId) || council.hasPendingCouncilWork(chatId)) {
               pendingDonePayloadsRef.current[chatId] = {
                 payload,
                 selectedProjectIdAtCompletion: selectedProjectIdRef.current,
@@ -372,6 +392,7 @@ export function useStreamingRun({
 
   useEffect(() => {
     onTextDrainCompleteRef.current = handleTextDrainComplete;
+    onCouncilDrainCompleteRef.current = handleCouncilDrainComplete;
     runUiCouncilEntriesUpdaterRef.current = updateRunUiCouncilEntries;
     runUiStreamStatusUpdaterRef.current = updateRunUiStreamStatus;
   });

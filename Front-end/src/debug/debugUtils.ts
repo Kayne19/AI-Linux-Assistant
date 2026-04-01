@@ -1,7 +1,12 @@
 import type { ChatRun, RunEvent } from "../types";
 
 export const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancel_requested"]);
-export const STREAMING_CODES = new Set(["text_delta", "text_checkpoint", "magi_role_text_delta"]);
+export const STREAMING_CODES = new Set([
+  "text_delta",
+  "text_checkpoint",
+  "magi_role_text_delta",
+  "magi_role_text_checkpoint",
+]);
 export const DEBUG_TABS = ["Timeline", "States", "Retrieval", "Memory", "Streaming", "Raw"] as const;
 
 export type DebugTab = (typeof DEBUG_TABS)[number];

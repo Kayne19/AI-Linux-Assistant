@@ -39,6 +39,19 @@ class FakeMagiWorker:
         })
         return self.response_text
 
+    def generate_text_stream(self, system_prompt="", user_message="", history=None, tools=None,
+                             tool_handler=None, max_tool_rounds=4, event_listener=None, **kwargs):
+        self.calls.append({
+            "system_prompt": system_prompt,
+            "user_message": user_message,
+            "tools": tools,
+            "tool_handler": tool_handler,
+        })
+        if event_listener is not None:
+            for character in self.response_text:
+                event_listener("text_delta", {"delta": character})
+        return self.response_text
+
 
 def _make_role_response(position="test position", confidence="medium", key_claims=None, new_information=True):
     return json.dumps({
@@ -251,6 +264,56 @@ def test_magi_role_complete_events_include_text():
 
     skeptic_event = [e for e in complete_events if e[1]["role"] == "skeptic"][0]
     assert "check inodes too" in skeptic_event[1]["text"]
+
+
+def test_magi_role_text_delta_events_emit_visible_position_text_only():
+    eager_resp = _make_role_response("disk is probably full", "high")
+    skeptic_resp = _make_role_response("check inodes too", "medium")
+    historian_resp = _make_role_response("logs were cleared before", "high")
+    system, events, states, _ = _build_magi(
+        eager_text=eager_resp, skeptic_text=skeptic_resp, historian_text=historian_resp,
+        arbiter_text="final", max_discussion_rounds=0,
+    )
+
+    system.stream_api("question", "")
+
+    eager_opening_deltas = [
+        e[1]["delta"]
+        for e in events
+        if e[0] == "magi_role_text_delta"
+        and e[1].get("role") == "eager"
+        and e[1].get("phase") == "opening_arguments"
+    ]
+
+    assert "".join(eager_opening_deltas) == "disk is probably full"
+    assert eager_opening_deltas == ["disk is probably full"]
+    assert not any('"position"' in delta for delta in eager_opening_deltas)
+    assert not any("confidence" in delta for delta in eager_opening_deltas)
+
+
+def test_magi_role_streamer_ignores_partial_provider_text_deltas():
+    events = []
+
+    system = MagiSystem(
+        eager=None,
+        skeptic=None,
+        historian=None,
+        arbiter=None,
+        event_listener=lambda event_type, payload: events.append((event_type, payload)),
+    )
+    listener = system._make_role_streamer_listener("eager", "opening_arguments")
+
+    listener("request_submitted", {"round": 0})
+    for char in '{"position":"draft claim","confidence":"low"}':
+        listener("text_delta", {"delta": char})
+
+    listener("request_submitted", {"round": 1})
+    for char in '{"position":"final claim after tool check","confidence":"high"}':
+        listener("text_delta", {"delta": char})
+
+    delta_events = [payload for event_type, payload in events if event_type == "magi_role_text_delta"]
+
+    assert delta_events == []
 
 
 def test_magi_discussion_rounds_receive_full_evidence_bundle_not_just_transcript():

@@ -7,11 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from config.settings import SETTINGS
-from orchestration.model_router import ModelRouter
+from orchestration.model_router import ModelRouter, RouterExecutionError
 from orchestration.run_control import RunCancelledError
 from persistence.postgres_app_store import PostgresAppStore
 from persistence.postgres_memory_store import PostgresMemoryStore
-from persistence.postgres_run_store import PostgresRunStore
+from persistence.postgres_run_store import PostgresRunStore, RunOwnershipLostError
 from retrieval.factory import build_runtime_components
 from retrieval.vectorDB import VectorDB
 from streaming.redis_events import get_shared_client as _get_redis_client
@@ -20,10 +20,21 @@ from streaming.redis_events import get_shared_client as _get_redis_client
 class _DeltaBuffer:
     """Fan out live text immediately and durably checkpoint it in batches."""
 
-    def __init__(self, run_id, run_store, redis_publish_fn, flush_interval=0.2, flush_bytes=200):
+    def __init__(
+        self,
+        run_id,
+        worker_id,
+        run_store,
+        redis_publish_fn,
+        ownership_lost_event,
+        flush_interval=0.2,
+        flush_bytes=200,
+    ):
         self._run_id = run_id
+        self._worker_id = worker_id
         self._run_store = run_store
         self._redis_publish = redis_publish_fn
+        self._ownership_lost_event = ownership_lost_event
         self._flush_interval = max(0.01, float(flush_interval))
         self._flush_bytes = max(1, int(flush_bytes))
         self._lock = threading.Lock()
@@ -32,23 +43,45 @@ class _DeltaBuffer:
         self._last_flush = time.monotonic()
 
     def push(self, delta_text):
+        self._raise_if_ownership_lost()
         delta_text = str(delta_text or "")
         if not delta_text:
             return
         self._redis_publish(self._run_id, delta_text, self._window)
         chunk, window = self._maybe_take_flush_chunk(delta_text)
         if chunk:
-            self._run_store.append_text_checkpoint(self._run_id, chunk, window)
+            self._run_store.append_text_checkpoint_for_worker(
+                self._run_id,
+                self._worker_id,
+                chunk,
+                window,
+            )
 
     def tick(self):
+        self._raise_if_ownership_lost()
         chunk, window = self._take_flush_chunk(force=False)
         if chunk:
-            self._run_store.append_text_checkpoint(self._run_id, chunk, window)
+            self._run_store.append_text_checkpoint_for_worker(
+                self._run_id,
+                self._worker_id,
+                chunk,
+                window,
+            )
 
     def flush(self):
+        self._raise_if_ownership_lost()
         chunk, window = self._take_flush_chunk(force=True)
         if chunk:
-            self._run_store.append_text_checkpoint(self._run_id, chunk, window)
+            self._run_store.append_text_checkpoint_for_worker(
+                self._run_id,
+                self._worker_id,
+                chunk,
+                window,
+            )
+
+    def _raise_if_ownership_lost(self):
+        if self._ownership_lost_event.is_set():
+            raise RunOwnershipLostError(f"Worker '{self._worker_id}' no longer owns run '{self._run_id}'.")
 
     def _maybe_take_flush_chunk(self, delta_text):
         now = time.monotonic()
@@ -77,6 +110,184 @@ class _DeltaBuffer:
         self._window += 1
         self._last_flush = now
         return chunk, window
+
+
+def _magi_entry_key(role, phase, round_number=None):
+    try:
+        normalized_round = 0 if round_number is None else int(round_number)
+    except (TypeError, ValueError):
+        normalized_round = 0
+    return f"{phase}:{role}:{normalized_round}"
+
+
+class _MagiRoleDeltaBuffer:
+    """Fan out live MAGI role text immediately and durably checkpoint absolute entry text."""
+
+    def __init__(
+        self,
+        run_id,
+        worker_id,
+        run_store,
+        redis_publish_fn,
+        ownership_lost_event,
+        flush_interval=0.2,
+        flush_bytes=200,
+    ):
+        self._run_id = run_id
+        self._worker_id = worker_id
+        self._run_store = run_store
+        self._redis_publish = redis_publish_fn
+        self._ownership_lost_event = ownership_lost_event
+        self._flush_interval = max(0.01, float(flush_interval))
+        self._flush_bytes = max(1, int(flush_bytes))
+        self._lock = threading.Lock()
+        self._states = {}
+
+    def begin_entry(self, payload):
+        context = self._normalize_context(payload)
+        key = _magi_entry_key(context["role"], context["phase"], context["round"])
+        with self._lock:
+            self._states[key] = {
+                **context,
+                "buffer": "",
+                "text": "",
+                "window": 0,
+                "last_flush": time.monotonic(),
+            }
+
+    def push(self, payload):
+        self._raise_if_ownership_lost()
+        context = self._normalize_context(payload)
+        delta_text = str((payload or {}).get("delta", "") or "")
+        if not delta_text:
+            return
+        state = self._ensure_state(context)
+        self._redis_publish(
+            self._run_id,
+            {
+                **context,
+                "delta": delta_text,
+                "window": int(state["window"]),
+            },
+            "magi_role_text_delta",
+        )
+        checkpoint = self._maybe_take_flush_chunk(state, delta_text)
+        if checkpoint is not None:
+            self._append_checkpoint(checkpoint)
+
+    def flush_entry(self, payload):
+        self._raise_if_ownership_lost()
+        context = self._normalize_context(payload)
+        state = self._get_state(context)
+        if state is None:
+            return
+        checkpoint = self._take_flush_chunk(state, force=True)
+        if checkpoint is not None:
+            self._append_checkpoint(checkpoint)
+
+    def finish_entry(self, payload):
+        context = self._normalize_context(payload)
+        key = _magi_entry_key(context["role"], context["phase"], context["round"])
+        with self._lock:
+            self._states.pop(key, None)
+
+    def tick(self):
+        self._raise_if_ownership_lost()
+        checkpoints = []
+        with self._lock:
+            for state in self._states.values():
+                checkpoint = self._take_flush_chunk_locked(state, force=False, now=time.monotonic())
+                if checkpoint is not None:
+                    checkpoints.append(checkpoint)
+        for checkpoint in checkpoints:
+            self._append_checkpoint(checkpoint)
+
+    def flush(self):
+        self._raise_if_ownership_lost()
+        checkpoints = []
+        with self._lock:
+            for state in self._states.values():
+                checkpoint = self._take_flush_chunk_locked(state, force=True, now=time.monotonic())
+                if checkpoint is not None:
+                    checkpoints.append(checkpoint)
+        for checkpoint in checkpoints:
+            self._append_checkpoint(checkpoint)
+
+    def _raise_if_ownership_lost(self):
+        if self._ownership_lost_event.is_set():
+            raise RunOwnershipLostError(f"Worker '{self._worker_id}' no longer owns run '{self._run_id}'.")
+
+    def _normalize_context(self, payload):
+        payload = payload or {}
+        round_number = payload.get("round")
+        try:
+            round_number = None if round_number is None else int(round_number)
+        except (TypeError, ValueError):
+            round_number = None
+        return {
+            "role": str(payload.get("role") or ""),
+            "phase": str(payload.get("phase") or ""),
+            "round": round_number,
+        }
+
+    def _get_state(self, context):
+        key = _magi_entry_key(context["role"], context["phase"], context["round"])
+        with self._lock:
+            return self._states.get(key)
+
+    def _ensure_state(self, context):
+        key = _magi_entry_key(context["role"], context["phase"], context["round"])
+        with self._lock:
+            state = self._states.get(key)
+            if state is None:
+                state = {
+                    **context,
+                    "buffer": "",
+                    "text": "",
+                    "window": 0,
+                    "last_flush": time.monotonic(),
+                }
+                self._states[key] = state
+            return state
+
+    def _maybe_take_flush_chunk(self, state, delta_text):
+        now = time.monotonic()
+        with self._lock:
+            state["buffer"] += delta_text
+            return self._take_flush_chunk_locked(state, force=False, now=now)
+
+    def _take_flush_chunk(self, state, force):
+        with self._lock:
+            return self._take_flush_chunk_locked(state, force=force, now=time.monotonic())
+
+    def _take_flush_chunk_locked(self, state, force, now):
+        if not state["buffer"]:
+            return None
+        if not force and len(state["buffer"]) < self._flush_bytes and (now - state["last_flush"]) < self._flush_interval:
+            return None
+        state["text"] += state["buffer"]
+        checkpoint = {
+            "role": state["role"],
+            "phase": state["phase"],
+            "round": state["round"],
+            "text": state["text"],
+            "window": int(state["window"]),
+        }
+        state["buffer"] = ""
+        state["window"] += 1
+        state["last_flush"] = now
+        return checkpoint
+
+    def _append_checkpoint(self, checkpoint):
+        self._run_store.append_magi_role_text_checkpoint_for_worker(
+            self._run_id,
+            self._worker_id,
+            checkpoint["role"],
+            checkpoint["phase"],
+            checkpoint["round"],
+            checkpoint["text"],
+            checkpoint["window"],
+        )
 
 
 def _checkpoint_flush_interval(redis_client):
@@ -127,34 +338,51 @@ class ChatRunWorkerService:
             persist_turn_messages=False,
         )
 
-    def _heartbeat_and_flush_loop(self, run_id, claimed_worker_id, stop_event, delta_buffer):
+    def _heartbeat_and_flush_loop(
+        self,
+        run_id,
+        claimed_worker_id,
+        stop_event,
+        ownership_lost_event,
+        delta_buffer,
+        magi_role_delta_buffer,
+    ):
         heartbeat_interval = max(1.0, float(self.settings.chat_run_lease_seconds) / 3.0)
         flush_interval = max(0.05, min(0.2, heartbeat_interval))
         last_heartbeat = time.monotonic()
         while not stop_event.wait(flush_interval):
-            delta_buffer.tick()
+            try:
+                delta_buffer.tick()
+                magi_role_delta_buffer.tick()
+            except RunOwnershipLostError:
+                ownership_lost_event.set()
+                break
             now = time.monotonic()
             if (now - last_heartbeat) < heartbeat_interval:
                 continue
             if not self.run_store.heartbeat(run_id, claimed_worker_id, self.settings.chat_run_lease_seconds):
+                ownership_lost_event.set()
                 break
             last_heartbeat = now
 
-    def _emit_state(self, run_id, state, _turn):
-        self.run_store.append_event(run_id, "state", state.name, None)
+    def _emit_state(self, run_id, claimed_worker_id, state, _turn):
+        self.run_store.append_event_for_worker(run_id, claimed_worker_id, "state", state.name, None)
 
-    def _emit_event(self, run_id, event_type, payload):
-        self.run_store.append_event(run_id, "event", event_type, payload or None)
+    def _emit_event(self, run_id, claimed_worker_id, event_type, payload):
+        self.run_store.append_event_for_worker(run_id, claimed_worker_id, "event", event_type, payload or None)
 
-    def _publish_text_delta(self, run_id, delta_text, window):
-        if not delta_text:
+    def _publish_live_event(self, run_id, payload, code):
+        payload = payload or {}
+        if code == "text_delta" and not payload.get("delta"):
+            return
+        if code == "magi_role_text_delta" and not payload.get("delta"):
             return
         self.run_store._publish(
             run_id,
             0,
             "event",
-            "text_delta",
-            {"delta": delta_text, "window": int(window)},
+            code,
+            payload,
         )
 
     def _complete_run(self, run, claimed_worker_id, turn):
@@ -205,47 +433,99 @@ class ChatRunWorkerService:
             self._fail_run(run, claimed_worker_id, "Run lease expired before completion.")
             return
 
+        ownership_lost_event = threading.Event()
         delta_buffer = _DeltaBuffer(
             run_id=run.id,
+            worker_id=claimed_worker_id,
             run_store=self.run_store,
-            redis_publish_fn=self._publish_text_delta,
+            redis_publish_fn=lambda run_id, delta_text, window: self._publish_live_event(
+                run_id,
+                {"delta": delta_text, "window": int(window)},
+                "text_delta",
+            ),
+            ownership_lost_event=ownership_lost_event,
+            flush_interval=_checkpoint_flush_interval(getattr(self.run_store, "_redis_client", None)),
+        )
+        magi_role_delta_buffer = _MagiRoleDeltaBuffer(
+            run_id=run.id,
+            worker_id=claimed_worker_id,
+            run_store=self.run_store,
+            redis_publish_fn=lambda run_id, payload, code: self._publish_live_event(run_id, payload, code),
+            ownership_lost_event=ownership_lost_event,
             flush_interval=_checkpoint_flush_interval(getattr(self.run_store, "_redis_client", None)),
         )
         heartbeat_stop = threading.Event()
         heartbeat_thread = threading.Thread(
             target=self._heartbeat_and_flush_loop,
-            args=(run.id, claimed_worker_id, heartbeat_stop, delta_buffer),
+            args=(
+                run.id,
+                claimed_worker_id,
+                heartbeat_stop,
+                ownership_lost_event,
+                delta_buffer,
+                magi_role_delta_buffer,
+            ),
             daemon=True,
         )
         heartbeat_thread.start()
         try:
             router = self._build_router(run)
-            router.set_state_listener(lambda state, turn: self._emit_state(run.id, state, turn))
+            router.set_state_listener(
+                lambda state, turn: self._emit_state(run.id, claimed_worker_id, state, turn)
+            )
 
             def _event_listener(event_type, payload):
                 if event_type == "text_delta":
                     delta_buffer.push((payload or {}).get("delta", ""))
                     return
-                self._emit_event(run.id, event_type, payload)
+                if event_type == "magi_role_start":
+                    magi_role_delta_buffer.begin_entry(payload)
+                if event_type == "magi_role_text_delta":
+                    magi_role_delta_buffer.push(payload)
+                    return
+                if event_type == "magi_role_complete":
+                    magi_role_delta_buffer.flush_entry(payload)
+                self._emit_event(run.id, claimed_worker_id, event_type, payload)
+                if event_type == "magi_role_complete":
+                    magi_role_delta_buffer.finish_entry(payload)
 
             router.set_event_listener(_event_listener)
 
-            response_text = router.ask_question_stream(run.request_content, magi=run.magi)
-            turn = router.last_turn
+            turn = router.run_turn(run.request_content, stream_response=True, magi=run.magi)
             if self.run_store.is_cancel_requested(run.id):
                 raise RunCancelledError("Run cancelled.")
-            if response_text.startswith("Router error:"):
-                raise RuntimeError(response_text[len("Router error:"):].strip() or "Router error")
             if turn is None:
                 raise RuntimeError("Worker completed without a router turn.")
 
             delta_buffer.flush()
+            magi_role_delta_buffer.flush()
             self._complete_run(run, claimed_worker_id, turn)
+        except RunOwnershipLostError:
+            try:
+                delta_buffer.flush()
+                magi_role_delta_buffer.flush()
+            except RunOwnershipLostError:
+                pass
         except RunCancelledError as exc:
-            delta_buffer.flush()
+            try:
+                delta_buffer.flush()
+                magi_role_delta_buffer.flush()
+            except RunOwnershipLostError:
+                return
             self._cancel_run(run, claimed_worker_id, str(exc) or "Run cancelled.")
+        except RouterExecutionError as exc:
+            try:
+                delta_buffer.flush()
+                magi_role_delta_buffer.flush()
+            except RunOwnershipLostError:
+                return
+            self._fail_run(run, claimed_worker_id, str(exc))
         except Exception as exc:
-            delta_buffer.flush()
+            try:
+                delta_buffer.flush()
+                magi_role_delta_buffer.flush()
+            except RunOwnershipLostError:
+                return
             self._fail_run(run, claimed_worker_id, str(exc))
         finally:
             heartbeat_stop.set()

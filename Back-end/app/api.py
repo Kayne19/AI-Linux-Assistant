@@ -11,9 +11,13 @@ from persistence.postgres_run_store import (
     PostgresRunStore,
     RunNotFoundError,
     RunRequeueError,
+    RunStateConflictError,
     TERMINAL_RUN_STATUSES,
 )
-from streaming.replay_filters import should_forward_text_delta as _should_forward_text_delta
+from streaming.replay_filters import (
+    register_checkpoint_window as _register_checkpoint_window,
+    should_forward_stream_delta as _should_forward_stream_delta,
+)
 from streaming.event_serializer import serialize_run_event
 from streaming.redis_events import get_shared_client as _get_redis_client
 
@@ -263,7 +267,7 @@ def _serialize_event_row(event_row):
     )
 
 
-def _terminal_event_from_snapshot(run, app_store):
+def _degraded_terminal_event_from_snapshot(run, app_store):
     terminal_created_at = _iso(getattr(run, "finished_at", None) or getattr(run, "updated_at", None))
     if run.status == "completed" and run.final_user_message_id and run.final_assistant_message_id:
         user_message = app_store.get_message(run.final_user_message_id)
@@ -287,6 +291,13 @@ def _terminal_event_from_snapshot(run, app_store):
     if run.status == "failed":
         return {"type": "error", "message": run.error_message or "Run failed.", "created_at": terminal_created_at}
     return None
+
+
+def _terminal_event_payload(run_store, run_id, run, app_store):
+    event_row = run_store.get_terminal_event(run_id)
+    if event_row is not None:
+        return _serialize_event_row(event_row)
+    return _degraded_terminal_event_from_snapshot(run, app_store)
 
 
 def _wait_for_terminal_run(run_store, run_id, timeout_seconds=1800):
@@ -340,30 +351,48 @@ def create_app():
             raise HTTPException(status_code=429, detail=str(exc)) from exc
 
     def _run_result_or_error(run):
+        terminal_payload = _terminal_event_payload(run_store, run.id, run, app_store)
         if run.status == "completed":
-            if not run.final_user_message_id or not run.final_assistant_message_id:
-                raise HTTPException(status_code=500, detail="Run completed without final messages.")
-            user_message = app_store.get_message(run.final_user_message_id)
-            assistant_message = app_store.get_message(run.final_assistant_message_id)
-            if user_message is None or assistant_message is None:
-                raise HTTPException(status_code=500, detail="Run completed without persisted messages.")
-            done_debug = {"state_trace": [], "tool_events": [], "retrieval_query": "", "retrieved_sources": []}
-            for event_row in run_store.list_events_after(run.id, after_seq=0, limit=max(1, int(run.latest_event_seq or 0) + 5)):
-                if event_row.type == "done" and isinstance(event_row.payload_json, dict):
-                    done_debug = event_row.payload_json.get("debug") or done_debug
+            if terminal_payload is None or terminal_payload.get("type") != "done":
+                raise HTTPException(status_code=500, detail="Run completed without a durable terminal payload.")
             return SendMessageResponse(
-                user_message=_serialize_message(user_message),
-                assistant_message=_serialize_message(assistant_message),
+                user_message=terminal_payload["user_message"],
+                assistant_message=terminal_payload["assistant_message"],
                 debug=AssistantDebugResponse(
-                    state_trace=list(done_debug.get("state_trace", []) or []),
-                    tool_events=list(done_debug.get("tool_events", []) or []),
-                    retrieval_query=done_debug.get("retrieval_query", "") or "",
-                    retrieved_sources=list(done_debug.get("retrieved_sources", []) or []),
+                    state_trace=list((terminal_payload.get("debug") or {}).get("state_trace", []) or []),
+                    tool_events=list((terminal_payload.get("debug") or {}).get("tool_events", []) or []),
+                    retrieval_query=((terminal_payload.get("debug") or {}).get("retrieval_query", "") or ""),
+                    retrieved_sources=list((terminal_payload.get("debug") or {}).get("retrieved_sources", []) or []),
                 ),
             )
         if run.status == "cancelled":
-            raise HTTPException(status_code=409, detail=run.error_message or "Run cancelled.")
-        raise HTTPException(status_code=500, detail=run.error_message or "Run failed.")
+            message = (terminal_payload or {}).get("message") or run.error_message or "Run cancelled."
+            raise HTTPException(status_code=409, detail=message)
+        message = (terminal_payload or {}).get("message") or run.error_message or "Run failed."
+        raise HTTPException(status_code=500, detail=message)
+
+    def _cancel_run_explicitly(run_id: str):
+        for _attempt in range(3):
+            run = run_store.get_run(run_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="Run not found.")
+            if run.status in TERMINAL_RUN_STATUSES:
+                return run
+            try:
+                if run.status == "queued":
+                    return run_store.cancel_queued_run(run_id, error_message="Run cancelled.")
+                if run.status in {"running", "cancel_requested"}:
+                    return run_store.request_running_cancel(run_id)
+                raise HTTPException(status_code=409, detail=f"Run '{run_id}' cannot be cancelled from status '{run.status}'.")
+            except RunStateConflictError:
+                continue
+
+        run = run_store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found.")
+        if run.status in TERMINAL_RUN_STATUSES | {"running", "cancel_requested"}:
+            return run
+        raise HTTPException(status_code=409, detail=f"Run '{run_id}' cannot be cancelled from status '{run.status}'.")
 
     def _chat_responses_for_rows(chat_rows):
         active_by_chat = run_store.get_active_runs_for_chat_ids([chat.id for chat in chat_rows])
@@ -379,17 +408,12 @@ def create_app():
         ps = subscribe_run_events(redis_client, run_id)
         try:
             current_seq = max(0, int(after_seq))
-            max_checkpoint_window = -1
+            checkpoint_windows = {}
             # Replay backlog
             for event_row in run_store.list_events_after(run_id, after_seq=current_seq, limit=1000):
                 current_seq = max(current_seq, int(event_row.seq))
                 payload = _serialize_event_row(event_row)
-                if payload.get("code") == "text_checkpoint":
-                    checkpoint_window = (payload.get("payload") or {}).get("window")
-                    try:
-                        max_checkpoint_window = max(max_checkpoint_window, int(checkpoint_window))
-                    except (TypeError, ValueError):
-                        pass
+                _register_checkpoint_window(checkpoint_windows, payload)
                 yield _sse_payload(payload)
                 if payload["type"] in {"done", "error", "cancelled"}:
                     return
@@ -402,7 +426,7 @@ def create_app():
                         yield _sse_payload({"type": "error", "message": "Run not found."})
                         return
                     if run.status in TERMINAL_RUN_STATUSES:
-                        fallback_payload = _terminal_event_from_snapshot(run, app_store)
+                        fallback_payload = _terminal_event_payload(run_store, run_id, run, app_store)
                         if fallback_payload is not None:
                             yield _sse_payload(fallback_payload)
                         return
@@ -413,17 +437,12 @@ def create_app():
                 seq = int(data.get("seq", 0) or 0)
                 if seq > 0 and seq <= current_seq:
                     continue  # already sent via backlog
-                if data.get("type") == "event" and data.get("code") == "text_delta":
-                    if not _should_forward_text_delta(data, max_checkpoint_window):
+                if data.get("type") == "event" and data.get("code") in {"text_delta", "magi_role_text_delta"}:
+                    if not _should_forward_stream_delta(data, checkpoint_windows):
                         continue
                 if seq > 0:
                     current_seq = seq
-                if data.get("code") == "text_checkpoint":
-                    checkpoint_window = (data.get("payload") or {}).get("window")
-                    try:
-                        max_checkpoint_window = max(max_checkpoint_window, int(checkpoint_window))
-                    except (TypeError, ValueError):
-                        pass
+                _register_checkpoint_window(checkpoint_windows, data)
                 yield _sse_payload(data)
                 if data.get("type") in {"done", "error", "cancelled"}:
                     return
@@ -461,7 +480,7 @@ def create_app():
                     yield _sse_payload({"type": "error", "message": "Run not found."})
                     break
                 if run.status in TERMINAL_RUN_STATUSES:
-                    fallback_payload = _terminal_event_from_snapshot(run, app_store)
+                    fallback_payload = _terminal_event_payload(run_store, run_id, run, app_store)
                     if fallback_payload is not None:
                         yield _sse_payload(fallback_payload)
                     break
@@ -661,7 +680,7 @@ def create_app():
     @app.post("/runs/{run_id}/cancel", response_model=ChatRunResponse)
     def cancel_run(run_id: str):
         try:
-            run = run_store.request_cancel(run_id)
+            run = _cancel_run_explicitly(run_id)
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _serialize_run(run)

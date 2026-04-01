@@ -22,6 +22,7 @@ Current streaming covers:
 - live `text_delta` events for the responder path over Redis fanout
 - durable `text_checkpoint` events for reconnect/replay
 - live Magi council role deltas/events when `magi` is `lite` or `full`
+- durable `magi_role_text_checkpoint` events for in-progress council replay
 - final persisted message handoff at completion
 
 Current non-goals:
@@ -67,6 +68,7 @@ The stream currently sends JSON payloads shaped like:
 - retrieval activity
 - streamed text deltas
 - durable text checkpoints
+- durable Magi role text checkpoints
 - memory events
 - provider/tool events
 - Magi phase and role events
@@ -95,7 +97,7 @@ Owns:
 - reading durable run snapshots
 - reading `chat_run_events`
 - replay-first SSE delivery
-- terminal fallback when a run snapshot is terminal before the client sees the final event
+- terminal fallback that replays the exact durable terminal event row before degrading to snapshot-derived data
 
 ### Router
 
@@ -126,6 +128,11 @@ Owns:
 `chat_run_events` is the replay source of truth.
 
 `chat_runs.latest_*` and `partial_assistant_text` are convenience snapshot fields only.
+
+Terminal replay rule:
+
+- reconnects should reuse the exact durable `done` / `error` / `cancelled` payload when that row exists
+- snapshot-derived fallback is a degraded path for missing terminal rows, not the normal source of terminal truth
 
 For partial assistant text:
 
@@ -169,7 +176,13 @@ Owns:
 - the deliberation protocol for `magi="lite"` and `magi="full"`
 - role lifecycle events such as `magi_phase`, `magi_role_start`, `magi_role_complete`
 - live role text emission through `magi_role_text_delta`
+- durable in-progress role replay through `magi_role_text_checkpoint`
 - the final synthesized response handed back to the router
+
+Important detail:
+
+- `magi_role_text_delta` is visible `position` text emitted from the final parsed role output, not the raw partial JSON produced by the role model
+- `magi_role_text_checkpoint` stores that same visible council text as an absolute replace for reconnect/replay
 
 ### Provider
 
@@ -235,15 +248,18 @@ Text streaming intentionally uses two paths:
 
 - live display path: worker publishes `text_delta` events to Redis immediately, SSE forwards them, and the frontend appends them with `requestAnimationFrame` batching
 - durable replay path: worker writes `text_checkpoint` events to Postgres roughly every 200ms or once a buffered chunk reaches the byte threshold
+- Magi uses the same split path per council entry: live `magi_role_text_delta` fanout over Redis plus durable `magi_role_text_checkpoint` rows carrying absolute role text
 
 Frontend rule:
 
 - while a live stream is actively receiving `text_delta`, checkpoint events should be recorded for reconnect state but must not replace the visible assistant text
+- while a live council entry is actively receiving `magi_role_text_delta`, `magi_role_text_checkpoint` should seed reconnect state but must not replace the visible live council text
 - when replaying after reconnect, checkpoints seed the visible text until live deltas resume
 
 Fallback rule:
 
 - without Redis, SSE falls back to Postgres polling, so clients only see checkpoint-style progress rather than smooth live deltas
+- that fallback applies to Magi council text too, so council progress degrades to checkpoint pacing instead of token pacing
 
 ## Human Labels
 

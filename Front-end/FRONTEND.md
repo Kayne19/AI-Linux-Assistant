@@ -48,7 +48,7 @@ Owns stateful frontend behavior, split by responsibility:
 - `useTextDeltaAnimation.ts`
   - paced `text_delta` draining into optimistic assistant text
 - `useCouncilStreaming.ts`
-  - council panel state and live role-delta batching
+  - council panel state, live role-delta batching, and deferred role completion until queued council text is visible
 - `useStreamingRun.ts`
   - durable run attach/reconnect/cancel lifecycle and optimistic run UI state
 - `useScrollManager.ts`
@@ -87,6 +87,12 @@ Owns pure frontend helpers:
 - optimistic run-id derivation
 - text delta pacing constants
 
+### `src/councilStreamLifecycle.ts`
+
+Owns the pure council-stream ordering helpers used to avoid `magi_role_complete` replacing text that is still queued for rendering.
+
+This file exists so the council completion ordering can be regression-tested without a browser runtime.
+
 ### `src/api.ts`
 
 Owns API access:
@@ -99,6 +105,16 @@ Owns API access:
 - startup bootstrap calls
 
 The frontend does not call the router directly. It only talks to FastAPI.
+
+### `src/runStreamSession.ts`
+
+Owns the shared run-stream reconnect/backfill seam used by both the main chat UI and the debug inspector.
+
+It keeps:
+
+- reconnect-after-disconnect behavior
+- replay of missed events before resuming live updates
+- terminal-event stopping rules
 
 ### `src/renderMessage.tsx`
 
@@ -152,8 +168,18 @@ When a message is sent:
 4. Backend states/events update the visible live status.
 5. If Magi is enabled, council role events populate the live council panel, and live role deltas are batched before React renders them.
 6. During active streaming, rapid `text_delta` events are batched and then drained into the optimistic assistant text at a paced `requestAnimationFrame` cadence.
+7. During active Magi streaming, visible council text emitted from the parsed role output is drained with the same paced `requestAnimationFrame` model instead of reparsing partial JSON in the browser.
 7. `text_checkpoint` events are tracked for reconnect seeding and are only applied to visible text while replaying after a reconnect.
 8. When `done` arrives, the frontend lets any queued visible text finish draining before replacing the optimistic pair with the final persisted backend messages.
+9. When `magi_role_complete` arrives, the frontend also waits for any queued council delta batch to drain before finalizing that council entry, and only uses the completion payload to catch up a missing suffix that the live council stream never rendered.
+
+For live council rendering:
+
+- the backend sends `magi_role_text_delta` as visible role text, not raw partial JSON
+- live council entries append only `magi_role_text_delta` while active, matching the assistant text path
+- `magi_role_text_checkpoint` is a reconnect seed, not a live replacement
+- live council entries render directly from the run UI state when not viewing a past assistant message
+- stored `councilEntries` state is only for past deliberation replay, not for duplicating the live council stream
 
 This avoids the earlier end-of-stream flash and keeps the backend as the source of truth.
 
@@ -162,6 +188,7 @@ When the user switches away from a running chat:
 - the run continues server-side
 - the visible SSE attachment may be dropped
 - reopening the chat seeds from the latest durable checkpoint and then resumes live deltas
+- the shared stream session client keeps chat and debug reconnect behavior aligned without moving policy into React
 
 ## Ownership Rules
 
@@ -190,8 +217,9 @@ When the user switches away from a running chat:
 2. The frontend is intentionally not a general-purpose state machine; the backend remains the real control plane.
 3. Hidden chats rely on run snapshot state rather than live SSE until reopened.
 4. `App.tsx` is intentionally thin, but it still orchestrates several hooks and remains the place where cross-surface wiring is easiest to audit.
-5. The debug drawer is intentionally operator-focused rather than a polished end-user surface.
-6. The current UI is usable, but still product-iteration code rather than a finished design system.
+5. Chat and debug streaming now share one reconnect/backfill seam, but their UI state stays intentionally separate.
+6. The debug drawer is intentionally operator-focused rather than a polished end-user surface.
+7. The current UI is usable, but still product-iteration code rather than a finished design system.
 
 ## Safe Change Guidelines
 
@@ -210,8 +238,9 @@ If you modify the frontend, preserve these invariants:
 3. [src/hooks/useCouncilStreaming.ts](src/hooks/useCouncilStreaming.ts)
 4. [src/hooks/useTextDeltaAnimation.ts](src/hooks/useTextDeltaAnimation.ts)
 5. [src/api.ts](src/api.ts)
-6. [src/types.ts](src/types.ts)
-7. [src/utils.ts](src/utils.ts)
-8. [src/components/Sidebar.tsx](src/components/Sidebar.tsx)
-9. [src/components/ChatView.tsx](src/components/ChatView.tsx)
-10. [src/debug/DebugPanel.tsx](src/debug/DebugPanel.tsx)
+6. [src/runStreamSession.ts](src/runStreamSession.ts)
+7. [src/types.ts](src/types.ts)
+8. [src/utils.ts](src/utils.ts)
+9. [src/components/Sidebar.tsx](src/components/Sidebar.tsx)
+10. [src/components/ChatView.tsx](src/components/ChatView.tsx)
+11. [src/debug/DebugPanel.tsx](src/debug/DebugPanel.tsx)

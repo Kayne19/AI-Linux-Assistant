@@ -28,27 +28,6 @@ function formatCouncilPhase(phase: string, round?: number): string {
   return phase;
 }
 
-function getStreamingDisplayText(buffer: string): string {
-  try {
-    const parsed = JSON.parse(buffer);
-    if (typeof parsed?.position === "string") return parsed.position;
-  } catch {
-    // incomplete JSON, try regex extraction
-  }
-
-  const match = buffer.match(/"position"\s*:\s*"([\s\S]*)/);
-  if (!match) return "";
-  let inner = match[1];
-  const closeIdx = inner.search(/"\s*,\s*"(?:confidence|key_claims)/);
-  if (closeIdx > 0) inner = inner.slice(0, closeIdx);
-
-  try {
-    return JSON.parse('"' + inner.replace(/"/g, '\\"').replace(/\\\\"/g, '\\"') + '"');
-  } catch {
-    return inner.replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  }
-}
-
 function formatMessageTimestamp(value: string) {
   if (!value) {
     return "";
@@ -84,6 +63,5 @@ export {
   formatChatTimestamp,
   formatCouncilPhase,
   formatMessageTimestamp,
-  getStreamingDisplayText,
   optimisticIdsForRun,
 };

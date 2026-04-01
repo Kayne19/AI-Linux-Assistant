@@ -35,6 +35,7 @@ export default function App() {
   const projectsReloadedRef = useRef<(projects: Project[]) => void>(() => undefined);
   const chatDeletedRef = useRef<(chatId: string) => void>(() => undefined);
   const textDrainCompleteRef = useRef<(chatId: string) => void>(() => undefined);
+  const councilDrainCompleteRef = useRef<(chatId: string) => void>(() => undefined);
   const runUiCouncilEntriesUpdaterRef = useRef<
     (chatId: string, updater: (entries: UICouncilEntry[]) => UICouncilEntry[]) => void
   >(() => undefined);
@@ -59,6 +60,7 @@ export default function App() {
   const messages = useMessages({ selectedChatId: chats.selectedChatId });
   const council = useCouncilStreaming({
     updateRunUiCouncilEntries: (chatId, updater) => runUiCouncilEntriesUpdaterRef.current(chatId, updater),
+    onDrainComplete: (chatId) => councilDrainCompleteRef.current(chatId),
   });
   const textDelta = useTextDeltaAnimation({
     onDrainChunk: (chatId, assistantId, chunk) => {
@@ -87,6 +89,7 @@ export default function App() {
     updateChatRunStatus: chats.updateChatRunStatus,
     onError: setError,
     onTextDrainCompleteRef: textDrainCompleteRef,
+    onCouncilDrainCompleteRef: councilDrainCompleteRef,
     runUiCouncilEntriesUpdaterRef,
     runUiStreamStatusUpdaterRef,
   });
@@ -127,6 +130,18 @@ export default function App() {
   useEffect(() => {
     council.syncLiveCouncilEntries(streaming.selectedRunUi?.councilEntries || [], streaming.selectedChatBusy);
   }, [council.viewingCouncilMessageId, streaming.selectedChatBusy, streaming.selectedRunUi?.councilEntries]);
+
+  const displayedCouncilEntries =
+    council.viewingCouncilMessageId !== null
+      ? council.councilEntries
+      : (streaming.selectedRunUi?.councilEntries || []);
+
+  useEffect(() => {
+    council.councilEndRef.current?.scrollIntoView({
+      behavior: displayedCouncilEntries.some((entry) => !entry.complete) ? "auto" : "smooth",
+      block: "end",
+    });
+  }, [council.councilEndRef, displayedCouncilEntries]);
 
   const liveStatusKey = getStreamStatusKey(streaming.streamStatus);
   const liveStatusAliases = getStreamStatusAliases(streaming.streamStatus);
@@ -322,7 +337,7 @@ export default function App() {
           <div className="workspace-shell">
             <section className={`chat-stage${council.councilActive && !council.councilPanelCollapsed ? " council-open" : ""}`}>
               <CouncilPanel
-                entries={council.councilEntries}
+                entries={displayedCouncilEntries}
                 viewingPast={council.viewingCouncilMessageId !== null}
                 onClose={() => council.setCouncilPanelCollapsed(true)}
                 councilFeedRef={council.councilFeedRef}

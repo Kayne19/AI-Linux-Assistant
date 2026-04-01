@@ -63,6 +63,7 @@ export type PendingTextDeltaBatch = {
 export type PendingCouncilDeltaBatch = {
   delta: string;
   frameId: number | null;
+  lastDrainAt: number | null;
 };
 
 export type CheckpointSeed = {

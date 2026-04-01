@@ -1,5 +1,6 @@
 """Regression tests for streaming latency optimizations."""
 
+import threading
 from unittest.mock import MagicMock
 
 from sqlalchemy import create_engine
@@ -107,6 +108,26 @@ def test_append_text_checkpoint_publishes_checkpoint_event():
     assert '"code": "text_checkpoint"' in raw_payload
 
 
+def test_append_magi_role_text_checkpoint_writes_event_without_touching_assistant_text():
+    store, session_factory = _build_run_store()
+    run = _make_run(store, session_factory)
+
+    store.append_magi_role_text_checkpoint(run.id, "skeptic", "discussion", 2, "Check SMART data first", 1)
+
+    refreshed = store.get_run(run.id)
+    events = store.list_events_after(run.id, after_seq=0)
+
+    assert refreshed.partial_assistant_text == ""
+    assert [event.code for event in events] == ["magi_role_text_checkpoint"]
+    assert events[0].payload_json == {
+        "role": "skeptic",
+        "phase": "discussion",
+        "round": 2,
+        "text": "Check SMART data first",
+        "window": 1,
+    }
+
+
 def test_should_forward_text_delta_without_checkpoint():
     from streaming.replay_filters import should_forward_text_delta
 
@@ -128,17 +149,48 @@ def test_should_forward_text_delta_allows_legacy_payloads():
     assert should_forward_text_delta({}, max_checkpoint_window=5) is True
 
 
+def test_should_forward_stream_delta_tracks_magi_role_windows_per_entry():
+    from streaming.replay_filters import register_checkpoint_window, should_forward_stream_delta
+
+    checkpoint_windows = {}
+    register_checkpoint_window(
+        checkpoint_windows,
+        {
+            "code": "magi_role_text_checkpoint",
+            "payload": {"role": "eager", "phase": "discussion", "round": 1, "window": 0},
+        },
+    )
+
+    assert should_forward_stream_delta(
+        {
+            "code": "magi_role_text_delta",
+            "payload": {"role": "eager", "phase": "discussion", "round": 1, "window": 0},
+        },
+        checkpoint_windows,
+    ) is False
+    assert should_forward_stream_delta(
+        {
+            "code": "magi_role_text_delta",
+            "payload": {"role": "skeptic", "phase": "discussion", "round": 1, "window": 0},
+        },
+        checkpoint_windows,
+    ) is True
+
+
 def test_delta_buffer_publishes_immediately_and_flushes_in_batches():
     from chat_run_worker import _DeltaBuffer
 
     store, session_factory = _build_run_store()
     run = _make_run(store, session_factory)
+    store.claim_next_run("worker-1", lease_seconds=30)
     published = []
 
     buffer = _DeltaBuffer(
         run_id=run.id,
+        worker_id="worker-1",
         run_store=store,
         redis_publish_fn=lambda run_id, delta, window: published.append((run_id, delta, window)),
+        ownership_lost_event=threading.Event(),
         flush_interval=999,
         flush_bytes=999,
     )
@@ -163,11 +215,14 @@ def test_delta_buffer_advances_window_after_each_flush():
 
     store, session_factory = _build_run_store()
     run = _make_run(store, session_factory)
+    store.claim_next_run("worker-1", lease_seconds=30)
 
     buffer = _DeltaBuffer(
         run_id=run.id,
+        worker_id="worker-1",
         run_store=store,
         redis_publish_fn=lambda *_args: None,
+        ownership_lost_event=threading.Event(),
         flush_interval=999,
         flush_bytes=999,
     )
@@ -186,11 +241,14 @@ def test_delta_buffer_empty_flush_is_noop():
 
     store, session_factory = _build_run_store()
     run = _make_run(store, session_factory)
+    store.claim_next_run("worker-1", lease_seconds=30)
 
     buffer = _DeltaBuffer(
         run_id=run.id,
+        worker_id="worker-1",
         run_store=store,
         redis_publish_fn=lambda *_args: None,
+        ownership_lost_event=threading.Event(),
         flush_interval=999,
         flush_bytes=999,
     )
@@ -199,3 +257,65 @@ def test_delta_buffer_empty_flush_is_noop():
     buffer.flush()
 
     assert store.list_events_after(run.id, after_seq=0) == []
+
+
+def test_magi_role_delta_buffer_publishes_live_deltas_and_flushes_absolute_checkpoints():
+    from chat_run_worker import _MagiRoleDeltaBuffer
+
+    store, session_factory = _build_run_store()
+    run = _make_run(store, session_factory)
+    store.claim_next_run("worker-1", lease_seconds=30)
+    published = []
+
+    buffer = _MagiRoleDeltaBuffer(
+        run_id=run.id,
+        worker_id="worker-1",
+        run_store=store,
+        redis_publish_fn=lambda run_id, payload, code: published.append((run_id, payload, code)),
+        ownership_lost_event=threading.Event(),
+        flush_interval=999,
+        flush_bytes=999,
+    )
+
+    start_payload = {"role": "historian", "phase": "opening_arguments", "round": None}
+    buffer.begin_entry(start_payload)
+    buffer.push({**start_payload, "delta": "Seen this before. "})
+    buffer.push({**start_payload, "delta": "Logs were rotated."})
+
+    assert published == [
+        (
+            run.id,
+            {
+                "role": "historian",
+                "phase": "opening_arguments",
+                "round": None,
+                "delta": "Seen this before. ",
+                "window": 0,
+            },
+            "magi_role_text_delta",
+        ),
+        (
+            run.id,
+            {
+                "role": "historian",
+                "phase": "opening_arguments",
+                "round": None,
+                "delta": "Logs were rotated.",
+                "window": 0,
+            },
+            "magi_role_text_delta",
+        ),
+    ]
+    assert store.list_events_after(run.id, after_seq=0) == []
+
+    buffer.flush_entry(start_payload)
+    events = store.list_events_after(run.id, after_seq=0)
+    assert len(events) == 1
+    assert events[0].code == "magi_role_text_checkpoint"
+    assert events[0].payload_json == {
+        "role": "historian",
+        "phase": "opening_arguments",
+        "round": None,
+        "text": "Seen this before. Logs were rotated.",
+        "window": 0,
+    }

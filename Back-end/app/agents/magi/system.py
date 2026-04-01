@@ -62,18 +62,24 @@ class MagiSystem:
         return text[:max_chars - 3].rstrip() + "..."
 
     def _make_role_streamer_listener(self, role_name, phase, round_number=None):
-        """Returns an event listener that re-emits text_delta as magi_role_text_delta with role/phase context."""
+        """Returns an event listener that forwards non-text provider events with role/phase context kept external."""
+
         def listener(event_type, payload):
             if event_type == "text_delta":
-                self._emit_event("magi_role_text_delta", {
-                    "role": role_name,
-                    "phase": phase,
-                    "round": round_number,
-                    "delta": payload.get("delta", ""),
-                })
-            else:
-                self._emit_event(event_type, payload)
+                return
+            self._emit_event(event_type, payload)
         return listener
+
+    def _emit_role_text(self, role_name, phase, position_text, round_number=None):
+        visible_text = str(position_text or "")
+        if not visible_text:
+            return
+        self._emit_event("magi_role_text_delta", {
+            "role": role_name,
+            "phase": phase,
+            "round": round_number,
+            "delta": visible_text,
+        })
 
     def _check_cancel(self, checkpoint):
         invoke_cancel_check(self.cancel_check, checkpoint)
@@ -140,6 +146,7 @@ class MagiSystem:
                 event_listener=self._make_role_streamer_listener(role_name, "opening_arguments"),
             )
             position_text = parsed.get("position", "")
+            self._emit_role_text(role_name, "opening_arguments", position_text)
             self._emit_event("magi_role_complete", {
                 "role": role_name,
                 "phase": "opening_arguments",
@@ -184,6 +191,7 @@ class MagiSystem:
                 )
                 position_text = parsed.get("position", "")
                 new_info = parsed.get("new_information", False)
+                self._emit_role_text(role_name, "discussion", position_text, round_num)
                 self._emit_event("magi_role_complete", {
                     "role": role_name,
                     "phase": "discussion",
@@ -230,6 +238,7 @@ class MagiSystem:
                 event_listener=self._make_role_streamer_listener(role_name, "closing_arguments"),
             )
             position_text = parsed.get("position", "")
+            self._emit_role_text(role_name, "closing_arguments", position_text)
             self._emit_event("magi_role_complete", {
                 "role": role_name,
                 "phase": "closing_arguments",

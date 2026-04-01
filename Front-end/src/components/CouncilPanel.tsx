@@ -1,6 +1,6 @@
 import type { RefObject } from "react";
 import type { UICouncilEntry } from "../types";
-import { formatCouncilPhase, getStreamingDisplayText } from "../utils";
+import { formatCouncilPhase } from "../utils";
 
 type CouncilPanelProps = {
   entries: UICouncilEntry[];
@@ -47,7 +47,7 @@ export function CouncilPanel({
               <p className="council-entry-text">{entry.text}</p>
             ) : entry.streamBuffer ? (
               <p className="council-entry-text streaming">
-                {entry.streamPreview || getStreamingDisplayText(entry.streamBuffer) || "…"}
+                {entry.streamPreview || entry.streamBuffer || "…"}
                 <span className="stream-cursor" aria-hidden="true" />
               </p>
             ) : (
