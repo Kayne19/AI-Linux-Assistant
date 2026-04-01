@@ -11,5 +11,5 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["src/councilStreamLifecycle.ts"]
+  "include": ["src/councilStreamLifecycle.ts", "src/runResume.ts"]
 }

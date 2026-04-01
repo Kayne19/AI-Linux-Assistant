@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test:unit": "tsc -p tsconfig.test.json && node --test tests/councilStreamLifecycle.test.mjs",
+    "test:unit": "tsc -p tsconfig.test.json && node --test tests/*.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

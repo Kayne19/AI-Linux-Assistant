@@ -84,6 +84,7 @@ export default function App() {
     selectedProjectId: projects.selectedProjectId,
     textDelta,
     council,
+    reloadMessages: messages.reloadMessages,
     setMessagesForChat: messages.setMessagesForChat,
     reloadChats: chats.reloadChats,
     updateChatRunStatus: chats.updateChatRunStatus,

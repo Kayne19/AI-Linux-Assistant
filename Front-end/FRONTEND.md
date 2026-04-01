@@ -188,6 +188,8 @@ When the user switches away from a running chat:
 - the run continues server-side
 - the visible SSE attachment may be dropped
 - reopening the chat seeds from the latest durable checkpoint and then resumes live deltas
+- reopening the chat resumes from the highest durable sequence the client already saw, so reconnect does not replay already-consumed durable events
+- if a detached run finishes before the chat is reopened, stale optimistic run UI is discarded and the chat reloads persisted messages instead of staying stuck on the optimistic pair
 - the shared stream session client keeps chat and debug reconnect behavior aligned without moving policy into React
 
 ## Ownership Rules

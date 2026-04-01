@@ -1,6 +1,7 @@
 import { MutableRefObject, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { streamRunSession } from "../runStreamSession";
+import { getResumeAfterSeq, shouldReconcileDetachedRunUi } from "../runResume";
 import type {
   ChatMessage,
   ChatRun,
@@ -34,6 +35,7 @@ type UseStreamingRunOptions = {
   selectedProjectId: string;
   textDelta: TextDeltaController;
   council: CouncilController;
+  reloadMessages: (chatId: string) => Promise<ChatMessage[]>;
   setMessagesForChat: (chatId: string, updater: (current: ChatMessage[]) => ChatMessage[]) => void;
   reloadChats: (projectId: string) => Promise<ChatSession[]>;
   updateChatRunStatus: (chatId: string, activeRunId: string | null, activeRunStatus: string | null) => void;
@@ -59,6 +61,7 @@ export function useStreamingRun({
   selectedProjectId,
   textDelta,
   council,
+  reloadMessages,
   setMessagesForChat,
   reloadChats,
   updateChatRunStatus,
@@ -76,6 +79,7 @@ export function useStreamingRun({
   const pendingDonePayloadsRef = useRef<Record<string, PendingDonePayload>>({});
   const previousSelectedChatIdRef = useRef("");
   const selectedProjectIdRef = useRef(selectedProjectId);
+  const reloadMessagesRef = useRef(reloadMessages);
   const reloadChatsRef = useRef(reloadChats);
   const updateChatRunStatusRef = useRef(updateChatRunStatus);
   const onErrorRef = useRef(onError);
@@ -88,6 +92,10 @@ export function useStreamingRun({
   useEffect(() => {
     selectedProjectIdRef.current = selectedProjectId;
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    reloadMessagesRef.current = reloadMessages;
+  }, [reloadMessages]);
 
   useEffect(() => {
     reloadChatsRef.current = reloadChats;
@@ -255,6 +263,7 @@ export function useStreamingRun({
     ensureOptimisticMessages(chatId, run);
     const optimisticAssistantId = optimisticIdsForRun(run.id).assistantId;
     const checkpointSeed = getCheckpointSeed(chatId, run.id);
+    const resumeAfterSeq = getResumeAfterSeq(checkpointSeed?.seq || 0, runUiByChat[chatId]?.lastSeenSeq || 0);
     const controller = new AbortController();
     streamControllersRef.current[chatId] = controller;
     streamingActiveRef.current[chatId] = false;
@@ -338,7 +347,7 @@ export function useStreamingRun({
           },
         },
         {
-          afterSeq: checkpointSeed?.seq || 0,
+          afterSeq: resumeAfterSeq,
           signal: controller.signal,
         },
       );
@@ -410,6 +419,29 @@ export function useStreamingRun({
 
     previousSelectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
+
+  useEffect(() => {
+    const staleChatIds = chats
+      .filter((chat) =>
+        shouldReconcileDetachedRunUi(
+          runUiByChat[chat.id]?.runId,
+          chat.active_run_id,
+          Boolean(streamControllersRef.current[chat.id]),
+        ),
+      )
+      .map((chat) => chat.id);
+
+    if (staleChatIds.length === 0) {
+      return;
+    }
+
+    staleChatIds.forEach((chatId) => {
+      clearRunUi(chatId);
+      void reloadMessagesRef.current(chatId).catch((err: Error) => {
+        onErrorRef.current(err.message);
+      });
+    });
+  }, [chats, runUiByChat]);
 
   useEffect(() => {
     if (!selectedChatId || !selectedChat?.active_run_id) {
