@@ -1,544 +1,139 @@
-import { CSSProperties, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { ChatView } from "./components/ChatView";
+import { CouncilPanel } from "./components/CouncilPanel";
+import { LoginScreen } from "./components/LoginScreen";
+import { MessageComposer } from "./components/MessageComposer";
+import { Sidebar } from "./components/Sidebar";
+import { CreateProjectDialog } from "./components/dialogs/CreateProjectDialog";
+import { EditChatDialog } from "./components/dialogs/EditChatDialog";
+import { EditProjectDialog } from "./components/dialogs/EditProjectDialog";
 import { DebugPanel } from "./debug/DebugPanel";
-import { renderMessageContent } from "./renderMessage";
+import { useAuth } from "./hooks/useAuth";
+import { useChats } from "./hooks/useChats";
+import { useCouncilStreaming } from "./hooks/useCouncilStreaming";
+import { useMessages } from "./hooks/useMessages";
+import { useProjects } from "./hooks/useProjects";
+import { useScrollManager } from "./hooks/useScrollManager";
+import { useStreamingRun } from "./hooks/useStreamingRun";
+import { useTextDeltaAnimation } from "./hooks/useTextDeltaAnimation";
 import { getStreamStatusAliases, getStreamStatusKey, getStreamStatusLabel } from "./streamStatusText";
-import {
-  TEXT_DELTA_CHARS_PER_MS,
-  TEXT_DELTA_MAX_CHARS_PER_FRAME,
-  TEXT_DELTA_MIN_CHARS_PER_FRAME,
-  formatChatTimestamp,
-  formatCouncilPhase,
-  formatMessageTimestamp,
-  getStreamingDisplayText,
-  optimisticIdsForRun,
-} from "./utils";
-import type {
-  AsyncState,
-  ChatMessage,
-  ChatRun,
-  ChatRunUIState,
-  ChatSession,
-  CheckpointSeed,
-  Project,
-  PendingCouncilDeltaBatch,
-  PendingDonePayload,
-  PendingTextDeltaBatch,
-  UICouncilEntry,
-  User,
-} from "./types";
+import type { AsyncState, ChatSession, Project, StreamStatusEvent, UICouncilEntry } from "./types";
 
 export default function App() {
   const isDebugMode =
     import.meta.env.DEV ||
     (typeof window !== "undefined" && window.localStorage.getItem("ala_debug") === "1");
-  const [usernameInput, setUsernameInput] = useState("");
-  const [projectNameInput, setProjectNameInput] = useState("");
-  const [projectDescriptionInput, setProjectDescriptionInput] = useState("");
-  const [editProjectNameInput, setEditProjectNameInput] = useState("");
-  const [editProjectDescriptionInput, setEditProjectDescriptionInput] = useState("");
-  const [editChatTitleInput, setEditChatTitleInput] = useState("");
-  const [messageInput, setMessageInput] = useState("");
 
-  const [user, setUser] = useState<User | null>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
-  const [expandedProjectId, setExpandedProjectId] = useState<string>("");
-  const [chatListsByProject, setChatListsByProject] = useState<Record<string, ChatSession[]>>({});
-  const [chats, setChats] = useState<ChatSession[]>([]);
-  const [selectedChatId, setSelectedChatId] = useState<string>("");
-  const [messagesByChat, setMessagesByChat] = useState<Record<string, ChatMessage[]>>({});
-  const [runUiByChat, setRunUiByChat] = useState<Record<string, ChatRunUIState>>({});
-  const [showCreateProjectDialog, setShowCreateProjectDialog] = useState(false);
-  const [editingProjectId, setEditingProjectId] = useState<string>("");
-  const [editingChatId, setEditingChatId] = useState<string>("");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [sidebarWidth, setSidebarWidth] = useState(244);
-  const [creatingChat, setCreatingChat] = useState(false);
   const [status, setStatus] = useState<AsyncState>("idle");
   const [error, setError] = useState("");
   const [statusAliasIndex, setStatusAliasIndex] = useState(0);
-  const [councilMode, setCouncilMode] = useState<"off" | "full" | "lite">("off");
-  const [councilActive, setCouncilActive] = useState(false);
-  const [councilPanelCollapsed, setCouncilPanelCollapsed] = useState(false);
-  const [councilEntries, setCouncilEntries] = useState<UICouncilEntry[]>([]);
-  const [viewingCouncilMessageId, setViewingCouncilMessageId] = useState<number | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(244);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
 
-  const dragStateRef = useRef<{ active: boolean; width: number }>({ active: false, width: 244 });
-  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const stickToBottomRef = useRef(true);
-  const councilFeedRef = useRef<HTMLDivElement | null>(null);
-  const councilEndRef = useRef<HTMLDivElement | null>(null);
-  const streamControllersRef = useRef<Record<string, AbortController>>({});
-  const pendingTextDeltaBatchesRef = useRef<Record<string, PendingTextDeltaBatch>>({});
-  const pendingCouncilDeltaBatchesRef = useRef<Record<string, PendingCouncilDeltaBatch>>({});
-  const pendingDonePayloadsRef = useRef<Record<string, PendingDonePayload>>({});
-  const streamingActiveRef = useRef<Record<string, boolean>>({});
-  const lastCheckpointRef = useRef<Record<string, CheckpointSeed>>({});
-  const previousSelectedChatIdRef = useRef("");
-
-  const selectedProject = useMemo(
-    () => projects.find((project) => project.id === selectedProjectId) || null,
-    [projects, selectedProjectId],
+  const projectsReloadedRef = useRef<(projects: Project[]) => void>(() => undefined);
+  const chatDeletedRef = useRef<(chatId: string) => void>(() => undefined);
+  const textDrainCompleteRef = useRef<(chatId: string) => void>(() => undefined);
+  const runUiCouncilEntriesUpdaterRef = useRef<
+    (chatId: string, updater: (entries: UICouncilEntry[]) => UICouncilEntry[]) => void
+  >(() => undefined);
+  const runUiStreamStatusUpdaterRef = useRef<(chatId: string, streamStatus: StreamStatusEvent) => void>(
+    () => undefined,
   );
-  const selectedChat = useMemo(
-    () => chats.find((chat) => chat.id === selectedChatId) || null,
-    [chats, selectedChatId],
-  );
-  const messages = selectedChatId ? (messagesByChat[selectedChatId] || []) : [];
-  const selectedRunUi = selectedChatId ? (runUiByChat[selectedChatId] || null) : null;
-  const streamStatus = selectedRunUi?.streamStatus ?? null;
-  const streamingAssistantId = selectedRunUi?.streamingAssistantId ?? null;
-  const selectedChatBusy = Boolean(selectedChat?.active_run_id || selectedRunUi);
 
-  async function reloadProjects(userId: string) {
-    const nextProjects = await api.listProjects(userId);
-    setProjects(nextProjects);
-    setChatListsByProject((current) =>
-      Object.fromEntries(
-        Object.entries(current).filter(([projectId]) => nextProjects.some((project) => project.id === projectId)),
-      ),
-    );
-    setSelectedProjectId((current) =>
-      nextProjects.some((project) => project.id === current) ? current : nextProjects[0]?.id || "",
-    );
-    return nextProjects;
-  }
-
-  async function reloadChats(projectId: string) {
-    const nextChats = await api.listChats(projectId);
-    setChatListsByProject((current) => ({
-      ...current,
-      [projectId]: nextChats,
-    }));
-    setChats(nextChats);
-    setSelectedChatId((current) =>
-      nextChats.some((chat) => chat.id === current) ? current : nextChats[0]?.id || "",
-    );
-    return nextChats;
-  }
-
-  async function reloadMessages(chatId: string) {
-    const nextMessages = await api.listMessages(chatId);
-    setMessagesByChat((current) => ({
-      ...current,
-      [chatId]: nextMessages,
-    }));
-    return nextMessages;
-  }
-
-  function setMessagesForChat(chatId: string, updater: (current: ChatMessage[]) => ChatMessage[]) {
-    setMessagesByChat((current) => ({
-      ...current,
-      [chatId]: updater(current[chatId] || []),
-    }));
-  }
-
-  function setRunUiForChat(
-    chatId: string,
-    updater: (current: ChatRunUIState | undefined) => ChatRunUIState | undefined,
-  ) {
-    setRunUiByChat((current) => {
-      const nextValue = updater(current[chatId]);
-      if (!nextValue) {
-        const next = { ...current };
-        delete next[chatId];
-        return next;
-      }
-      return {
-        ...current,
-        [chatId]: nextValue,
-      };
-    });
-  }
-
-  function clearPendingTextDeltaBatch(chatId: string) {
-    const pending = pendingTextDeltaBatchesRef.current[chatId];
-    if (!pending) {
-      return;
-    }
-    if (pending.frameId !== null) {
-      window.cancelAnimationFrame(pending.frameId);
-    }
-    delete pendingTextDeltaBatchesRef.current[chatId];
-  }
-
-  async function finalizeDone(chatId: string, payload: PendingDonePayload["payload"], projectIdAtCompletion: string) {
-    setMessagesForChat(chatId, (current) => [
-      ...current.filter((message) => message.id >= 0),
-      payload.user_message,
-      payload.assistant_message,
-    ]);
-    clearRunUi(chatId);
-    updateChatRunStatus(chatId, null, null);
-    delete pendingDonePayloadsRef.current[chatId];
-    if (projectIdAtCompletion) {
-      await reloadChats(projectIdAtCompletion);
-    }
-  }
-
-  function councilDeltaBatchKey(chatId: string, entryId: string) {
-    return `${chatId}:${entryId}`;
-  }
-
-  function clearPendingCouncilDeltaBatch(chatId: string, entryId: string) {
-    const batchKey = councilDeltaBatchKey(chatId, entryId);
-    const pending = pendingCouncilDeltaBatchesRef.current[batchKey];
-    if (!pending) {
-      return;
-    }
-    if (pending.frameId !== null) {
-      window.cancelAnimationFrame(pending.frameId);
-    }
-    delete pendingCouncilDeltaBatchesRef.current[batchKey];
-  }
-
-  function clearPendingCouncilDeltaBatchesForChat(chatId: string) {
-    Object.entries(pendingCouncilDeltaBatchesRef.current).forEach(([batchKey, pending]) => {
-      if (!batchKey.startsWith(`${chatId}:`)) {
-        return;
-      }
-      if (pending.frameId !== null) {
-        window.cancelAnimationFrame(pending.frameId);
-      }
-      delete pendingCouncilDeltaBatchesRef.current[batchKey];
-    });
-  }
-
-  function applyTextCheckpoint(chatId: string, assistantId: number, text: string) {
-    clearPendingTextDeltaBatch(chatId);
-    setMessagesForChat(chatId, (current) =>
-      current.map((message) =>
-        message.id === assistantId ? { ...message, content: text } : message,
-      ),
-    );
-  }
-
-  function setCheckpointSeed(chatId: string, runId: string, seq: number, text: string) {
-    lastCheckpointRef.current[chatId] = {
-      runId,
-      seq: Math.max(0, seq),
-      text,
-    };
-  }
-
-  function getCheckpointSeed(chatId: string, runId: string) {
-    const checkpoint = lastCheckpointRef.current[chatId];
-    if (!checkpoint || checkpoint.runId !== runId) {
-      return null;
-    }
-    return checkpoint;
-  }
-
-  function scheduleTextDeltaDrain(chatId: string, assistantId: number) {
-    const batch = pendingTextDeltaBatchesRef.current[chatId];
-    if (!batch) {
-      return;
-    }
-    if (batch.frameId !== null) {
-      return;
-    }
-    batch.frameId = window.requestAnimationFrame((timestamp) => {
-      const currentBatch = pendingTextDeltaBatchesRef.current[chatId];
-      if (!currentBatch) {
-        return;
-      }
-      currentBatch.frameId = null;
-      if (!currentBatch.delta) {
-        const pendingDone = pendingDonePayloadsRef.current[chatId];
-        if (pendingDone) {
-          void finalizeDone(chatId, pendingDone.payload, pendingDone.selectedProjectIdAtCompletion);
-        }
-        return;
-      }
-      const elapsedMs = currentBatch.lastDrainAt === null ? 16 : Math.max(16, timestamp - currentBatch.lastDrainAt);
-      currentBatch.lastDrainAt = timestamp;
-      const pacedChars = Math.max(
-        TEXT_DELTA_MIN_CHARS_PER_FRAME,
-        Math.min(TEXT_DELTA_MAX_CHARS_PER_FRAME, Math.ceil(elapsedMs * TEXT_DELTA_CHARS_PER_MS)),
-      );
-      const drainChars = Math.min(currentBatch.delta.length, pacedChars);
-      const bufferedDelta = currentBatch.delta.slice(0, drainChars);
-      currentBatch.delta = currentBatch.delta.slice(drainChars);
-      setRunUiForChat(chatId, (current) =>
-        current ? { ...current, streamStatus: { source: "event", code: "text_delta" } } : current,
-      );
-      setMessagesForChat(chatId, (current) =>
+  const auth = useAuth();
+  const projects = useProjects({
+    userId: auth.user?.id || "",
+    onStatusChange: setStatus,
+    onError: setError,
+    onProjectsReloaded: (nextProjects) => projectsReloadedRef.current(nextProjects),
+  });
+  const chats = useChats({
+    enabled: Boolean(auth.user),
+    selectedProjectId: projects.selectedProjectId,
+    onStatusChange: setStatus,
+    onError: setError,
+    onChatDeleted: (chatId) => chatDeletedRef.current(chatId),
+  });
+  const messages = useMessages({ selectedChatId: chats.selectedChatId });
+  const council = useCouncilStreaming({
+    updateRunUiCouncilEntries: (chatId, updater) => runUiCouncilEntriesUpdaterRef.current(chatId, updater),
+  });
+  const textDelta = useTextDeltaAnimation({
+    onDrainChunk: (chatId, assistantId, chunk) => {
+      messages.setMessagesForChat(chatId, (current) =>
         current.map((message) =>
-          message.id === assistantId ? { ...message, content: message.content + bufferedDelta } : message,
+          message.id === assistantId ? { ...message, content: message.content + chunk } : message,
         ),
       );
-      if (currentBatch.delta) {
-        scheduleTextDeltaDrain(chatId, assistantId);
-        return;
-      }
-      delete pendingTextDeltaBatchesRef.current[chatId];
-      const pendingDone = pendingDonePayloadsRef.current[chatId];
-      if (pendingDone) {
-        void finalizeDone(chatId, pendingDone.payload, pendingDone.selectedProjectIdAtCompletion);
-      }
-    });
-  }
-
-  function queueTextDelta(chatId: string, assistantId: number, delta: string) {
-    if (!delta) {
-      return;
-    }
-    const batches = pendingTextDeltaBatchesRef.current;
-    const batch = batches[chatId] || { delta: "", frameId: null, lastDrainAt: null };
-    batch.delta += delta;
-    batches[chatId] = batch;
-    scheduleTextDeltaDrain(chatId, assistantId);
-  }
-
-  function queueCouncilTextDelta(chatId: string, entryId: string, delta: string) {
-    if (!delta) {
-      return;
-    }
-    const batchKey = councilDeltaBatchKey(chatId, entryId);
-    const batches = pendingCouncilDeltaBatchesRef.current;
-    const batch = batches[batchKey] || { delta: "", frameId: null };
-    batch.delta += delta;
-    batches[batchKey] = batch;
-    if (batch.frameId !== null) {
-      return;
-    }
-    batch.frameId = window.requestAnimationFrame(() => {
-      const currentBatch = pendingCouncilDeltaBatchesRef.current[batchKey];
-      if (!currentBatch) {
-        return;
-      }
-      const bufferedDelta = currentBatch.delta;
-      currentBatch.delta = "";
-      currentBatch.frameId = null;
-      if (!bufferedDelta) {
-        return;
-      }
-      setRunUiForChat(chatId, (current) =>
-        current
-          ? {
-              ...current,
-              councilEntries: current.councilEntries.map((entry) =>
-                entry.entryId === entryId
-                  ? (() => {
-                      const streamBuffer = (entry.streamBuffer ?? "") + bufferedDelta;
-                      return {
-                        ...entry,
-                        streamBuffer,
-                        streamPreview: getStreamingDisplayText(streamBuffer),
-                      };
-                    })()
-                  : entry,
-              ),
-            }
-          : current,
-      );
-    });
-  }
-
-  useEffect(
-    () => () => {
-      Object.values(pendingTextDeltaBatchesRef.current).forEach((batch) => {
-        if (batch.frameId !== null) {
-          window.cancelAnimationFrame(batch.frameId);
-        }
-      });
-      pendingTextDeltaBatchesRef.current = {};
-      Object.values(pendingCouncilDeltaBatchesRef.current).forEach((batch) => {
-        if (batch.frameId !== null) {
-          window.cancelAnimationFrame(batch.frameId);
-        }
-      });
-      pendingCouncilDeltaBatchesRef.current = {};
     },
-    [],
-  );
+    onDrainComplete: (chatId) => textDrainCompleteRef.current(chatId),
+    onStreamStatusUpdate: (chatId) =>
+      runUiStreamStatusUpdaterRef.current(chatId, {
+        source: "event",
+        code: "text_delta",
+      }),
+  });
+  const streaming = useStreamingRun({
+    chats: chats.chats,
+    selectedChatId: chats.selectedChatId,
+    selectedChat: chats.selectedChat,
+    selectedProjectId: projects.selectedProjectId,
+    textDelta,
+    council,
+    setMessagesForChat: messages.setMessagesForChat,
+    reloadChats: chats.reloadChats,
+    updateChatRunStatus: chats.updateChatRunStatus,
+    onError: setError,
+    onTextDrainCompleteRef: textDrainCompleteRef,
+    runUiCouncilEntriesUpdaterRef,
+    runUiStreamStatusUpdaterRef,
+  });
+  const scroll = useScrollManager({
+    selectedChatId: chats.selectedChatId,
+    messages: messages.messages,
+    selectedChatBusy: streaming.selectedChatBusy,
+    streamStatus: streaming.streamStatus,
+  });
 
-  function ensureOptimisticMessages(chatId: string, run: ChatRun) {
-    const checkpointSeed = getCheckpointSeed(chatId, run.id);
-    if (!checkpointSeed) {
-      delete lastCheckpointRef.current[chatId];
-    }
-    streamingActiveRef.current[chatId] = false;
-    const seedText =
-      checkpointSeed && checkpointSeed.seq >= (run.latest_event_seq || 0)
-        ? checkpointSeed.text
-        : run.partial_assistant_text || checkpointSeed?.text || "";
-    const optimisticIds = optimisticIdsForRun(run.id);
-    const optimisticUserMessage: ChatMessage = {
-      id: optimisticIds.userId,
-      session_id: chatId,
-      role: "user",
-      content: run.request_content,
-      created_at: run.created_at || new Date().toISOString(),
-    };
-    const optimisticAssistantMessage: ChatMessage = {
-      id: optimisticIds.assistantId,
-      session_id: chatId,
-      role: "assistant",
-      content: seedText,
-      created_at: run.created_at || new Date().toISOString(),
-    };
-    setMessagesForChat(chatId, (current) => [
-      ...current.filter((message) => message.id >= 0),
-      optimisticUserMessage,
-      optimisticAssistantMessage,
-    ]);
-    setRunUiForChat(chatId, (current) => ({
-      runId: run.id,
-      clientRequestId: run.client_request_id,
-      pendingContent: run.request_content,
-      streamStatus: run.latest_state_code ? { source: "state", code: run.latest_state_code } : { source: "state", code: "START" },
-      streamingAssistantId: optimisticIds.assistantId,
-      optimisticUserId: optimisticIds.userId,
-      optimisticAssistantId: optimisticIds.assistantId,
-      lastSeenSeq: Math.max(current?.lastSeenSeq || 0, checkpointSeed?.seq || 0, run.latest_event_seq || 0),
-      councilEntries: current?.councilEntries || [],
-    }));
-  }
+  projectsReloadedRef.current = (nextProjects) => {
+    const nextProjectIds = new Set(nextProjects.map((project) => project.id));
+    chats.setChatListsByProject((current) =>
+      Object.fromEntries(Object.entries(current).filter(([projectId]) => nextProjectIds.has(projectId))),
+    );
+  };
 
-  function clearRunUi(chatId: string) {
-    const controller = streamControllersRef.current[chatId];
-    if (controller) {
-      controller.abort();
-      delete streamControllersRef.current[chatId];
-    }
-    streamingActiveRef.current[chatId] = false;
-    clearPendingTextDeltaBatch(chatId);
-    clearPendingCouncilDeltaBatchesForChat(chatId);
-    delete pendingDonePayloadsRef.current[chatId];
-    setRunUiForChat(chatId, () => undefined);
-  }
-
-  function scrollMessagesToBottom(behavior: ScrollBehavior = "auto") {
-    const container = messagesContainerRef.current;
-    if (!container) {
-      return;
-    }
-    container.scrollTo({
-      top: container.scrollHeight,
-      behavior,
-    });
-  }
-
-  function updateStickToBottom() {
-    const container = messagesContainerRef.current;
-    if (!container) {
-      return;
-    }
-    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    stickToBottomRef.current = distanceFromBottom <= 64;
-  }
-
-  function autoResizeTextarea() {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
-  }
+  chatDeletedRef.current = (chatId) => {
+    messages.clearMessagesForChat(chatId);
+    streaming.clearRunUi(chatId);
+  };
 
   useEffect(() => {
-    autoResizeTextarea();
-  }, [messageInput]);
+    council.clearForChatSelection();
+  }, [chats.selectedChatId]);
 
   useEffect(() => {
-    if (!user || !selectedProjectId) {
-      setChats([]);
-      setSelectedChatId("");
+    if (!chats.selectedChatId || messages.messagesByChat[chats.selectedChatId]) {
       return;
     }
 
-    void reloadChats(selectedProjectId).catch((err: Error) => {
+    void messages.reloadMessages(chats.selectedChatId).catch((err: Error) => {
       setError(err.message);
       setStatus("error");
     });
-  }, [user, selectedProjectId]);
+  }, [chats.selectedChatId, messages.messagesByChat]);
 
   useEffect(() => {
-    if (!selectedProjectId) {
-      return;
-    }
-    const cachedChats = chatListsByProject[selectedProjectId];
-    if (!cachedChats) {
-      return;
-    }
-    setChats(cachedChats);
-    setSelectedChatId((current) =>
-      cachedChats.some((chat) => chat.id === current) ? current : cachedChats[0]?.id || "",
-    );
-  }, [chatListsByProject, selectedProjectId]);
+    council.syncLiveCouncilEntries(streaming.selectedRunUi?.councilEntries || [], streaming.selectedChatBusy);
+  }, [council.viewingCouncilMessageId, streaming.selectedChatBusy, streaming.selectedRunUi?.councilEntries]);
 
-
-  useEffect(() => {
-    if (!selectedProjectId) {
-      setExpandedProjectId("");
-      return;
-    }
-
-    setExpandedProjectId((current) => {
-      if (current && projects.some((project) => project.id === current)) {
-        return current;
-      }
-      return selectedProjectId;
-    });
-  }, [projects, selectedProjectId]);
-
-  useEffect(() => {
-    setCouncilActive(false);
-    setCouncilEntries([]);
-    if (!selectedChatId) {
-      return;
-    }
-
-    if (!messagesByChat[selectedChatId]) {
-      void reloadMessages(selectedChatId).catch((err: Error) => {
-        setError(err.message);
-        setStatus("error");
-      });
-    }
-  }, [selectedChatId]);
-
-  useEffect(() => {
-    if (!stickToBottomRef.current) {
-      return;
-    }
-    requestAnimationFrame(() => {
-      scrollMessagesToBottom(selectedChatBusy ? "auto" : messages.length > 0 ? "smooth" : "auto");
-    });
-  }, [messages, selectedChatBusy]);
-
-  useEffect(() => {
-    stickToBottomRef.current = true;
-    requestAnimationFrame(() => {
-      scrollMessagesToBottom();
-    });
-  }, [selectedChatId]);
-
-  useEffect(() => {
-    if (!selectedChatBusy) {
-      return;
-    }
-    requestAnimationFrame(() => {
-      scrollMessagesToBottom("auto");
-    });
-  }, [selectedChatBusy, streamStatus]);
-
-  useEffect(() => {
-    councilEndRef.current?.scrollIntoView({
-      behavior: councilEntries.some((entry) => !entry.complete) ? "auto" : "smooth",
-      block: "end",
-    });
-  }, [councilEntries]);
-
-  const liveStatusKey = getStreamStatusKey(streamStatus);
-  const liveStatusAliases = getStreamStatusAliases(streamStatus);
+  const liveStatusKey = getStreamStatusKey(streaming.streamStatus);
+  const liveStatusAliases = getStreamStatusAliases(streaming.streamStatus);
 
   useEffect(() => {
     setStatusAliasIndex(0);
-    if (!selectedChatBusy || liveStatusAliases.length <= 1) {
+    if (!streaming.selectedChatBusy || liveStatusAliases.length <= 1) {
       return;
     }
 
@@ -549,266 +144,7 @@ export default function App() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [liveStatusKey, liveStatusAliases, selectedChatBusy]);
-
-  useEffect(() => {
-    function onPointerMove(event: PointerEvent) {
-      if (!dragStateRef.current.active || sidebarCollapsed) {
-        return;
-      }
-      const nextWidth = Math.min(360, Math.max(220, event.clientX));
-      dragStateRef.current.width = nextWidth;
-      setSidebarWidth(nextWidth);
-    }
-
-    function onPointerUp() {
-      dragStateRef.current.active = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    }
-
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-    return () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-  }, [sidebarCollapsed]);
-
-  function updateChatRunStatus(chatId: string, activeRunId: string | null, activeRunStatus: string | null) {
-    const apply = (items: ChatSession[]) =>
-      items.map((chat) =>
-        chat.id === chatId ? { ...chat, active_run_id: activeRunId, active_run_status: activeRunStatus } : chat,
-      );
-    setChats((current) => apply(current));
-    setChatListsByProject((current) =>
-      Object.fromEntries(
-        Object.entries(current).map(([projectId, items]) => [projectId, apply(items)]),
-      ),
-    );
-  }
-
-  async function attachRunStream(chatId: string, run: ChatRun) {
-    if (!selectedChatId || selectedChatId !== chatId) {
-      return;
-    }
-    if (streamControllersRef.current[chatId]) {
-      return;
-    }
-    ensureOptimisticMessages(chatId, run);
-    const optimisticAssistantId = optimisticIdsForRun(run.id).assistantId;
-    const checkpointSeed = getCheckpointSeed(chatId, run.id);
-    const controller = new AbortController();
-    streamControllersRef.current[chatId] = controller;
-    streamingActiveRef.current[chatId] = false;
-
-    try {
-      await api.streamRun(
-        run.id,
-        {
-          onSequence: (seq) => {
-            setRunUiForChat(chatId, (current) =>
-              current ? { ...current, lastSeenSeq: Math.max(current.lastSeenSeq, seq) } : current,
-            );
-          },
-          onState: (code) =>
-            setRunUiForChat(chatId, (current) =>
-              current ? { ...current, streamStatus: { source: "state", code } } : current,
-            ),
-          onEvent: (code, payload) => {
-            if (code !== "text_delta" && code !== "text_checkpoint" && code !== "magi_role_text_delta") {
-              setRunUiForChat(chatId, (current) =>
-                current ? { ...current, streamStatus: { source: "event", code, payload } } : current,
-              );
-            }
-            if (code === "magi_role_start" && payload) {
-              const role = String(payload.role || "");
-              const phase = String(payload.phase || "");
-              const round = typeof payload.round === "number" ? payload.round : undefined;
-              const entryId = `${phase}-${role}-${round ?? 0}`;
-              clearPendingCouncilDeltaBatch(chatId, entryId);
-              setRunUiForChat(chatId, (current) =>
-                current
-                  ? {
-                      ...current,
-                      councilEntries: [
-                      ...current.councilEntries.filter((entry) => entry.entryId !== entryId),
-                        {
-                          entryId,
-                          role,
-                          phase,
-                          round,
-                          text: "",
-                          complete: false,
-                          streamBuffer: "",
-                          streamPreview: "",
-                        },
-                      ],
-                    }
-                  : current,
-              );
-            }
-            if (code === "magi_role_text_delta" && payload) {
-              const role = String(payload.role || "");
-              const phase = String(payload.phase || "");
-              const round = typeof payload.round === "number" ? payload.round : undefined;
-              const delta = String(payload.delta || "");
-              const entryId = `${phase}-${role}-${round ?? 0}`;
-              queueCouncilTextDelta(chatId, entryId, delta);
-            }
-            if (code === "magi_role_complete" && payload) {
-              const role = String(payload.role || "");
-              const phase = String(payload.phase || "");
-              const round = typeof payload.round === "number" ? payload.round : undefined;
-              const text = String(payload.text || "");
-              const entryId = `${phase}-${role}-${round ?? 0}`;
-              clearPendingCouncilDeltaBatch(chatId, entryId);
-              setRunUiForChat(chatId, (current) =>
-                current
-                  ? {
-                      ...current,
-                      councilEntries: current.councilEntries.map((entry) =>
-                        entry.entryId === entryId
-                          ? {
-                              ...entry,
-                              text,
-                              complete: true,
-                              streamBuffer: undefined,
-                              streamPreview: undefined,
-                            }
-                          : entry,
-                      ),
-                    }
-                  : current,
-              );
-            }
-          },
-          onTextCheckpoint: (text, seq) => {
-            setCheckpointSeed(chatId, run.id, seq, text);
-            if (streamingActiveRef.current[chatId]) {
-              return;
-            }
-            applyTextCheckpoint(chatId, optimisticAssistantId, text);
-          },
-          onTextDelta: (delta) => {
-            streamingActiveRef.current[chatId] = true;
-            queueTextDelta(chatId, optimisticAssistantId, delta);
-          },
-          onDone: async (payload) => {
-            streamingActiveRef.current[chatId] = false;
-            delete lastCheckpointRef.current[chatId];
-            const pendingBatch = pendingTextDeltaBatchesRef.current[chatId];
-            if (pendingBatch && pendingBatch.delta) {
-              pendingDonePayloadsRef.current[chatId] = {
-                payload,
-                selectedProjectIdAtCompletion: selectedProjectId,
-              };
-              scheduleTextDeltaDrain(chatId, optimisticAssistantId);
-              return;
-            }
-            await finalizeDone(chatId, payload, selectedProjectId);
-          },
-          onCancelled: (message) => {
-            streamingActiveRef.current[chatId] = false;
-            delete lastCheckpointRef.current[chatId];
-            clearPendingTextDeltaBatch(chatId);
-            setMessagesForChat(chatId, (current) => current.filter((messageItem) => messageItem.id >= 0));
-            clearRunUi(chatId);
-            updateChatRunStatus(chatId, null, null);
-            setError(message);
-          },
-          onError: (message) => {
-            streamingActiveRef.current[chatId] = false;
-            delete lastCheckpointRef.current[chatId];
-            clearPendingTextDeltaBatch(chatId);
-            setMessagesForChat(chatId, (current) => current.filter((messageItem) => messageItem.id >= 0));
-            clearRunUi(chatId);
-            updateChatRunStatus(chatId, null, null);
-            setError(message);
-          },
-        },
-        {
-          afterSeq: checkpointSeed?.seq || 0,
-          signal: controller.signal,
-        },
-      );
-    } catch (err) {
-      const name = (err as Error).name || "";
-      if (name !== "AbortError") {
-        setError((err as Error).message);
-      }
-    } finally {
-      streamingActiveRef.current[chatId] = false;
-      if (streamControllersRef.current[chatId] === controller) {
-        delete streamControllersRef.current[chatId];
-      }
-    }
-  }
-
-  useEffect(() => {
-    const previousChatId = previousSelectedChatIdRef.current;
-    if (previousChatId && previousChatId !== selectedChatId) {
-      const controller = streamControllersRef.current[previousChatId];
-      if (controller) {
-        controller.abort();
-        delete streamControllersRef.current[previousChatId];
-      }
-      streamingActiveRef.current[previousChatId] = false;
-    }
-    previousSelectedChatIdRef.current = selectedChatId;
-  }, [selectedChatId]);
-
-  useEffect(() => {
-    if (!selectedChatId || !selectedChat?.active_run_id) {
-      return;
-    }
-    void api.getRun(selectedChat.active_run_id)
-      .then((run) => {
-        ensureOptimisticMessages(selectedChatId, run);
-        return attachRunStream(selectedChatId, run);
-      })
-      .catch((err: Error) => {
-        setError(err.message);
-      });
-  }, [selectedChatId, selectedChat?.active_run_id]);
-
-  useEffect(() => {
-    if (viewingCouncilMessageId !== null) {
-      return;
-    }
-    if (!selectedRunUi) {
-      setCouncilEntries([]);
-      setCouncilActive(false);
-      return;
-    }
-    setCouncilEntries(selectedRunUi.councilEntries);
-    setCouncilActive(selectedRunUi.councilEntries.length > 0 || selectedChatBusy);
-  }, [selectedRunUi, viewingCouncilMessageId, selectedChatBusy]);
-
-  useEffect(() => {
-    if (!selectedProjectId) {
-      return;
-    }
-    const hasActiveRuns = chats.some((chat) => chat.active_run_id);
-    if (!hasActiveRuns) {
-      return;
-    }
-    const intervalId = window.setInterval(() => {
-      void reloadChats(selectedProjectId).catch(() => undefined);
-    }, 2000);
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [chats, selectedProjectId]);
-
-  function startSidebarResize() {
-    if (sidebarCollapsed) {
-      return;
-    }
-    dragStateRef.current.active = true;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }
+  }, [liveStatusAliases, liveStatusKey, streaming.selectedChatBusy]);
 
   function closeSidebarOnMobile() {
     if (typeof window !== "undefined" && window.innerWidth <= 960) {
@@ -816,43 +152,33 @@ export default function App() {
     }
   }
 
-  async function handleLogin(event: FormEvent) {
-    event.preventDefault();
-    setStatus("loading");
-    setError("");
-    try {
-      const result = await api.bootstrap(usernameInput);
-      setUser(result.user);
-      setProjects(result.projects);
-      setChatListsByProject(result.chats_by_project);
-      setSelectedProjectId(result.projects[0]?.id || "");
-      setSelectedChatId("");
-      setMessagesByChat({});
-      setRunUiByChat({});
-      setStatus("idle");
-    } catch (err) {
-      setError((err as Error).message);
-      setStatus("error");
+  function handleSelectProject(projectId: string, cachedChats?: ChatSession[]) {
+    if (cachedChats) {
+      chats.setChats(cachedChats);
+      chats.setSelectedChatId((current) =>
+        cachedChats.some((chat) => chat.id === current) ? current : cachedChats[0]?.id || "",
+      );
     }
+
+    projects.setSelectedProjectId(projectId);
+    projects.setExpandedProjectId(projectId);
+    closeSidebarOnMobile();
   }
 
-  async function handleCreateProject(event: FormEvent) {
+  async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!user) return;
     setStatus("loading");
     setError("");
+
     try {
-      const project = await api.createProject({
-        user_id: user.id,
-        name: projectNameInput,
-        description: projectDescriptionInput,
-      });
-      await reloadProjects(user.id);
-      setSelectedProjectId(project.id);
-      setSelectedChatId("");
-      setProjectNameInput("");
-      setProjectDescriptionInput("");
-      setShowCreateProjectDialog(false);
+      const result = await auth.login(auth.usernameInput);
+      auth.setUser(result.user);
+      projects.setProjects(result.projects);
+      chats.setChatListsByProject(result.chats_by_project);
+      projects.setSelectedProjectId(result.projects[0]?.id || "");
+      chats.setSelectedChatId("");
+      messages.resetAll();
+      streaming.resetAll();
       setStatus("idle");
     } catch (err) {
       setError((err as Error).message);
@@ -861,787 +187,225 @@ export default function App() {
   }
 
   async function handleCreateChat() {
-    if (!selectedProjectId || creatingChat) return;
-    if (selectedChat && messages.length === 0) {
+    if (!projects.selectedProjectId || chats.creatingChat) {
+      return;
+    }
+
+    if (chats.selectedChat && messages.messages.length === 0) {
       closeSidebarOnMobile();
       return;
     }
-    setCreatingChat(true);
-    setStatus("loading");
-    setError("");
-    try {
-      const chat = await api.createChat(selectedProjectId, "");
-      await reloadChats(selectedProjectId);
-      setSelectedChatId(chat.id);
-      setStatus("idle");
-    } catch (err) {
-      setError((err as Error).message);
-      setStatus("error");
-    } finally {
-      setCreatingChat(false);
-    }
-  }
 
-  function openEditProjectDialog(project: Project) {
-    setEditingProjectId(project.id);
-    setEditProjectNameInput(project.name || "");
-    setEditProjectDescriptionInput(project.description || "");
-    setError("");
-  }
-
-  function closeEditProjectDialog() {
-    setEditingProjectId("");
-    setEditProjectNameInput("");
-    setEditProjectDescriptionInput("");
-  }
-
-  async function handleEditProject(event: FormEvent) {
-    event.preventDefault();
-    if (!editingProjectId || !user) return;
-    setStatus("loading");
-    setError("");
-    try {
-      const updatedProject = await api.updateProject(editingProjectId, {
-        name: editProjectNameInput,
-        description: editProjectDescriptionInput,
-      });
-      setProjects((current) =>
-        current.map((project) => (project.id === updatedProject.id ? updatedProject : project)),
-      );
-      setSelectedProjectId(updatedProject.id);
-      closeEditProjectDialog();
-      await reloadProjects(user.id);
-      setStatus("idle");
-    } catch (err) {
-      setError((err as Error).message);
-      setStatus("error");
-    }
+    await chats.handleCreateChat("");
   }
 
   async function handleDeleteProject() {
-    if (!editingProjectId || !user) return;
-    setStatus("loading");
-    setError("");
-    try {
-      await api.deleteProject(editingProjectId);
-      if (selectedProjectId === editingProjectId) {
-        setSelectedProjectId("");
-        setSelectedChatId("");
-        setMessagesByChat({});
-        setRunUiByChat({});
-      }
-      closeEditProjectDialog();
-      await reloadProjects(user.id);
-      setStatus("idle");
-    } catch (err) {
-      setError((err as Error).message);
-      setStatus("error");
-    }
-  }
+    const deletingSelectedProject = projects.selectedProjectId === projects.editingProjectId;
+    const deleted = await projects.handleDeleteProject();
 
-  function openEditChatDialog(chat: ChatSession) {
-    setEditingChatId(chat.id);
-    setEditChatTitleInput(chat.title || "");
-    setError("");
-  }
-
-  function closeEditChatDialog() {
-    setEditingChatId("");
-    setEditChatTitleInput("");
-  }
-
-  async function handleEditChat(event: FormEvent) {
-    event.preventDefault();
-    if (!editingChatId || !selectedProjectId) return;
-    setStatus("loading");
-    setError("");
-    try {
-      const updatedChat = await api.updateChat(editingChatId, {
-        title: editChatTitleInput,
-      });
-      setChats((current) =>
-        current.map((chat) => (chat.id === updatedChat.id ? updatedChat : chat)),
-      );
-      setSelectedChatId(updatedChat.id);
-      closeEditChatDialog();
-      await reloadChats(selectedProjectId);
-      setStatus("idle");
-    } catch (err) {
-      setError((err as Error).message);
-      setStatus("error");
-    }
-  }
-
-  async function handleDeleteChat() {
-    if (!editingChatId || !selectedProjectId) return;
-    setStatus("loading");
-    setError("");
-    try {
-      await api.deleteChat(editingChatId);
-      if (selectedChatId === editingChatId) {
-        setSelectedChatId("");
-        setMessagesByChat((current) => {
-          const next = { ...current };
-          delete next[editingChatId];
-          return next;
-        });
-        clearRunUi(editingChatId);
-      }
-      closeEditChatDialog();
-      await reloadChats(selectedProjectId);
-      setStatus("idle");
-    } catch (err) {
-      setError((err as Error).message);
-      setStatus("error");
-    }
-  }
-
-  function handleViewCouncilEntries(message: ChatMessage) {
-    const stored = message.council_entries;
-    if (!stored?.length) return;
-    const entries: UICouncilEntry[] = stored.map((e) => ({
-      entryId: `${e.phase}-${e.role}-${e.round ?? 0}`,
-      role: e.role,
-      phase: e.phase,
-      round: e.round ?? undefined,
-      text: e.text,
-      complete: true,
-    }));
-    setCouncilEntries(entries);
-    setCouncilActive(true);
-    setCouncilPanelCollapsed(false);
-    setViewingCouncilMessageId(message.id);
-  }
-
-  async function handleCancelActiveRun() {
-    const runId = selectedChat?.active_run_id || selectedRunUi?.runId;
-    if (!runId || !selectedChatId) {
+    if (!deleted || !deletingSelectedProject) {
       return;
     }
-    try {
-      await api.cancelRun(runId);
-      updateChatRunStatus(selectedChatId, runId, "cancel_requested");
-    } catch (err) {
-      setError((err as Error).message);
-    }
+
+    chats.setSelectedChatId("");
+    messages.resetAll();
+    streaming.resetAll();
   }
 
-  async function handleSendMessage(event: FormEvent) {
+  async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedChatId || !messageInput.trim() || selectedChatBusy) return;
+    if (!chats.selectedChatId || !messages.messageInput.trim() || streaming.selectedChatBusy) {
+      return;
+    }
+
     setError("");
-    const content = messageInput;
+    const content = messages.messageInput;
     const clientRequestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+
     try {
-      setMessageInput("");
-      if (councilMode !== "off") {
-        setCouncilActive(true);
-        setCouncilPanelCollapsed(false);
-        setCouncilEntries([]);
-        setViewingCouncilMessageId(null);
+      messages.setMessageInput("");
+      if (council.councilMode !== "off") {
+        council.setCouncilActive(true);
+        council.setCouncilPanelCollapsed(false);
+        council.setCouncilEntries([]);
+        council.setViewingCouncilMessageId(null);
       }
-      stickToBottomRef.current = true;
+
+      scroll.resetStickToBottom();
       requestAnimationFrame(() => {
-        scrollMessagesToBottom("smooth");
+        scroll.scrollMessagesToBottom("smooth");
       });
-      const run = await api.createRun(selectedChatId, content, {
-        magi: councilMode,
+
+      const run = await api.createRun(chats.selectedChatId, content, {
+        magi: council.councilMode,
         clientRequestId,
       });
-      updateChatRunStatus(selectedChatId, run.id, run.status);
-      ensureOptimisticMessages(selectedChatId, run);
-      await attachRunStream(selectedChatId, run);
+      chats.updateChatRunStatus(chats.selectedChatId, run.id, run.status);
+      await streaming.attachRunStream(chats.selectedChatId, run);
     } catch (err) {
-      setMessageInput(content);
+      messages.setMessageInput(content);
       setError((err as Error).message);
     }
-  }
-
-  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
-      return;
-    }
-    event.preventDefault();
-    event.currentTarget.form?.requestSubmit();
   }
 
   const appShellStyle = {
     "--sidebar-width": `${sidebarCollapsed ? 0 : sidebarWidth}px`,
   } as CSSProperties;
-  const composerPlaceholder = !selectedProject
+  const composerPlaceholder = !projects.selectedProject
     ? "Create a project first."
-    : !selectedChatId
+    : !chats.selectedChatId
       ? "Create a chat inside this project."
-      : messages.length === 0
-        ? `Ask about ${selectedProject.name}...`
+      : messages.messages.length === 0
+        ? `Ask about ${projects.selectedProject.name}...`
         : "Reply...";
-  const liveStatusLabel = getStreamStatusLabel(streamStatus);
+  const liveStatusLabel = getStreamStatusLabel(streaming.streamStatus);
   const liveStatusSubtext = liveStatusAliases[statusAliasIndex] || liveStatusAliases[0] || liveStatusLabel;
 
-  if (!user) {
+  if (!auth.user) {
     return (
-      <main className="auth-page">
-        <section className="auth-panel">
-          <div className="auth-copy">
-            <p className="eyebrow">AI Linux Assistant</p>
-            <h1>Sign in to enter your workspace.</h1>
-            <p>
-              Projects, chats, and memory live behind a named workspace. Pick a username to continue.
-            </p>
-          </div>
-
-          <form className="auth-form" onSubmit={handleLogin}>
-            <label className="stack">
-              <span className="label">Username</span>
-              <input
-                value={usernameInput}
-                onChange={(event) => setUsernameInput(event.target.value)}
-                placeholder="kayne19"
-                autoFocus
-              />
-            </label>
-            {error ? <p className="error-banner auth-error">{error}</p> : null}
-            <button type="submit" disabled={status === "loading" || !usernameInput.trim()}>
-              {status === "loading" ? "Entering..." : "Enter workspace"}
-            </button>
-          </form>
-        </section>
-      </main>
+      <LoginScreen
+        usernameInput={auth.usernameInput}
+        onUsernameChange={auth.setUsernameInput}
+        onSubmit={handleLogin}
+        status={status}
+        error={error}
+      />
     );
   }
 
   return (
     <>
-    <div className="app-shell" style={appShellStyle}>
-      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
-        {!sidebarCollapsed ? (
-          <>
-            <div className="sidebar-top">
-              <div className="brand-copy">
-                <p className="eyebrow">Project workspace</p>
-                <h1>AI Linux Assistant</h1>
-                <p className="lede">Stateful troubleshooting anchored to projects, not disposable chats.</p>
-              </div>
-            </div>
+      <div className="app-shell" style={appShellStyle}>
+        <Sidebar
+          user={auth.user}
+          projects={projects.projects}
+          chatListsByProject={chats.chatListsByProject}
+          activeProjectChats={chats.chats}
+          selectedProjectId={projects.selectedProjectId}
+          selectedChatId={chats.selectedChatId}
+          expandedProjectId={projects.expandedProjectId}
+          sidebarCollapsed={sidebarCollapsed}
+          sidebarWidth={sidebarWidth}
+          isDebugMode={isDebugMode}
+          debugPanelOpen={debugPanelOpen}
+          creatingChat={chats.creatingChat}
+          onCreateProject={projects.openCreateProjectDialog}
+          onToggleDebugPanel={() => setDebugPanelOpen((current) => !current)}
+          onCollapseSidebar={() => setSidebarCollapsed(true)}
+          onExpandSidebar={() => setSidebarCollapsed(false)}
+          onSidebarWidthChange={setSidebarWidth}
+          onSelectProject={handleSelectProject}
+          onToggleProjectExpansion={(projectId) =>
+            projects.setExpandedProjectId((current) => (current === projectId ? "" : projectId))
+          }
+          onEditProject={projects.openEditProjectDialog}
+          onCreateChat={handleCreateChat}
+          onSelectChat={(chatId) => {
+            chats.setSelectedChatId(chatId);
+            closeSidebarOnMobile();
+          }}
+          onEditChat={chats.openEditChatDialog}
+          onCloseMobileSidebar={closeSidebarOnMobile}
+        />
 
-            <div className="sidebar-content">
-            <section className="rail-section user-section">
-              <div className="user-chip" title={user.username}>
-                <div className="user-meta">
-                  <span className="eyebrow">Signed in</span>
-                  <strong className="user-name">{user.username}</strong>
-                </div>
-              </div>
+        <main className="main-panel">
+          <button
+            type="button"
+            className="mobile-sidebar-toggle"
+            aria-label={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
+            aria-expanded={!sidebarCollapsed}
+            onClick={() => setSidebarCollapsed((current) => !current)}
+          >
+            {sidebarCollapsed ? "Menu" : "Close"}
+          </button>
+
+          <div className="workspace-shell">
+            <section className={`chat-stage${council.councilActive && !council.councilPanelCollapsed ? " council-open" : ""}`}>
+              <CouncilPanel
+                entries={council.councilEntries}
+                viewingPast={council.viewingCouncilMessageId !== null}
+                onClose={() => council.setCouncilPanelCollapsed(true)}
+                councilFeedRef={council.councilFeedRef}
+                councilEndRef={council.councilEndRef}
+              />
+
+              <ChatView
+                messages={messages.messages}
+                selectedProject={projects.selectedProject}
+                selectedChat={chats.selectedChat}
+                selectedChatId={chats.selectedChatId}
+                selectedChatBusy={streaming.selectedChatBusy}
+                streamingAssistantId={streaming.streamingAssistantId}
+                liveStatusLabel={liveStatusLabel}
+                liveStatusSubtext={liveStatusSubtext}
+                viewingCouncilMessageId={council.viewingCouncilMessageId}
+                onViewCouncilEntries={council.handleViewCouncilEntries}
+                messagesContainerRef={scroll.messagesContainerRef}
+                messagesEndRef={scroll.messagesEndRef}
+                onScroll={scroll.updateStickToBottom}
+                onCreateProjectClick={projects.openCreateProjectDialog}
+                onCreateChat={handleCreateChat}
+                creatingChat={chats.creatingChat}
+              />
             </section>
+          </div>
 
-            <section className="rail-section">
-              <div className="rail-section-header">
-                <div>
-                  <p className="eyebrow">Projects</p>
-                  <h2>{projects.length} workspaces</h2>
-                </div>
-                <button
-                  type="button"
-                  className="subtle-action"
-                  onClick={() => setShowCreateProjectDialog(true)}
-                  aria-label="Create project"
-                >
-                  + New
-                </button>
-              </div>
+          <MessageComposer
+            error={error}
+            councilMode={council.councilMode}
+            selectedChatBusy={streaming.selectedChatBusy}
+            selectedChatId={chats.selectedChatId}
+            messageInput={messages.messageInput}
+            placeholder={composerPlaceholder}
+            onMessageChange={messages.setMessageInput}
+            onSubmit={handleSendMessage}
+            onCancelRun={streaming.handleCancelActiveRun}
+            onCycleCouncilMode={council.cycleCouncilMode}
+          />
+        </main>
 
-              <div className="project-tree">
-                {projects.map((project) => {
-                  const active = project.id === selectedProjectId;
-                  const expanded = project.id === expandedProjectId;
-                  const projectChats = chatListsByProject[project.id] ?? (active ? chats : []);
-
-                  return (
-                    <div key={project.id} className={`project-tree-item ${active ? "active" : ""}`}>
-                      <div className="project-row">
-                        <button
-                          className={`rail-item project-item ${active ? "active" : ""}`}
-                          title={project.name}
-                          onClick={() => {
-                            if (active) {
-                              setExpandedProjectId((current) => (current === project.id ? "" : project.id));
-                              return;
-                            }
-
-                            const cachedChats = chatListsByProject[project.id];
-                            if (cachedChats) {
-                              setChats(cachedChats);
-                              setSelectedChatId((current) =>
-                                cachedChats.some((chat) => chat.id === current) ? current : cachedChats[0]?.id || "",
-                              );
-                            }
-                            setSelectedProjectId(project.id);
-                            setExpandedProjectId(project.id);
-                            closeSidebarOnMobile();
-                          }}
-                        >
-                          <span className="rail-item-copy">
-                            <strong>{project.name}</strong>
-                            <small>{project.description || "No description"}</small>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="project-edit-trigger"
-                          aria-label={`Edit ${project.name}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openEditProjectDialog(project);
-                          }}
-                        >
-                          <svg viewBox="0 0 20 20" aria-hidden="true" className="chat-edit-icon">
-                            <path
-                              d="M13.9 3.1a2.2 2.2 0 0 1 3.1 3.1l-8.8 8.8-3.7.6.6-3.7 8.8-8.8Zm-7.8 9.5-.2 1.1 1.1-.2 7.9-7.9a.8.8 0 1 0-1.1-1.1l-7.7 8.1Z"
-                              fill="currentColor"
-                            />
-                          </svg>
-                        </button>
-                      </div>
-
-                      {expanded ? (
-                        <div className="project-tree-children">
-                          <div className="project-tree-header">
-                            <span className="project-tree-label">Chats</span>
-                            <button
-                              type="button"
-                              className="subtle-action"
-                              onClick={handleCreateChat}
-                              disabled={creatingChat}
-                            >
-                              + New
-                            </button>
-                          </div>
-
-                          {projectChats.length > 0 ? (
-                            <div className="nested-chat-list">
-                              {projectChats.map((chat) => (
-                                <div
-                                  key={chat.id}
-                                  className={`nested-chat-row ${chat.id === selectedChatId ? "active" : ""}`}
-                                >
-                                  <button
-                                    className={`nested-chat-item ${chat.id === selectedChatId ? "active" : ""}`}
-                                    title={chat.title || "Untitled chat"}
-                                    onClick={() => {
-                                      setSelectedChatId(chat.id);
-                                      closeSidebarOnMobile();
-                                    }}
-                                  >
-                                    <span className="nested-chat-copy">
-                                      <strong>{chat.title || "Untitled chat"}</strong>
-                                      <small>{formatChatTimestamp(chat.updated_at || chat.created_at)}</small>
-                                    </span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="chat-edit-trigger"
-                                    aria-label={`Edit ${chat.title || "chat"}`}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      openEditChatDialog(chat);
-                                    }}
-                                  >
-                                    <svg viewBox="0 0 20 20" aria-hidden="true" className="chat-edit-icon">
-                                      <path
-                                        d="M13.9 3.1a2.2 2.2 0 0 1 3.1 3.1l-8.8 8.8-3.7.6.6-3.7 8.8-8.8Zm-7.8 9.5-.2 1.1 1.1-.2 7.9-7.9a.8.8 0 1 0-1.1-1.1l-7.7 8.1Z"
-                                        fill="currentColor"
-                                      />
-                                    </svg>
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <div className="nested-chat-empty">
-                              <p>No chats in this project yet.</p>
-                                <button
-                                  type="button"
-                                  className="ghost-button compact"
-                                  onClick={handleCreateChat}
-                                  disabled={creatingChat}
-                                >
-                                  Create chat
-                                </button>
-                            </div>
-                          )}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-
-                {projects.length === 0 ? <p className="empty">No projects yet.</p> : null}
-              </div>
-            </section>
-
-            </div>
-            <div className="sidebar-footer">
-              <div className="sidebar-footer-actions">
-                {isDebugMode ? (
-                  <button
-                    type="button"
-                    className={`debug-chip${debugPanelOpen ? " active" : ""}`}
-                    onClick={() => setDebugPanelOpen((current) => !current)}
-                  >
-                    [DBG]
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="collapse-button"
-                  onClick={() => setSidebarCollapsed(true)}
-                  aria-label="Collapse sidebar"
-                >
-                  « collapse
-                </button>
-              </div>
-            </div>
-            
-          </>
+        {debugPanelOpen && isDebugMode ? (
+          <DebugPanel chatId={chats.selectedChatId} onClose={() => setDebugPanelOpen(false)} />
         ) : null}
-      </aside>
+      </div>
 
-      {!sidebarCollapsed ? (
-        <button
-          type="button"
-          className="mobile-sidebar-backdrop"
-          aria-label="Close sidebar"
-          onClick={() => setSidebarCollapsed(true)}
+      {projects.showCreateProjectDialog ? (
+        <CreateProjectDialog
+          projectName={projects.projectNameInput}
+          projectDescription={projects.projectDescriptionInput}
+          status={status}
+          onProjectNameChange={projects.setProjectNameInput}
+          onProjectDescriptionChange={projects.setProjectDescriptionInput}
+          onSubmit={projects.handleCreateProject}
+          onClose={projects.closeCreateProjectDialog}
         />
       ) : null}
 
-      <div
-        className={`sidebar-resize-handle ${sidebarCollapsed ? "disabled" : ""}`}
-        onPointerDown={startSidebarResize}
-        onClick={() => {
-          if (sidebarCollapsed) {
-            setSidebarCollapsed(false);
-          }
-        }}
-        role="button"
-        aria-label={sidebarCollapsed ? "Expand sidebar" : "Resize sidebar"}
-      >
-        {sidebarCollapsed ? <span className="sidebar-expand-glyph">»</span> : null}
-      </div>
+      {projects.editingProjectId ? (
+        <EditProjectDialog
+          projectName={projects.editProjectNameInput}
+          projectDescription={projects.editProjectDescriptionInput}
+          error={error}
+          status={status}
+          onProjectNameChange={projects.setEditProjectNameInput}
+          onProjectDescriptionChange={projects.setEditProjectDescriptionInput}
+          onSubmit={projects.handleEditProject}
+          onDelete={handleDeleteProject}
+          onClose={projects.closeEditProjectDialog}
+        />
+      ) : null}
 
-      <main className="main-panel">
-        <button
-          type="button"
-          className="mobile-sidebar-toggle"
-          aria-label={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
-          aria-expanded={!sidebarCollapsed}
-          onClick={() => setSidebarCollapsed((current) => !current)}
-        >
-          {sidebarCollapsed ? "Menu" : "Close"}
-        </button>
-        <div className="workspace-shell">
-          <section className={`chat-stage${councilActive && !councilPanelCollapsed ? " council-open" : ""}`}>
-            <section className="council-panel">
-              <div className="council-panel-header">
-                <span className="eyebrow">Council</span>
-                <span className="council-panel-label">
-                  {viewingCouncilMessageId !== null ? "Past deliberation" : "Agents deliberating"}
-                </span>
-                <button
-                  type="button"
-                  className="council-panel-close"
-                  aria-label="Close council panel"
-                  onClick={() => setCouncilPanelCollapsed(true)}
-                >
-                  <svg viewBox="0 0 20 20" aria-hidden="true" width="14" height="14">
-                    <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                </button>
-              </div>
-              <div className="council-feed" ref={councilFeedRef}>
-                {councilEntries.map((entry) => (
-                  <div
-                    key={entry.entryId}
-                    className={`council-entry council-role-${entry.role}${entry.complete ? "" : " pending"}`}
-                  >
-                    <div className="council-entry-header">
-                      <span className={`role-badge role-${entry.role}`}>{entry.role}</span>
-                      <span className="council-entry-phase">{formatCouncilPhase(entry.phase, entry.round)}</span>
-                    </div>
-                    {entry.complete ? (
-                      <p className="council-entry-text">{entry.text}</p>
-                    ) : entry.streamBuffer ? (
-                      <p className="council-entry-text streaming">
-                        {entry.streamPreview || "…"}
-                        <span className="stream-cursor" aria-hidden="true" />
-                      </p>
-                    ) : (
-                      <div className="council-entry-loading">
-                        <span className="status-dot" aria-hidden="true" />
-                        <span>Deliberating…</span>
-                      </div>
-                    )}
-                  </div>
-                ))}
-                <div ref={councilEndRef} />
-              </div>
-            </section>
-            <section className="chat-card">
-              <div
-                ref={messagesContainerRef}
-                className="messages"
-                onScroll={updateStickToBottom}
-              >
-                {!selectedProject ? (
-                  <div className="empty-state">
-                    <p className="eyebrow">No project selected</p>
-                    <h3>Create a project to start organizing chats.</h3>
-                    <p>
-                      Projects are the container. Each project keeps its own set of chats and context.
-                    </p>
-                    <button type="button" className="empty-state-action" onClick={() => setShowCreateProjectDialog(true)}>
-                      Create project
-                    </button>
-                  </div>
-                ) : !selectedChatId ? (
-                  <div className="empty-state">
-                    <p className="eyebrow">No chat selected</p>
-                    <h3>Open a chat inside {selectedProject.name}.</h3>
-                    <p>
-                      This project is active, but you still need a chat thread before you can start asking questions.
-                    </p>
-                    <button type="button" className="empty-state-action" onClick={handleCreateChat} disabled={creatingChat}>
-                      Create chat
-                    </button>
-                  </div>
-                ) : messages.length === 0 ? (
-                  <div className="empty-state">
-                    <p className="eyebrow">Ready</p>
-                    <h3>{selectedChat?.title || "Start a conversation tied to this project."}</h3>
-                    <p>
-                      The assistant keeps troubleshooting context scoped to {selectedProject.name}, so this thread can build on prior work.
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    {messages.map((message) => (
-                      <article
-                        key={`${message.session_id}-${message.id}-${message.role}`}
-                        className={`message ${message.role === "user" ? "user" : "assistant"}`}
-                      >
-                        {message.role === "user" ? (
-                          <div className="message-meta-row">
-                            <span className="message-time">{formatMessageTimestamp(message.created_at)}</span>
-                          </div>
-                        ) : null}
-                        {message.id === streamingAssistantId && selectedChatBusy ? (
-                          <>
-                            <div className="message-role">{liveStatusLabel}</div>
-                            <div className={`message-status-subtext ${message.content.trim() ? "inline" : ""}`}>
-                              {!message.content.trim() ? <span className="status-dot" aria-hidden="true" /> : null}
-                              <p>{liveStatusSubtext}</p>
-                            </div>
-                            {message.content.trim() ? (
-                              <div className="message-content">
-                                {renderMessageContent(message.content)}
-                              </div>
-                            ) : (
-                              <div className="message-content live-status-content" />
-                            )}
-                          </>
-                        ) : (
-                          <>
-                            <div className="message-content">
-                              {message.role === "user" ? <p>{message.content}</p> : renderMessageContent(message.content)}
-                            </div>
-                            {message.role !== "user" && message.council_entries?.length ? (
-                              <button
-                                type="button"
-                                className={`council-replay-btn${viewingCouncilMessageId === message.id ? " active" : ""}`}
-                                onClick={() => handleViewCouncilEntries(message)}
-                                title="View council deliberation for this response"
-                              >
-                                See council discussion
-                              </button>
-                            ) : null}
-                          </>
-                        )}
-                      </article>
-                    ))}
-                  </>
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-
-            </section>
-          </section>
-        </div>
-        <form className="composer" onSubmit={handleSendMessage}>
-          <div className="composer-shell">
-            {error ? <p className="composer-error-text">{error}</p> : null}
-            <div className="composer-input-wrap">
-              <div className="composer-left-actions">
-                <button
-                  type="button"
-                  className={`council-toggle-btn${councilMode === "lite" ? " active lite" : councilMode === "full" ? " active" : ""}`}
-                  onClick={() => setCouncilMode((m) => m === "off" ? "full" : m === "full" ? "lite" : "off")}
-                  title="Council mode: click to cycle off → full → lite → off"
-                >
-                  <svg viewBox="0 0 20 20" aria-hidden="true" className="council-icon">
-                    <circle cx="10" cy="10" r="6.5" stroke="currentColor" strokeWidth="1.4" fill="none" />
-                    <path d="M7 10l2 2 4-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" fill="none" className="council-check" />
-                  </svg>
-                  {councilMode === "lite" ? "Council Lite" : "Council"}
-                </button>
-                {selectedChatBusy ? (
-                  <button type="button" className="ghost-button compact" onClick={handleCancelActiveRun}>
-                    Cancel run
-                  </button>
-                ) : null}
-              </div>
-              <textarea
-                ref={textareaRef}
-                value={messageInput}
-                onChange={(event) => { setMessageInput(event.target.value); autoResizeTextarea(); }}
-                onKeyDown={handleComposerKeyDown}
-                placeholder={composerPlaceholder}
-                disabled={!selectedChatId || selectedChatBusy}
-              />
-              <div className="composer-actions">
-                <button
-                  type="submit"
-                  className="composer-send"
-                  aria-label="Send message"
-                  disabled={!selectedChatId || !messageInput.trim() || selectedChatBusy}
-                >
-                  <svg viewBox="0 0 20 20" aria-hidden="true" className="send-icon">
-                    <path
-                      d="M3 10L16 4L11 17L9.5 11.5L3 10Z"
-                      fill="currentColor"
-                      stroke="none"
-                    />
-                  </svg>
-                </button>
-              </div>
-            </div>
-          </div>
-        </form>
-      </main>
-      {debugPanelOpen && isDebugMode ? <DebugPanel chatId={selectedChatId} onClose={() => setDebugPanelOpen(false)} /> : null}
-    </div>
-    {showCreateProjectDialog ? (
-      <div className="dialog-backdrop" onClick={() => setShowCreateProjectDialog(false)}>
-        <div className="dialog-card" role="dialog" aria-modal="true" aria-labelledby="create-project-title" onClick={(event) => event.stopPropagation()}>
-          <div className="dialog-header">
-            <div>
-              <p className="eyebrow">New project</p>
-              <h2 id="create-project-title">Create a project workspace.</h2>
-            </div>
-            <button type="button" className="icon-button" aria-label="Close project dialog" onClick={() => setShowCreateProjectDialog(false)}>
-              ×
-            </button>
-          </div>
-          <form className="dialog-form" onSubmit={handleCreateProject}>
-            <input
-              value={projectNameInput}
-              onChange={(event) => setProjectNameInput(event.target.value)}
-              placeholder="Debian laptop"
-              autoFocus
-            />
-            <textarea
-              rows={3}
-              value={projectDescriptionInput}
-              onChange={(event) => setProjectDescriptionInput(event.target.value)}
-              placeholder="What this machine or stack is for"
-            />
-            <div className="dialog-actions">
-              <button type="button" className="ghost-button compact" onClick={() => setShowCreateProjectDialog(false)}>
-                Cancel
-              </button>
-              <button type="submit" disabled={!projectNameInput.trim() || status === "loading"}>
-                Create
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    ) : null}
-    {editingProjectId ? (
-      <div className="dialog-backdrop" onClick={closeEditProjectDialog}>
-        <div className="dialog-card" role="dialog" aria-modal="true" aria-labelledby="edit-project-title" onClick={(event) => event.stopPropagation()}>
-          <div className="dialog-header">
-            <div>
-              <p className="eyebrow">Edit project</p>
-              <h2 id="edit-project-title">Update this project’s details.</h2>
-            </div>
-            <button type="button" className="icon-button" aria-label="Close edit project dialog" onClick={closeEditProjectDialog}>
-              ×
-            </button>
-          </div>
-          <form className="dialog-form" onSubmit={handleEditProject}>
-            <input
-              value={editProjectNameInput}
-              onChange={(event) => setEditProjectNameInput(event.target.value)}
-              placeholder="Debian laptop"
-              autoFocus
-            />
-            <textarea
-              rows={3}
-              value={editProjectDescriptionInput}
-              onChange={(event) => setEditProjectDescriptionInput(event.target.value)}
-              placeholder="What this machine or stack is for"
-            />
-            {error ? <p className="error-banner">{error}</p> : null}
-            <div className="dialog-actions">
-              <button type="button" className="danger-button compact" onClick={handleDeleteProject} disabled={status === "loading"}>
-                Delete
-              </button>
-              <button type="button" className="ghost-button compact" onClick={closeEditProjectDialog}>
-                Cancel
-              </button>
-              <button type="submit" disabled={!editProjectNameInput.trim() || status === "loading"}>
-                Save
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    ) : null}
-    {editingChatId ? (
-      <div className="dialog-backdrop" onClick={closeEditChatDialog}>
-        <div className="dialog-card" role="dialog" aria-modal="true" aria-labelledby="edit-chat-title" onClick={(event) => event.stopPropagation()}>
-          <div className="dialog-header">
-            <div>
-              <p className="eyebrow">Edit chat</p>
-              <h2 id="edit-chat-title">Update this chat’s details.</h2>
-            </div>
-            <button type="button" className="icon-button" aria-label="Close edit chat dialog" onClick={closeEditChatDialog}>
-              ×
-            </button>
-          </div>
-          <form className="dialog-form" onSubmit={handleEditChat}>
-            <input
-              value={editChatTitleInput}
-              onChange={(event) => setEditChatTitleInput(event.target.value)}
-              placeholder="Fresh troubleshooting session"
-              autoFocus
-            />
-            {error ? <p className="error-banner">{error}</p> : null}
-            <div className="dialog-actions">
-              <button type="button" className="danger-button compact" onClick={handleDeleteChat} disabled={status === "loading"}>
-                Delete
-              </button>
-              <button type="button" className="ghost-button compact" onClick={closeEditChatDialog}>
-                Cancel
-              </button>
-              <button type="submit" disabled={!editChatTitleInput.trim() || status === "loading"}>
-                Save
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    ) : null}
+      {chats.editingChatId ? (
+        <EditChatDialog
+          chatTitle={chats.editChatTitleInput}
+          error={error}
+          status={status}
+          onChatTitleChange={chats.setEditChatTitleInput}
+          onSubmit={chats.handleEditChat}
+          onDelete={chats.handleDeleteChat}
+          onClose={chats.closeEditChatDialog}
+        />
+      ) : null}
     </>
   );
 }

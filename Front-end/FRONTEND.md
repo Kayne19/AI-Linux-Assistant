@@ -22,23 +22,51 @@ The frontend should render backend truth, not recreate backend policy.
 
 ### `src/App.tsx`
 
-This is the main application surface.
+This is now the composition root.
 
 It currently owns:
 
-- login state
-- bootstrap loading from the backend
-- project list state
-- selected project/chat state
-- chat list caching by project
-- per-chat message caching
-- per-chat run/reconnect state
-- optimistic streaming message behavior
-- council panel state and live council-entry rendering
-- sidebar state and edit dialogs
+- top-level composition of hooks and components
+- shared error/status state
+- sidebar shell state
 - debug drawer toggle state
 
-This file is the main stateful UI container.
+It should stay thin and should not absorb subsystem logic again.
+
+### `src/hooks/`
+
+Owns stateful frontend behavior, split by responsibility:
+
+- `useAuth.ts`
+  - bootstrap/login state
+- `useProjects.ts`
+  - project CRUD, selection, dialogs, form state
+- `useChats.ts`
+  - chat CRUD, selection, per-project chat caching
+- `useMessages.ts`
+  - per-chat message caching and composer text
+- `useTextDeltaAnimation.ts`
+  - paced `text_delta` draining into optimistic assistant text
+- `useCouncilStreaming.ts`
+  - council panel state and live role-delta batching
+- `useStreamingRun.ts`
+  - durable run attach/reconnect/cancel lifecycle and optimistic run UI state
+- `useScrollManager.ts`
+  - chat auto-scroll and stick-to-bottom behavior
+
+These hooks are the main stateful frontend surfaces.
+
+### `src/components/`
+
+Owns presentational UI surfaces:
+
+- `LoginScreen.tsx`
+- `Sidebar.tsx`
+- `ChatView.tsx`
+- `MessageComposer.tsx`
+- `CouncilPanel.tsx`
+- `dialogs/`
+  - project/chat dialog shells
 
 ### `src/types.ts`
 
@@ -158,10 +186,10 @@ When the user switches away from a running chat:
 
 ## Current Limitations
 
-1. `src/App.tsx` is still large and could eventually be split.
+1. Cross-hook coordination still exists for streaming/council integration and should stay explicit rather than hidden in ad hoc shared state.
 2. The frontend is intentionally not a general-purpose state machine; the backend remains the real control plane.
-3. Council rendering lives in `App.tsx` today rather than in isolated components.
-4. Hidden chats rely on run snapshot state rather than live SSE until reopened.
+3. Hidden chats rely on run snapshot state rather than live SSE until reopened.
+4. `App.tsx` is intentionally thin, but it still orchestrates several hooks and remains the place where cross-surface wiring is easiest to audit.
 5. The debug drawer is intentionally operator-focused rather than a polished end-user surface.
 6. The current UI is usable, but still product-iteration code rather than a finished design system.
 
@@ -178,10 +206,12 @@ If you modify the frontend, preserve these invariants:
 ## Files To Read First
 
 1. [src/App.tsx](src/App.tsx)
-2. [src/api.ts](src/api.ts)
-3. [src/types.ts](src/types.ts)
-4. [src/utils.ts](src/utils.ts)
-5. [src/streamStatusText.ts](src/streamStatusText.ts)
-6. [src/renderMessage.tsx](src/renderMessage.tsx)
-7. [src/styles.css](src/styles.css)
-8. [src/debug/DebugPanel.tsx](src/debug/DebugPanel.tsx)
+2. [src/hooks/useStreamingRun.ts](src/hooks/useStreamingRun.ts)
+3. [src/hooks/useCouncilStreaming.ts](src/hooks/useCouncilStreaming.ts)
+4. [src/hooks/useTextDeltaAnimation.ts](src/hooks/useTextDeltaAnimation.ts)
+5. [src/api.ts](src/api.ts)
+6. [src/types.ts](src/types.ts)
+7. [src/utils.ts](src/utils.ts)
+8. [src/components/Sidebar.tsx](src/components/Sidebar.tsx)
+9. [src/components/ChatView.tsx](src/components/ChatView.tsx)
+10. [src/debug/DebugPanel.tsx](src/debug/DebugPanel.tsx)
