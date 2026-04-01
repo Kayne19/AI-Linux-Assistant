@@ -33,6 +33,7 @@ type ChatRunUIState = {
 type PendingTextDeltaBatch = {
   delta: string;
   frameId: number | null;
+  lastDrainAt: number | null;
 };
 
 type PendingCouncilDeltaBatch = {
@@ -45,6 +46,12 @@ type CheckpointSeed = {
   seq: number;
   text: string;
 };
+
+const TEXT_DELTA_CHARS_PER_MS = 0.45;
+const TEXT_DELTA_MIN_CHARS_PER_FRAME = 6;
+const TEXT_DELTA_MAX_CHARS_PER_FRAME = 36;
+const TEXT_DELTA_BACKLOG_STEP = 120;
+const TEXT_DELTA_BACKLOG_BONUS_CAP = 24;
 
 
 function formatChatTimestamp(value: string) {
@@ -314,28 +321,36 @@ export default function App() {
     return checkpoint;
   }
 
-  function queueTextDelta(chatId: string, assistantId: number, delta: string) {
-    if (!delta) {
+  function scheduleTextDeltaDrain(chatId: string, assistantId: number) {
+    const batch = pendingTextDeltaBatchesRef.current[chatId];
+    if (!batch) {
       return;
     }
-    const batches = pendingTextDeltaBatchesRef.current;
-    const batch = batches[chatId] || { delta: "", frameId: null };
-    batch.delta += delta;
-    batches[chatId] = batch;
     if (batch.frameId !== null) {
       return;
     }
-    batch.frameId = window.requestAnimationFrame(() => {
+    batch.frameId = window.requestAnimationFrame((timestamp) => {
       const currentBatch = pendingTextDeltaBatchesRef.current[chatId];
       if (!currentBatch) {
         return;
       }
-      const bufferedDelta = currentBatch.delta;
-      currentBatch.delta = "";
       currentBatch.frameId = null;
-      if (!bufferedDelta) {
+      if (!currentBatch.delta) {
         return;
       }
+      const elapsedMs = currentBatch.lastDrainAt === null ? 16 : Math.max(16, timestamp - currentBatch.lastDrainAt);
+      currentBatch.lastDrainAt = timestamp;
+      const pacedChars = Math.max(
+        TEXT_DELTA_MIN_CHARS_PER_FRAME,
+        Math.min(TEXT_DELTA_MAX_CHARS_PER_FRAME, Math.ceil(elapsedMs * TEXT_DELTA_CHARS_PER_MS)),
+      );
+      const backlogBonus = Math.min(
+        TEXT_DELTA_BACKLOG_BONUS_CAP,
+        Math.floor(currentBatch.delta.length / TEXT_DELTA_BACKLOG_STEP),
+      );
+      const drainChars = Math.min(currentBatch.delta.length, pacedChars + backlogBonus);
+      const bufferedDelta = currentBatch.delta.slice(0, drainChars);
+      currentBatch.delta = currentBatch.delta.slice(drainChars);
       setRunUiForChat(chatId, (current) =>
         current ? { ...current, streamStatus: { source: "event", code: "text_delta" } } : current,
       );
@@ -344,7 +359,23 @@ export default function App() {
           message.id === assistantId ? { ...message, content: message.content + bufferedDelta } : message,
         ),
       );
+      if (currentBatch.delta) {
+        scheduleTextDeltaDrain(chatId, assistantId);
+        return;
+      }
+      delete pendingTextDeltaBatchesRef.current[chatId];
     });
+  }
+
+  function queueTextDelta(chatId: string, assistantId: number, delta: string) {
+    if (!delta) {
+      return;
+    }
+    const batches = pendingTextDeltaBatchesRef.current;
+    const batch = batches[chatId] || { delta: "", frameId: null, lastDrainAt: null };
+    batch.delta += delta;
+    batches[chatId] = batch;
+    scheduleTextDeltaDrain(chatId, assistantId);
   }
 
   function queueCouncilTextDelta(chatId: string, entryId: string, delta: string) {
