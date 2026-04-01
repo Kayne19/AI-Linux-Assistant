@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import type { ChatRun } from "../types";
 import { isActiveRunStatus } from "./debugUtils";
 import "./debug.css";
 import { RunInspector } from "./RunInspector";
@@ -31,11 +30,6 @@ export function DebugPanel({ chatId, onClose }: DebugPanelProps) {
     const activeRun = runs.find((run) => isActiveRunStatus(run.status));
     setSelectedRunId(activeRun?.id || runs[0].id);
   }, [runs, selectedRunId]);
-
-  function handleRunChange(nextRun: ChatRun) {
-    setSelectedRunId(nextRun.id);
-    void reload();
-  }
 
   return (
     <>
@@ -70,7 +64,7 @@ export function DebugPanel({ chatId, onClose }: DebugPanelProps) {
               />
             </div>
             <div className="debug-panel-column debug-panel-inspector">
-              <RunInspector runId={selectedRunId} onRunChange={handleRunChange} />
+              <RunInspector runId={selectedRunId} onHistoryRefresh={reload} />
             </div>
           </div>
         )}

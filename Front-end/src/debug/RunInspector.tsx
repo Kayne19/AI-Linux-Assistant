@@ -22,7 +22,7 @@ import { useRunStream } from "./useRunStream";
 
 type RunInspectorProps = {
   runId: string;
-  onRunChange: (run: ChatRun) => void;
+  onHistoryRefresh?: () => Promise<void> | void;
 };
 
 function CopyButton({ value }: { value: string }) {
@@ -81,7 +81,7 @@ function TimingBar({ run, events, nowMs }: { run: ChatRun; events: RunEvent[]; n
   );
 }
 
-export function RunInspector({ runId, onRunChange }: RunInspectorProps) {
+export function RunInspector({ runId, onHistoryRefresh }: RunInspectorProps) {
   const { run, loading, error, refresh } = useRunSnapshot(runId);
   const { events, loading: eventsLoading, error: eventsError, highestSeqSeen, appendLiveEvent, backfill } = useRunEvents(runId);
   const [selectedTab, setSelectedTab] = useState<DebugTab>("Timeline");
@@ -93,13 +93,6 @@ export function RunInspector({ runId, onRunChange }: RunInspectorProps) {
     setSelectedTab("Timeline");
     setRequestExpanded(false);
   }, [runId]);
-
-  useEffect(() => {
-    if (!run) {
-      return;
-    }
-    onRunChange(run);
-  }, [onRunChange, run]);
 
   useEffect(() => {
     if (!run || !isActiveRunStatus(run.status)) {
@@ -119,8 +112,9 @@ export function RunInspector({ runId, onRunChange }: RunInspectorProps) {
     initialAfterSeq: highestSeqSeen,
     onLiveEvent: appendLiveEvent,
     onBackfill: backfill,
-    onTerminal: () => {
+    onTerminal: async () => {
       void refresh();
+      await onHistoryRefresh?.();
     },
   });
 
@@ -129,9 +123,9 @@ export function RunInspector({ runId, onRunChange }: RunInspectorProps) {
       return;
     }
     try {
-      const nextRun = await api.cancelRun(runId);
-      onRunChange(nextRun);
+      await api.cancelRun(runId);
       await refresh();
+      await onHistoryRefresh?.();
     } catch {
       await refresh();
     }
