@@ -47,11 +47,17 @@ type CheckpointSeed = {
   text: string;
 };
 
-const TEXT_DELTA_CHARS_PER_MS = 0.45;
-const TEXT_DELTA_MIN_CHARS_PER_FRAME = 6;
-const TEXT_DELTA_MAX_CHARS_PER_FRAME = 36;
-const TEXT_DELTA_BACKLOG_STEP = 120;
-const TEXT_DELTA_BACKLOG_BONUS_CAP = 24;
+type PendingDonePayload = {
+  payload: {
+    user_message: ChatMessage;
+    assistant_message: ChatMessage;
+  };
+  selectedProjectIdAtCompletion: string;
+};
+
+const TEXT_DELTA_CHARS_PER_MS = 0.035;
+const TEXT_DELTA_MIN_CHARS_PER_FRAME = 1;
+const TEXT_DELTA_MAX_CHARS_PER_FRAME = 4;
 
 
 function formatChatTimestamp(value: string) {
@@ -178,6 +184,7 @@ export default function App() {
   const streamControllersRef = useRef<Record<string, AbortController>>({});
   const pendingTextDeltaBatchesRef = useRef<Record<string, PendingTextDeltaBatch>>({});
   const pendingCouncilDeltaBatchesRef = useRef<Record<string, PendingCouncilDeltaBatch>>({});
+  const pendingDonePayloadsRef = useRef<Record<string, PendingDonePayload>>({});
   const streamingActiveRef = useRef<Record<string, boolean>>({});
   const lastCheckpointRef = useRef<Record<string, CheckpointSeed>>({});
   const previousSelectedChatIdRef = useRef("");
@@ -268,6 +275,20 @@ export default function App() {
     delete pendingTextDeltaBatchesRef.current[chatId];
   }
 
+  async function finalizeDone(chatId: string, payload: PendingDonePayload["payload"], projectIdAtCompletion: string) {
+    setMessagesForChat(chatId, (current) => [
+      ...current.filter((message) => message.id >= 0),
+      payload.user_message,
+      payload.assistant_message,
+    ]);
+    clearRunUi(chatId);
+    updateChatRunStatus(chatId, null, null);
+    delete pendingDonePayloadsRef.current[chatId];
+    if (projectIdAtCompletion) {
+      await reloadChats(projectIdAtCompletion);
+    }
+  }
+
   function councilDeltaBatchKey(chatId: string, entryId: string) {
     return `${chatId}:${entryId}`;
   }
@@ -336,6 +357,10 @@ export default function App() {
       }
       currentBatch.frameId = null;
       if (!currentBatch.delta) {
+        const pendingDone = pendingDonePayloadsRef.current[chatId];
+        if (pendingDone) {
+          void finalizeDone(chatId, pendingDone.payload, pendingDone.selectedProjectIdAtCompletion);
+        }
         return;
       }
       const elapsedMs = currentBatch.lastDrainAt === null ? 16 : Math.max(16, timestamp - currentBatch.lastDrainAt);
@@ -344,11 +369,7 @@ export default function App() {
         TEXT_DELTA_MIN_CHARS_PER_FRAME,
         Math.min(TEXT_DELTA_MAX_CHARS_PER_FRAME, Math.ceil(elapsedMs * TEXT_DELTA_CHARS_PER_MS)),
       );
-      const backlogBonus = Math.min(
-        TEXT_DELTA_BACKLOG_BONUS_CAP,
-        Math.floor(currentBatch.delta.length / TEXT_DELTA_BACKLOG_STEP),
-      );
-      const drainChars = Math.min(currentBatch.delta.length, pacedChars + backlogBonus);
+      const drainChars = Math.min(currentBatch.delta.length, pacedChars);
       const bufferedDelta = currentBatch.delta.slice(0, drainChars);
       currentBatch.delta = currentBatch.delta.slice(drainChars);
       setRunUiForChat(chatId, (current) =>
@@ -364,6 +385,10 @@ export default function App() {
         return;
       }
       delete pendingTextDeltaBatchesRef.current[chatId];
+      const pendingDone = pendingDonePayloadsRef.current[chatId];
+      if (pendingDone) {
+        void finalizeDone(chatId, pendingDone.payload, pendingDone.selectedProjectIdAtCompletion);
+      }
     });
   }
 
@@ -493,6 +518,7 @@ export default function App() {
     streamingActiveRef.current[chatId] = false;
     clearPendingTextDeltaBatch(chatId);
     clearPendingCouncilDeltaBatchesForChat(chatId);
+    delete pendingDonePayloadsRef.current[chatId];
     setRunUiForChat(chatId, () => undefined);
   }
 
@@ -780,17 +806,16 @@ export default function App() {
           onDone: async (payload) => {
             streamingActiveRef.current[chatId] = false;
             delete lastCheckpointRef.current[chatId];
-            clearPendingTextDeltaBatch(chatId);
-            setMessagesForChat(chatId, (current) => [
-              ...current.filter((message) => message.id >= 0),
-              payload.user_message,
-              payload.assistant_message,
-            ]);
-            clearRunUi(chatId);
-            updateChatRunStatus(chatId, null, null);
-            if (selectedProjectId) {
-              await reloadChats(selectedProjectId);
+            const pendingBatch = pendingTextDeltaBatchesRef.current[chatId];
+            if (pendingBatch && pendingBatch.delta) {
+              pendingDonePayloadsRef.current[chatId] = {
+                payload,
+                selectedProjectIdAtCompletion: selectedProjectId,
+              };
+              scheduleTextDeltaDrain(chatId, optimisticAssistantId);
+              return;
             }
+            await finalizeDone(chatId, payload, selectedProjectId);
           },
           onCancelled: (message) => {
             streamingActiveRef.current[chatId] = false;

@@ -106,7 +106,7 @@ When a message is sent:
 5. If Magi is enabled, council role events populate the live council panel, and live role deltas are batched before React renders them.
 6. During active streaming, rapid `text_delta` events are batched and then drained into the optimistic assistant text at a paced `requestAnimationFrame` cadence.
 7. `text_checkpoint` events are tracked for reconnect seeding and are only applied to visible text while replaying after a reconnect.
-8. When `done` arrives, the optimistic pair is replaced by the final persisted backend messages.
+8. When `done` arrives, the frontend lets any queued visible text finish draining before replacing the optimistic pair with the final persisted backend messages.
 
 This avoids the earlier end-of-stream flash and keeps the backend as the source of truth.
 
