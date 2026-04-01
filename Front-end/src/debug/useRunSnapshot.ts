@@ -1,19 +1,16 @@
 import { useEffect, useState } from "react";
+
 import { api } from "../api";
 import type { ChatRun } from "../types";
 
-type RunSnapshotState = {
-  run: ChatRun | null;
-  loading: boolean;
-  error: string;
-  refresh: () => void;
-};
-
-export function useRunSnapshot(runId: string): RunSnapshotState {
-  const [run, setRun] = useState<ChatRun | null>(null);
+export function useRunSnapshot(runId: string, initialRun: ChatRun | null) {
+  const [run, setRun] = useState<ChatRun | null>(initialRun);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [refreshNonce, setRefreshNonce] = useState(0);
+
+  useEffect(() => {
+    setRun(initialRun);
+  }, [initialRun, runId]);
 
   useEffect(() => {
     if (!runId) {
@@ -24,38 +21,50 @@ export function useRunSnapshot(runId: string): RunSnapshotState {
     }
 
     let cancelled = false;
+    setLoading(true);
+    setError("");
 
-    async function load() {
-      setLoading(true);
-      setError("");
-      try {
-        const nextRun = await api.getRun(runId);
-        if (!cancelled) {
-          setRun(nextRun);
+    void api.getRun(runId)
+      .then((nextRun) => {
+        if (cancelled) {
+          return;
         }
-      } catch (err) {
-        if (!cancelled) {
-          setError((err as Error).message);
-          setRun(null);
+        setRun(nextRun);
+        setLoading(false);
+      })
+      .catch((nextError: Error) => {
+        if (cancelled) {
+          return;
         }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    void load();
+        setError(nextError.message);
+        setLoading(false);
+      });
 
     return () => {
       cancelled = true;
     };
-  }, [runId, refreshNonce]);
+  }, [runId]);
+
+  async function refresh() {
+    if (!runId) {
+      return null;
+    }
+    setError("");
+    try {
+      const nextRun = await api.getRun(runId);
+      setRun(nextRun);
+      return nextRun;
+    } catch (nextError) {
+      setError((nextError as Error).message);
+      return null;
+    }
+  }
 
   return {
     run,
+    setRun,
     loading,
     error,
-    refresh: () => setRefreshNonce((current) => current + 1),
+    refresh,
   };
 }

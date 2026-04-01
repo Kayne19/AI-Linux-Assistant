@@ -1,96 +1,71 @@
 import type { RunEvent } from "../types";
+import type { DebugTab } from "./debugUtils";
 import {
-  TAB_FILTERS,
-  computeStateRows,
-  formatAbsoluteTime,
+  formatCompactTimestamp,
   formatDuration,
-  getEventCode,
-  getEventMessage,
-  getEventPayload,
+  getEventSummary,
+  getEventTitle,
   getLatencyTone,
-  summarizeRunEvent,
-  type DebugTab,
+  getStateDurations,
+  getTabEvents,
 } from "./debugUtils";
 
 type EventTimelineProps = {
-  tab: DebugTab;
   events: RunEvent[];
+  tab: DebugTab;
   loading: boolean;
   error: string;
 };
 
-function renderPayload(event: RunEvent) {
-  const payload = getEventPayload(event);
-  if (!payload || Object.keys(payload).length === 0) {
-    return null;
-  }
-  return (
-    <details className="debug-event-details">
-      <summary>Payload</summary>
-      <pre>{JSON.stringify(payload, null, 2)}</pre>
-    </details>
-  );
-}
+export function EventTimeline({ events, tab, loading, error }: EventTimelineProps) {
+  const visibleEvents = getTabEvents(tab, events);
+  const stateDurations = getStateDurations(visibleEvents);
 
-export function EventTimeline({ tab, events, loading, error }: EventTimelineProps) {
+  if (loading) {
+    return <p className="debug-empty">Loading events…</p>;
+  }
+
   if (error) {
-    return <p className="debug-empty-state">{error}</p>;
+    return <p className="debug-empty debug-error-text">{error}</p>;
   }
 
-  if (loading && events.length === 0) {
-    return <p className="debug-empty-state">Loading events...</p>;
+  if (visibleEvents.length === 0) {
+    return <p className="debug-empty">No matching events.</p>;
   }
 
-  if (tab === "States") {
-    const stateRows = computeStateRows(events);
-    if (stateRows.length === 0) {
-      return <p className="debug-empty-state">No state events for this run.</p>;
-    }
+  if (tab === "Raw") {
     return (
-      <div className="debug-event-list">
-        {stateRows.map(({ event, durationMs }) => (
-          <article key={event.seq} className="debug-event-row">
-            <div className="debug-event-head">
-              <span className="debug-event-seq">#{event.seq}</span>
-              <span className="debug-event-code">{getEventCode(event)}</span>
-              <span className={`debug-inline-metric tone-${getLatencyTone(durationMs)}`}>
-                {formatDuration(durationMs)}
-              </span>
-            </div>
-            <div className="debug-event-meta">
-              <span>{formatAbsoluteTime(event.created_at)}</span>
-              <span>{durationMs == null ? "Current state" : "State duration"}</span>
-            </div>
-          </article>
+      <div className="debug-event-list raw">
+        {visibleEvents.map((event) => (
+          <pre key={event.seq} className="debug-raw-event">
+            {JSON.stringify(event, null, 2)}
+          </pre>
         ))}
       </div>
     );
   }
 
-  const filteredEvents = tab === "Raw" ? events : events.filter(TAB_FILTERS[tab]);
-  if (filteredEvents.length === 0) {
-    return <p className="debug-empty-state">No events match this tab yet.</p>;
-  }
-
   return (
     <div className="debug-event-list">
-      {filteredEvents.map((event) => (
-        <article key={event.seq} className="debug-event-row">
-          <div className="debug-event-head">
-            <span className="debug-event-seq">#{event.seq}</span>
-            <span className="debug-event-code">{getEventCode(event)}</span>
-            <span className="debug-event-kind">{event.type}</span>
-          </div>
-          <div className="debug-event-meta">
-            <span>{formatAbsoluteTime(event.created_at)}</span>
-            <span>{summarizeRunEvent(event)}</span>
-          </div>
-          {event.type === "error" || event.type === "cancelled" ? (
-            <p className="debug-event-message">{getEventMessage(event)}</p>
-          ) : null}
-          {tab === "Raw" ? <pre>{JSON.stringify(event, null, 2)}</pre> : renderPayload(event)}
-        </article>
-      ))}
+      {visibleEvents.map((event) => {
+        const stateDuration = event.type === "state" ? stateDurations.get(event.seq) ?? null : null;
+        const stateTone = stateDuration !== null ? getLatencyTone(stateDuration) : "neutral";
+        return (
+          <article key={event.seq} className="debug-event-row">
+            <div className="debug-event-seq">#{event.seq}</div>
+            <div className="debug-event-main">
+              <div className="debug-event-head">
+                <strong>{getEventTitle(event)}</strong>
+                <span>{formatCompactTimestamp(event.created_at)}</span>
+              </div>
+              <p className="debug-event-summary">{getEventSummary(event)}</p>
+            </div>
+            {event.type === "state" && tab === "States" ? (
+              <div className={`debug-event-duration tone-${stateTone}`}>{formatDuration(stateDuration)}</div>
+            ) : null}
+          </article>
+        );
+      })}
     </div>
   );
 }

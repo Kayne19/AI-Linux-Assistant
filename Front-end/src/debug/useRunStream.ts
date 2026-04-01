@@ -1,21 +1,33 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+
 import { api } from "../api";
 import type { RunEvent } from "../types";
+import { getHighestSeq, isTerminalRunEvent, mergeRunEvents } from "./debugUtils";
+
+const RECONNECT_DELAY_MS = 750;
+const BACKFILL_BATCH_SIZE = 200;
 
 type UseRunStreamOptions = {
   runId: string;
   enabled: boolean;
   afterSeq: number;
-  onEvent?: (event: RunEvent) => void;
+  onEvent: (event: RunEvent) => void;
   onTerminal?: (event: RunEvent) => void;
-  onError?: (message: string) => void;
 };
 
-export function useRunStream({ runId, enabled, afterSeq, onEvent, onTerminal, onError }: UseRunStreamOptions) {
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+export function useRunStream({ runId, enabled, afterSeq, onEvent, onTerminal }: UseRunStreamOptions) {
+  const [error, setError] = useState("");
+  const lastSeenSeqRef = useRef(afterSeq);
   const onEventRef = useRef(onEvent);
   const onTerminalRef = useRef(onTerminal);
-  const onErrorRef = useRef(onError);
-  const afterSeqRef = useRef(afterSeq);
+
+  useEffect(() => {
+    lastSeenSeqRef.current = afterSeq;
+  }, [afterSeq]);
 
   useEffect(() => {
     onEventRef.current = onEvent;
@@ -26,74 +38,91 @@ export function useRunStream({ runId, enabled, afterSeq, onEvent, onTerminal, on
   }, [onTerminal]);
 
   useEffect(() => {
-    onErrorRef.current = onError;
-  }, [onError]);
-
-  useEffect(() => {
-    afterSeqRef.current = afterSeq;
-  }, [afterSeq]);
-
-  useEffect(() => {
     if (!runId || !enabled) {
+      setError("");
       return;
     }
 
     let cancelled = false;
+    let terminalSeen = false;
     let controller: AbortController | null = null;
-    let reconnectTimer: number | null = null;
 
-    async function attach() {
+    async function backfillGap() {
+      let merged: RunEvent[] = [];
       while (!cancelled) {
-        let terminalEvent: RunEvent | null = null;
+        const batch = await api.listRunEvents(runId, {
+          afterSeq: lastSeenSeqRef.current,
+          limit: BACKFILL_BATCH_SIZE,
+        });
+        if (batch.length === 0) {
+          break;
+        }
+        merged = mergeRunEvents(merged, batch);
+        lastSeenSeqRef.current = Math.max(lastSeenSeqRef.current, getHighestSeq(batch));
+        for (const event of batch) {
+          onEventRef.current(event);
+          if (isTerminalRunEvent(event)) {
+            terminalSeen = true;
+            onTerminalRef.current?.(event);
+          }
+        }
+        if (batch.length < BACKFILL_BATCH_SIZE) {
+          break;
+        }
+      }
+    }
+
+    async function connect() {
+      while (!cancelled && !terminalSeen) {
         controller = new AbortController();
         try {
           await api.streamRun(
             runId,
             {
               onRunEvent: (event) => {
-                onEventRef.current?.(event);
-                if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
-                  terminalEvent = event;
+                lastSeenSeqRef.current = Math.max(lastSeenSeqRef.current, Number(event.seq || 0));
+                onEventRef.current(event);
+                if (isTerminalRunEvent(event)) {
+                  terminalSeen = true;
+                  onTerminalRef.current?.(event);
                 }
-              },
-              onError: (message) => {
-                onErrorRef.current?.(message);
               },
             },
             {
-              afterSeq: afterSeqRef.current,
+              afterSeq: lastSeenSeqRef.current,
               signal: controller.signal,
             },
           );
-        } catch (err) {
-          if ((err as Error).name === "AbortError" || cancelled) {
-            return;
+          if (cancelled || terminalSeen) {
+            break;
           }
+          await backfillGap();
+          if (cancelled || terminalSeen) {
+            break;
+          }
+          await delay(RECONNECT_DELAY_MS);
+        } catch (nextError) {
+          if (cancelled || (nextError as Error).name === "AbortError") {
+            break;
+          }
+          setError((nextError as Error).message);
+          await backfillGap();
+          if (cancelled || terminalSeen) {
+            break;
+          }
+          await delay(RECONNECT_DELAY_MS);
         }
-
-        if (cancelled) {
-          return;
-        }
-
-        if (terminalEvent) {
-          onTerminalRef.current?.(terminalEvent);
-          return;
-        }
-
-        await new Promise<void>((resolve) => {
-          reconnectTimer = window.setTimeout(resolve, 1000);
-        });
       }
     }
 
-    void attach();
+    setError("");
+    void connect();
 
     return () => {
       cancelled = true;
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-      }
       controller?.abort();
     };
   }, [enabled, runId]);
+
+  return { error };
 }
