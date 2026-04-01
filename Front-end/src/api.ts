@@ -56,29 +56,10 @@ function parseSseEvent(rawChunk: string): BackendStreamEvent | null {
   return JSON.parse(dataLines.join("\n")) as BackendStreamEvent;
 }
 
-async function readEventStream(
-  path: string,
-  handlers: StreamHandlers = {},
-  signal?: AbortSignal,
+async function consumeEventStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  handlers: StreamHandlers,
 ): Promise<SendMessageResponse | null> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    signal,
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed with status ${response.status}`);
-  }
-
-  if (!response.body) {
-    throw new Error("Streaming response body was not available.");
-  }
-
-  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let finalPayload: SendMessageResponse | null = null;
@@ -136,6 +117,31 @@ async function readEventStream(
   }
 
   return finalPayload;
+}
+
+async function readEventStream(
+  path: string,
+  handlers: StreamHandlers = {},
+  signal?: AbortSignal,
+): Promise<SendMessageResponse | null> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    signal,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request failed with status ${response.status}`);
+  }
+
+  if (!response.body) {
+    throw new Error("Streaming response body was not available.");
+  }
+
+  return consumeEventStream(response.body.getReader(), handlers);
 }
 
 export const api = {
@@ -244,63 +250,6 @@ export const api = {
       throw new Error("Streaming response body was not available.");
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let finalPayload: SendMessageResponse | null = null;
-
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-
-      let boundaryIndex = buffer.indexOf("\n\n");
-      while (boundaryIndex !== -1) {
-        const rawChunk = buffer.slice(0, boundaryIndex);
-        buffer = buffer.slice(boundaryIndex + 2);
-        const event = parseSseEvent(rawChunk);
-
-        if (event) {
-          if (typeof event.seq === "number") {
-            handlers.onSequence?.(event.seq);
-          }
-          handlers.onRunEvent?.(event);
-          if (event.type === "state") {
-            handlers.onState?.(event.code);
-          } else if (event.type === "event") {
-            if (event.code === "text_delta") {
-              const delta = typeof event.payload?.delta === "string" ? event.payload.delta : "";
-              if (delta) {
-                handlers.onTextDelta?.(delta);
-              }
-            } else if (event.code === "text_checkpoint") {
-              const text = typeof event.payload?.text === "string" ? event.payload.text : "";
-              handlers.onTextCheckpoint?.(text, event.seq, event.payload);
-            }
-            handlers.onEvent?.(event.code, event.payload);
-          } else if (event.type === "done") {
-            finalPayload = {
-              user_message: event.user_message,
-              assistant_message: event.assistant_message,
-              debug: event.debug,
-            };
-            handlers.onDone?.(finalPayload);
-          } else if (event.type === "cancelled") {
-            handlers.onCancelled?.(event.message);
-            return finalPayload;
-          } else if (event.type === "error") {
-            handlers.onError?.(event.message);
-            throw new Error(event.message);
-          }
-        }
-
-        boundaryIndex = buffer.indexOf("\n\n");
-      }
-
-      if (done) {
-        break;
-      }
-    }
-
-    return finalPayload;
+    return consumeEventStream(response.body.getReader(), handlers);
   },
 };

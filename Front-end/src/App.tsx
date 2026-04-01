@@ -3,139 +3,30 @@ import { api } from "./api";
 import { DebugPanel } from "./debug/DebugPanel";
 import { renderMessageContent } from "./renderMessage";
 import { getStreamStatusAliases, getStreamStatusKey, getStreamStatusLabel } from "./streamStatusText";
-import type { ChatMessage, ChatRun, ChatSession, Project, StreamStatusEvent, User } from "./types";
-
-type AsyncState = "idle" | "loading" | "error";
-
-type CouncilEntry = {
-  entryId: string;
-  role: string;
-  phase: string;
-  round?: number;
-  text: string;
-  complete: boolean;
-  streamBuffer?: string;
-  streamPreview?: string;
-};
-
-type ChatRunUIState = {
-  runId: string;
-  clientRequestId: string;
-  pendingContent: string;
-  streamStatus: StreamStatusEvent | null;
-  streamingAssistantId: number | null;
-  optimisticUserId: number;
-  optimisticAssistantId: number;
-  lastSeenSeq: number;
-  councilEntries: CouncilEntry[];
-};
-
-type PendingTextDeltaBatch = {
-  delta: string;
-  frameId: number | null;
-  lastDrainAt: number | null;
-};
-
-type PendingCouncilDeltaBatch = {
-  delta: string;
-  frameId: number | null;
-};
-
-type CheckpointSeed = {
-  runId: string;
-  seq: number;
-  text: string;
-};
-
-type PendingDonePayload = {
-  payload: {
-    user_message: ChatMessage;
-    assistant_message: ChatMessage;
-  };
-  selectedProjectIdAtCompletion: string;
-};
-
-const TEXT_DELTA_CHARS_PER_MS = 0.035;
-const TEXT_DELTA_MIN_CHARS_PER_FRAME = 1;
-const TEXT_DELTA_MAX_CHARS_PER_FRAME = 4;
-
-
-function formatChatTimestamp(value: string) {
-  if (!value) {
-    return "Unknown";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function formatCouncilPhase(phase: string, round?: number): string {
-  if (phase === "opening_arguments") return "Opening Argument";
-  if (phase === "discussion") return `Discussion · Round ${round ?? ""}`.trim();
-  if (phase === "closing_arguments") return "Closing Argument";
-  if (phase === "arbiter") return "Synthesis";
-  return phase;
-}
-
-function getStreamingDisplayText(buffer: string): string {
-  // First try full JSON parse
-  try {
-    const parsed = JSON.parse(buffer);
-    if (typeof parsed?.position === "string") return parsed.position;
-  } catch {
-    // incomplete JSON, try regex extraction
-  }
-  // Regex fallback: grab content after "position":"
-  const match = buffer.match(/"position"\s*:\s*"([\s\S]*)/);
-  if (!match) return "";
-  let inner = match[1];
-  // Stop at the closing quote (before next field like "confidence" or "key_claims")
-  const closeIdx = inner.search(/"\s*,\s*"(?:confidence|key_claims)/);
-  if (closeIdx > 0) inner = inner.slice(0, closeIdx);
-  // Unescape JSON string sequences safely
-  try {
-    return JSON.parse('"' + inner.replace(/"/g, '\\"').replace(/\\\\"/g, '\\"') + '"');
-  } catch {
-    return inner.replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  }
-}
-
-function formatMessageTimestamp(value: string) {
-  if (!value) {
-    return "";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function optimisticIdsForRun(runId: string) {
-  let hash = 0;
-  for (let index = 0; index < runId.length; index += 1) {
-    hash = (hash * 31 + runId.charCodeAt(index)) >>> 0;
-  }
-  const base = -(hash || Date.now());
-  return {
-    userId: base,
-    assistantId: base - 1,
-  };
-}
+import {
+  TEXT_DELTA_CHARS_PER_MS,
+  TEXT_DELTA_MAX_CHARS_PER_FRAME,
+  TEXT_DELTA_MIN_CHARS_PER_FRAME,
+  formatChatTimestamp,
+  formatCouncilPhase,
+  formatMessageTimestamp,
+  getStreamingDisplayText,
+  optimisticIdsForRun,
+} from "./utils";
+import type {
+  AsyncState,
+  ChatMessage,
+  ChatRun,
+  ChatRunUIState,
+  ChatSession,
+  CheckpointSeed,
+  Project,
+  PendingCouncilDeltaBatch,
+  PendingDonePayload,
+  PendingTextDeltaBatch,
+  UICouncilEntry,
+  User,
+} from "./types";
 
 export default function App() {
   const isDebugMode =
@@ -170,7 +61,7 @@ export default function App() {
   const [councilMode, setCouncilMode] = useState<"off" | "full" | "lite">("off");
   const [councilActive, setCouncilActive] = useState(false);
   const [councilPanelCollapsed, setCouncilPanelCollapsed] = useState(false);
-  const [councilEntries, setCouncilEntries] = useState<CouncilEntry[]>([]);
+  const [councilEntries, setCouncilEntries] = useState<UICouncilEntry[]>([]);
   const [viewingCouncilMessageId, setViewingCouncilMessageId] = useState<number | null>(null);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
 
@@ -1108,7 +999,7 @@ export default function App() {
   function handleViewCouncilEntries(message: ChatMessage) {
     const stored = message.council_entries;
     if (!stored?.length) return;
-    const entries: CouncilEntry[] = stored.map((e) => ({
+    const entries: UICouncilEntry[] = stored.map((e) => ({
       entryId: `${e.phase}-${e.role}-${e.round ?? 0}`,
       role: e.role,
       phase: e.phase,

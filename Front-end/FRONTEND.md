@@ -40,6 +40,25 @@ It currently owns:
 
 This file is the main stateful UI container.
 
+### `src/types.ts`
+
+Owns shared frontend types:
+
+- user/project/chat/run API shapes
+- streaming event types
+- shared UI run state and optimistic batch types
+- council entry shapes for persisted data and live UI rendering
+
+### `src/utils.ts`
+
+Owns pure frontend helpers:
+
+- timestamp formatting
+- council phase display formatting
+- streaming preview text extraction
+- optimistic run-id derivation
+- text delta pacing constants
+
 ### `src/api.ts`
 
 Owns API access:
@@ -161,7 +180,8 @@ If you modify the frontend, preserve these invariants:
 1. [src/App.tsx](src/App.tsx)
 2. [src/api.ts](src/api.ts)
 3. [src/types.ts](src/types.ts)
-4. [src/streamStatusText.ts](src/streamStatusText.ts)
-5. [src/renderMessage.tsx](src/renderMessage.tsx)
-6. [src/styles.css](src/styles.css)
-7. [src/debug/DebugPanel.tsx](src/debug/DebugPanel.tsx)
+4. [src/utils.ts](src/utils.ts)
+5. [src/streamStatusText.ts](src/streamStatusText.ts)
+6. [src/renderMessage.tsx](src/renderMessage.tsx)
+7. [src/styles.css](src/styles.css)
+8. [src/debug/DebugPanel.tsx](src/debug/DebugPanel.tsx)

@@ -3,6 +3,8 @@ export type User = {
   username: string;
 };
 
+export type AsyncState = "idle" | "loading" | "error";
+
 export type Project = {
   id: string;
   user_id: string;
@@ -27,6 +29,54 @@ export type CouncilEntry = {
   phase: string;
   round?: number | null;
   text: string;
+};
+
+export type UICouncilEntry = {
+  entryId: string;
+  role: string;
+  phase: string;
+  round?: number;
+  text: string;
+  complete: boolean;
+  streamBuffer?: string;
+  streamPreview?: string;
+};
+
+export type ChatRunUIState = {
+  runId: string;
+  clientRequestId: string;
+  pendingContent: string;
+  streamStatus: StreamStatusEvent | null;
+  streamingAssistantId: number | null;
+  optimisticUserId: number;
+  optimisticAssistantId: number;
+  lastSeenSeq: number;
+  councilEntries: UICouncilEntry[];
+};
+
+export type PendingTextDeltaBatch = {
+  delta: string;
+  frameId: number | null;
+  lastDrainAt: number | null;
+};
+
+export type PendingCouncilDeltaBatch = {
+  delta: string;
+  frameId: number | null;
+};
+
+export type CheckpointSeed = {
+  runId: string;
+  seq: number;
+  text: string;
+};
+
+export type PendingDonePayload = {
+  payload: {
+    user_message: ChatMessage;
+    assistant_message: ChatMessage;
+  };
+  selectedProjectIdAtCompletion: string;
 };
 
 export type ChatMessage = {
