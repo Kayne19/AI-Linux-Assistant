@@ -103,7 +103,7 @@ When a message is sent:
 2. It stores optimistic state keyed by `chatId`, not in one global in-flight slot.
 3. It attaches to that run’s SSE event stream.
 4. Backend states/events update the visible live status.
-5. If Magi is enabled, council role events populate the live council panel.
+5. If Magi is enabled, council role events populate the live council panel, and live role deltas are batched before React renders them.
 6. During active streaming, rapid `text_delta` events are batched with `requestAnimationFrame` before the optimistic assistant text is appended.
 7. `text_checkpoint` events are tracked for reconnect seeding and are only applied to visible text while replaying after a reconnect.
 8. When `done` arrives, the optimistic pair is replaced by the final persisted backend messages.

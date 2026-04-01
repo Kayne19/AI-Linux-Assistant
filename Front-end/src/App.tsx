@@ -34,6 +34,11 @@ type PendingTextDeltaBatch = {
   frameId: number | null;
 };
 
+type PendingCouncilDeltaBatch = {
+  delta: string;
+  frameId: number | null;
+};
+
 type CheckpointSeed = {
   runId: string;
   seq: number;
@@ -164,6 +169,7 @@ export default function App() {
   const councilEndRef = useRef<HTMLDivElement | null>(null);
   const streamControllersRef = useRef<Record<string, AbortController>>({});
   const pendingTextDeltaBatchesRef = useRef<Record<string, PendingTextDeltaBatch>>({});
+  const pendingCouncilDeltaBatchesRef = useRef<Record<string, PendingCouncilDeltaBatch>>({});
   const streamingActiveRef = useRef<Record<string, boolean>>({});
   const lastCheckpointRef = useRef<Record<string, CheckpointSeed>>({});
   const previousSelectedChatIdRef = useRef("");
@@ -254,6 +260,34 @@ export default function App() {
     delete pendingTextDeltaBatchesRef.current[chatId];
   }
 
+  function councilDeltaBatchKey(chatId: string, entryId: string) {
+    return `${chatId}:${entryId}`;
+  }
+
+  function clearPendingCouncilDeltaBatch(chatId: string, entryId: string) {
+    const batchKey = councilDeltaBatchKey(chatId, entryId);
+    const pending = pendingCouncilDeltaBatchesRef.current[batchKey];
+    if (!pending) {
+      return;
+    }
+    if (pending.frameId !== null) {
+      window.cancelAnimationFrame(pending.frameId);
+    }
+    delete pendingCouncilDeltaBatchesRef.current[batchKey];
+  }
+
+  function clearPendingCouncilDeltaBatchesForChat(chatId: string) {
+    Object.entries(pendingCouncilDeltaBatchesRef.current).forEach(([batchKey, pending]) => {
+      if (!batchKey.startsWith(`${chatId}:`)) {
+        return;
+      }
+      if (pending.frameId !== null) {
+        window.cancelAnimationFrame(pending.frameId);
+      }
+      delete pendingCouncilDeltaBatchesRef.current[batchKey];
+    });
+  }
+
   function applyTextCheckpoint(chatId: string, assistantId: number, text: string) {
     clearPendingTextDeltaBatch(chatId);
     setMessagesForChat(chatId, (current) =>
@@ -312,6 +346,44 @@ export default function App() {
     });
   }
 
+  function queueCouncilTextDelta(chatId: string, entryId: string, delta: string) {
+    if (!delta) {
+      return;
+    }
+    const batchKey = councilDeltaBatchKey(chatId, entryId);
+    const batches = pendingCouncilDeltaBatchesRef.current;
+    const batch = batches[batchKey] || { delta: "", frameId: null };
+    batch.delta += delta;
+    batches[batchKey] = batch;
+    if (batch.frameId !== null) {
+      return;
+    }
+    batch.frameId = window.requestAnimationFrame(() => {
+      const currentBatch = pendingCouncilDeltaBatchesRef.current[batchKey];
+      if (!currentBatch) {
+        return;
+      }
+      const bufferedDelta = currentBatch.delta;
+      currentBatch.delta = "";
+      currentBatch.frameId = null;
+      if (!bufferedDelta) {
+        return;
+      }
+      setRunUiForChat(chatId, (current) =>
+        current
+          ? {
+              ...current,
+              councilEntries: current.councilEntries.map((entry) =>
+                entry.entryId === entryId
+                  ? { ...entry, streamBuffer: (entry.streamBuffer ?? "") + bufferedDelta }
+                  : entry,
+              ),
+            }
+          : current,
+      );
+    });
+  }
+
   useEffect(
     () => () => {
       Object.values(pendingTextDeltaBatchesRef.current).forEach((batch) => {
@@ -320,6 +392,12 @@ export default function App() {
         }
       });
       pendingTextDeltaBatchesRef.current = {};
+      Object.values(pendingCouncilDeltaBatchesRef.current).forEach((batch) => {
+        if (batch.frameId !== null) {
+          window.cancelAnimationFrame(batch.frameId);
+        }
+      });
+      pendingCouncilDeltaBatchesRef.current = {};
     },
     [],
   );
@@ -375,6 +453,7 @@ export default function App() {
     }
     streamingActiveRef.current[chatId] = false;
     clearPendingTextDeltaBatch(chatId);
+    clearPendingCouncilDeltaBatchesForChat(chatId);
     setRunUiForChat(chatId, () => undefined);
   }
 
@@ -578,7 +657,7 @@ export default function App() {
               current ? { ...current, streamStatus: { source: "state", code } } : current,
             ),
           onEvent: (code, payload) => {
-            if (code !== "text_delta" && code !== "text_checkpoint") {
+            if (code !== "text_delta" && code !== "text_checkpoint" && code !== "magi_role_text_delta") {
               setRunUiForChat(chatId, (current) =>
                 current ? { ...current, streamStatus: { source: "event", code, payload } } : current,
               );
@@ -588,13 +667,14 @@ export default function App() {
               const phase = String(payload.phase || "");
               const round = typeof payload.round === "number" ? payload.round : undefined;
               const entryId = `${phase}-${role}-${round ?? 0}`;
+              clearPendingCouncilDeltaBatch(chatId, entryId);
               setRunUiForChat(chatId, (current) =>
                 current
                   ? {
                       ...current,
                       councilEntries: [
                         ...current.councilEntries.filter((entry) => entry.entryId !== entryId),
-                        { entryId, role, phase, round, text: "", complete: false },
+                        { entryId, role, phase, round, text: "", complete: false, streamBuffer: "" },
                       ],
                     }
                   : current,
@@ -606,18 +686,7 @@ export default function App() {
               const round = typeof payload.round === "number" ? payload.round : undefined;
               const delta = String(payload.delta || "");
               const entryId = `${phase}-${role}-${round ?? 0}`;
-              setRunUiForChat(chatId, (current) =>
-                current
-                  ? {
-                      ...current,
-                      councilEntries: current.councilEntries.map((entry) =>
-                        entry.entryId === entryId
-                          ? { ...entry, streamBuffer: (entry.streamBuffer ?? "") + delta }
-                          : entry,
-                      ),
-                    }
-                  : current,
-              );
+              queueCouncilTextDelta(chatId, entryId, delta);
             }
             if (code === "magi_role_complete" && payload) {
               const role = String(payload.role || "");
@@ -625,6 +694,7 @@ export default function App() {
               const round = typeof payload.round === "number" ? payload.round : undefined;
               const text = String(payload.text || "");
               const entryId = `${phase}-${role}-${round ?? 0}`;
+              clearPendingCouncilDeltaBatch(chatId, entryId);
               setRunUiForChat(chatId, (current) =>
                 current
                   ? {
