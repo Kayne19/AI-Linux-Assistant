@@ -183,6 +183,7 @@ Important detail:
 
 - `magi_role_text_delta` is visible `position` text emitted from the final parsed role output, not the raw partial JSON produced by the role model
 - `magi_role_text_checkpoint` stores that same visible council text as an absolute replace for reconnect/replay
+- Magi arbiter streaming also suppresses partial provider text and emits finalized assistant text into the normal `text_delta` path so the frontend can pace it without partial-JSON or tool-round artifacts
 
 ### Provider
 

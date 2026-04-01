@@ -19,6 +19,8 @@ class MagiArbiter:
             self.event_listener(event_type, payload)
 
     def _forward_worker_event(self, event_type, payload):
+        if event_type == "text_delta":
+            return
         self._emit_event(event_type, payload)
 
     def synthesize(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, deliberation_transcript):
@@ -95,6 +97,8 @@ USER QUESTION:
                 event_listener=self._forward_worker_event,
             )
             invoke_cancel_check(self.cancel_check, "after_model_call:arbiter")
+            if response:
+                self._emit_event("text_delta", {"delta": response})
             return response
         return self.synthesize(
             user_query, retrieved_docs, summarized_conversation_history,

@@ -316,6 +316,18 @@ def test_magi_role_streamer_ignores_partial_provider_text_deltas():
     assert delta_events == []
 
 
+def test_magi_arbiter_stream_emits_final_text_once_after_stream_completion():
+    worker = FakeMagiWorker("final arbiter answer")
+    events = []
+    arbiter = MagiArbiter(worker=worker, event_listener=lambda event_type, payload: events.append((event_type, payload)))
+
+    response = arbiter.synthesize_stream("question", "docs", None, "", "transcript")
+
+    assert response == "final arbiter answer"
+    text_deltas = [payload["delta"] for event_type, payload in events if event_type == "text_delta"]
+    assert text_deltas == ["final arbiter answer"]
+
+
 def test_magi_discussion_rounds_receive_full_evidence_bundle_not_just_transcript():
     resp = _make_role_response("position", new_information=True)
     system, events, states, workers = _build_magi(
