@@ -234,7 +234,7 @@ That replacement rule is important:
 Text streaming intentionally uses two paths:
 
 - live display path: worker publishes `text_delta` events to Redis immediately, SSE forwards them, and the frontend appends them with `requestAnimationFrame` batching
-- durable replay path: worker writes `text_checkpoint` events to Postgres roughly once per second or once a buffered chunk reaches the byte threshold
+- durable replay path: worker writes `text_checkpoint` events to Postgres roughly every 200ms or once a buffered chunk reaches the byte threshold
 
 Frontend rule:
 

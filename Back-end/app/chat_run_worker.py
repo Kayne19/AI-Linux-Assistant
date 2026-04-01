@@ -20,7 +20,7 @@ from streaming.redis_events import get_shared_client as _get_redis_client
 class _DeltaBuffer:
     """Fan out live text immediately and durably checkpoint it in batches."""
 
-    def __init__(self, run_id, run_store, redis_publish_fn, flush_interval=1.0, flush_bytes=200):
+    def __init__(self, run_id, run_store, redis_publish_fn, flush_interval=0.2, flush_bytes=200):
         self._run_id = run_id
         self._run_store = run_store
         self._redis_publish = redis_publish_fn
@@ -77,6 +77,12 @@ class _DeltaBuffer:
         self._window += 1
         self._last_flush = now
         return chunk, window
+
+
+def _checkpoint_flush_interval(redis_client):
+    # Redis live fanout can carry smooth token pacing, so durable checkpoints can be coarse.
+    # Without Redis, SSE falls back to Postgres polling and needs more frequent checkpoints.
+    return 1.0 if redis_client is not None else 0.2
 
 
 def _iso(value):
@@ -203,6 +209,7 @@ class ChatRunWorkerService:
             run_id=run.id,
             run_store=self.run_store,
             redis_publish_fn=self._publish_text_delta,
+            flush_interval=_checkpoint_flush_interval(getattr(self.run_store, "_redis_client", None)),
         )
         heartbeat_stop = threading.Event()
         heartbeat_thread = threading.Thread(
