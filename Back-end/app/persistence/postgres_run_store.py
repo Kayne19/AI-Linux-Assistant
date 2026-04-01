@@ -139,7 +139,13 @@ class PostgresRunStore:
             session.add(run)
             session.commit()
             session.refresh(run)
-            return run
+        if self._redis_client is not None:
+            try:
+                from streaming.redis_events import publish_wakeup
+                publish_wakeup(self._redis_client)
+            except Exception:
+                pass
+        return run
 
     def get_run(self, run_id):
         with self._session() as session:
@@ -220,6 +226,38 @@ class PostgresRunStore:
             session.commit()
             session.refresh(event)
         self._publish(run_id, next_seq, event_type, code or "", payload)
+        return event
+
+    def append_text_checkpoint(self, run_id, delta_chunk, window):
+        """Persist buffered text deltas as one replayable checkpoint event."""
+        delta_chunk = str(delta_chunk or "")
+        if not delta_chunk:
+            return None
+        with self._session() as session:
+            run = session.scalar(
+                select(ChatRun).where(ChatRun.id == run_id).with_for_update()
+            )
+            if run is None:
+                raise RunNotFoundError(f"Unknown run '{run_id}'")
+
+            run.partial_assistant_text = (run.partial_assistant_text or "") + delta_chunk
+            next_seq = int(run.latest_event_seq or 0) + 1
+            run.latest_event_seq = next_seq
+            payload = {
+                "text": run.partial_assistant_text,
+                "window": int(window),
+            }
+            event = ChatRunEvent(
+                run_id=run_id,
+                seq=next_seq,
+                type="event",
+                code="text_checkpoint",
+                payload_json=payload,
+            )
+            session.add(event)
+            session.commit()
+            session.refresh(event)
+        self._publish(run_id, next_seq, "event", "text_checkpoint", payload)
         return event
 
     def claim_next_run(self, worker_id, lease_seconds):

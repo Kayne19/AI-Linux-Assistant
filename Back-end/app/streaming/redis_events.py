@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - redis is optional
 _lock = threading.Lock()
 _shared_client = None
 _initialized = False
+WAKEUP_CHANNEL = "workers:wakeup"
 
 
 def get_redis_client(redis_url):
@@ -63,4 +64,21 @@ def subscribe_run_events(client, run_id):
     """Return a PubSub object already subscribed to the run's channel."""
     ps = client.pubsub(ignore_subscribe_messages=True)
     ps.subscribe(channel_name(run_id))
+    return ps
+
+
+def publish_wakeup(client):
+    """Notify idle workers that queued work is available. Never raises."""
+    if client is None:
+        return
+    try:
+        client.publish(WAKEUP_CHANNEL, "1")
+    except Exception:
+        pass
+
+
+def subscribe_wakeup(client):
+    """Return a PubSub object already subscribed to the worker wakeup channel."""
+    ps = client.pubsub(ignore_subscribe_messages=True)
+    ps.subscribe(WAKEUP_CHANNEL)
     return ps

@@ -93,8 +93,9 @@ When a message is sent:
 3. It attaches to that run’s SSE event stream.
 4. Backend states/events update the visible live status.
 5. If Magi is enabled, council role events populate the live council panel.
-6. Text deltas append into the optimistic assistant message for that chat.
-7. When `done` arrives, the optimistic pair is replaced by the final persisted backend messages.
+6. `text_checkpoint` events replace the optimistic assistant text with the durable checkpoint payload.
+7. Rapid `text_delta` events are batched with `requestAnimationFrame` before the optimistic assistant text is appended.
+8. When `done` arrives, the optimistic pair is replaced by the final persisted backend messages.
 
 This avoids the earlier end-of-stream flash and keeps the backend as the source of truth.
 

@@ -64,7 +64,7 @@ class AppSettings:
     max_active_runs_per_user_default: int = 3
     chat_run_lease_seconds: int = 30
     chat_run_stream_poll_ms: int = 500
-    chat_run_worker_poll_ms: int = 1000
+    chat_run_worker_poll_ms: int = 50
     chat_run_worker_concurrency: int = 3
     redis_url: str | None = None
 
@@ -194,7 +194,7 @@ def load_settings():
         max_active_runs_per_user_default=_get_int_env("MAX_ACTIVE_RUNS_PER_USER_DEFAULT", 3),
         chat_run_lease_seconds=_get_int_env("CHAT_RUN_LEASE_SECONDS", 30),
         chat_run_stream_poll_ms=_get_int_env("CHAT_RUN_STREAM_POLL_MS", 500),
-        chat_run_worker_poll_ms=_get_int_env("CHAT_RUN_WORKER_POLL_MS", 1000),
+        chat_run_worker_poll_ms=_get_int_env("CHAT_RUN_WORKER_POLL_MS", 50),
         chat_run_worker_concurrency=_get_int_env("CHAT_RUN_WORKER_CONCURRENCY", 3),
         redis_url=_get_env("REDIS_URL", None) or None,
     )

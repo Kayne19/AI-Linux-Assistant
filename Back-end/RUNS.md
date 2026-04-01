@@ -65,6 +65,8 @@ Rules:
 - event ordering must be monotonic per run
 - reconnect/backfill always replays from `chat_run_events`
 - terminal UI state comes from durable run terminalization, not from a still-open request thread
+- live `text_delta` fanout may exist only in Redis and does not need a durable row per token
+- durable partial-text replay uses `text_checkpoint` events with absolute text and a checkpoint window
 
 ## Lifecycle
 
@@ -132,6 +134,7 @@ Workers do not invent policy. They claim runs that the durable run system has ma
 Expected responsibilities:
 
 - claim eligible queued work
+- wake promptly when queued work is signaled through Redis
 - stamp a worker identifier / claimant
 - set and extend `lease_expires_at`
 - append durable run events
@@ -149,6 +152,7 @@ Worker-local reuse boundary:
 - router instances remain ephemeral and per-run
 - per-run mutable state, listeners, emitted events, and response buffers must remain isolated
 - mutable retrieval/response state must never be shared across concurrent chats
+- buffered text must be flushed before any terminal transition is written
 
 Local dev note:
 
@@ -238,6 +242,8 @@ Expected client behavior:
 - keep `last_seen_seq` for reconnect
 - show hidden-chat status from run snapshots when no live SSE connection exists
 - reconnect with `after_seq` and rebuild live state from durable events
+- treat `text_checkpoint` as an absolute replace of optimistic assistant text
+- treat `text_delta` as live-only append and ignore stale windows already covered by replayed checkpoints
 - block same-chat duplicate sends while an active run exists
 - reuse the same `client_request_id` for duplicate submit/retry cases
 

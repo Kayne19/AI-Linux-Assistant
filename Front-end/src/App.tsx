@@ -28,6 +28,11 @@ type ChatRunUIState = {
   councilEntries: CouncilEntry[];
 };
 
+type PendingTextDeltaBatch = {
+  delta: string;
+  frameId: number | null;
+};
+
 
 function formatChatTimestamp(value: string) {
   if (!value) {
@@ -147,6 +152,7 @@ export default function App() {
   const councilFeedRef = useRef<HTMLDivElement | null>(null);
   const councilEndRef = useRef<HTMLDivElement | null>(null);
   const streamControllersRef = useRef<Record<string, AbortController>>({});
+  const pendingTextDeltaBatchesRef = useRef<Record<string, PendingTextDeltaBatch>>({});
   const previousSelectedChatIdRef = useRef("");
 
   const selectedProject = useMemo(
@@ -224,6 +230,71 @@ export default function App() {
     });
   }
 
+  function clearPendingTextDeltaBatch(chatId: string) {
+    const pending = pendingTextDeltaBatchesRef.current[chatId];
+    if (!pending) {
+      return;
+    }
+    if (pending.frameId !== null) {
+      window.cancelAnimationFrame(pending.frameId);
+    }
+    delete pendingTextDeltaBatchesRef.current[chatId];
+  }
+
+  function applyTextCheckpoint(chatId: string, assistantId: number, text: string) {
+    clearPendingTextDeltaBatch(chatId);
+    setMessagesForChat(chatId, (current) =>
+      current.map((message) =>
+        message.id === assistantId ? { ...message, content: text } : message,
+      ),
+    );
+  }
+
+  function queueTextDelta(chatId: string, assistantId: number, delta: string) {
+    if (!delta) {
+      return;
+    }
+    const batches = pendingTextDeltaBatchesRef.current;
+    const batch = batches[chatId] || { delta: "", frameId: null };
+    batch.delta += delta;
+    batches[chatId] = batch;
+    if (batch.frameId !== null) {
+      return;
+    }
+    batch.frameId = window.requestAnimationFrame(() => {
+      const currentBatch = pendingTextDeltaBatchesRef.current[chatId];
+      if (!currentBatch) {
+        return;
+      }
+      const bufferedDelta = currentBatch.delta;
+      currentBatch.delta = "";
+      currentBatch.frameId = null;
+      if (!bufferedDelta) {
+        return;
+      }
+      setRunUiForChat(chatId, (current) =>
+        current ? { ...current, streamStatus: { source: "event", code: "text_delta" } } : current,
+      );
+      setMessagesForChat(chatId, (current) =>
+        current.map((message) =>
+          message.id === assistantId ? { ...message, content: message.content + bufferedDelta } : message,
+        ),
+      );
+    });
+  }
+
+  useEffect(
+    () => () => {
+      Object.values(pendingTextDeltaBatchesRef.current).forEach((batch) => {
+        if (batch.frameId !== null) {
+          window.cancelAnimationFrame(batch.frameId);
+        }
+      });
+      pendingTextDeltaBatchesRef.current = {};
+    },
+    [],
+  );
+
   function ensureOptimisticMessages(chatId: string, run: ChatRun) {
     const optimisticIds = optimisticIdsForRun(run.id);
     const optimisticUserMessage: ChatMessage = {
@@ -264,6 +335,7 @@ export default function App() {
       controller.abort();
       delete streamControllersRef.current[chatId];
     }
+    clearPendingTextDeltaBatch(chatId);
     setRunUiForChat(chatId, () => undefined);
   }
 
@@ -447,6 +519,7 @@ export default function App() {
       return;
     }
     ensureOptimisticMessages(chatId, run);
+    const optimisticAssistantId = optimisticIdsForRun(run.id).assistantId;
     const controller = new AbortController();
     streamControllersRef.current[chatId] = controller;
 
@@ -464,7 +537,7 @@ export default function App() {
               current ? { ...current, streamStatus: { source: "state", code } } : current,
             ),
           onEvent: (code, payload) => {
-            if (code !== "text_delta") {
+            if (code !== "text_delta" && code !== "text_checkpoint") {
               setRunUiForChat(chatId, (current) =>
                 current ? { ...current, streamStatus: { source: "event", code, payload } } : current,
               );
@@ -523,17 +596,14 @@ export default function App() {
               );
             }
           },
+          onTextCheckpoint: (text) => {
+            applyTextCheckpoint(chatId, optimisticAssistantId, text);
+          },
           onTextDelta: (delta) => {
-            setRunUiForChat(chatId, (current) =>
-              current ? { ...current, streamStatus: { source: "event", code: "text_delta" } } : current,
-            );
-            setMessagesForChat(chatId, (current) =>
-              current.map((message) =>
-                message.id === optimisticIdsForRun(run.id).assistantId ? { ...message, content: message.content + delta } : message,
-              ),
-            );
+            queueTextDelta(chatId, optimisticAssistantId, delta);
           },
           onDone: async (payload) => {
+            clearPendingTextDeltaBatch(chatId);
             setMessagesForChat(chatId, (current) => [
               ...current.filter((message) => message.id >= 0),
               payload.user_message,
@@ -546,12 +616,14 @@ export default function App() {
             }
           },
           onCancelled: (message) => {
+            clearPendingTextDeltaBatch(chatId);
             setMessagesForChat(chatId, (current) => current.filter((messageItem) => messageItem.id >= 0));
             clearRunUi(chatId);
             updateChatRunStatus(chatId, null, null);
             setError(message);
           },
           onError: (message) => {
+            clearPendingTextDeltaBatch(chatId);
             setMessagesForChat(chatId, (current) => current.filter((messageItem) => messageItem.id >= 0));
             clearRunUi(chatId);
             updateChatRunStatus(chatId, null, null);

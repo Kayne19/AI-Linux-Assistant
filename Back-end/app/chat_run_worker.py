@@ -17,6 +17,68 @@ from retrieval.vectorDB import VectorDB
 from streaming.redis_events import get_shared_client as _get_redis_client
 
 
+class _DeltaBuffer:
+    """Fan out live text immediately and durably checkpoint it in batches."""
+
+    def __init__(self, run_id, run_store, redis_publish_fn, flush_interval=0.2, flush_bytes=200):
+        self._run_id = run_id
+        self._run_store = run_store
+        self._redis_publish = redis_publish_fn
+        self._flush_interval = max(0.01, float(flush_interval))
+        self._flush_bytes = max(1, int(flush_bytes))
+        self._lock = threading.Lock()
+        self._buffer = ""
+        self._window = 0
+        self._last_flush = time.monotonic()
+
+    def push(self, delta_text):
+        delta_text = str(delta_text or "")
+        if not delta_text:
+            return
+        self._redis_publish(self._run_id, delta_text, self._window)
+        chunk, window = self._maybe_take_flush_chunk(delta_text)
+        if chunk:
+            self._run_store.append_text_checkpoint(self._run_id, chunk, window)
+
+    def tick(self):
+        chunk, window = self._take_flush_chunk(force=False)
+        if chunk:
+            self._run_store.append_text_checkpoint(self._run_id, chunk, window)
+
+    def flush(self):
+        chunk, window = self._take_flush_chunk(force=True)
+        if chunk:
+            self._run_store.append_text_checkpoint(self._run_id, chunk, window)
+
+    def _maybe_take_flush_chunk(self, delta_text):
+        now = time.monotonic()
+        with self._lock:
+            self._buffer += delta_text
+            if (
+                len(self._buffer) < self._flush_bytes
+                and (now - self._last_flush) < self._flush_interval
+            ):
+                return None, None
+            return self._drain_locked(now)
+
+    def _take_flush_chunk(self, force):
+        now = time.monotonic()
+        with self._lock:
+            if not self._buffer:
+                return None, None
+            if not force and (now - self._last_flush) < self._flush_interval:
+                return None, None
+            return self._drain_locked(now)
+
+    def _drain_locked(self, now):
+        chunk = self._buffer
+        window = self._window
+        self._buffer = ""
+        self._window += 1
+        self._last_flush = now
+        return chunk, window
+
+
 def _iso(value):
     return value.isoformat() if value is not None else ""
 
@@ -59,17 +121,35 @@ class ChatRunWorkerService:
             persist_turn_messages=False,
         )
 
-    def _heartbeat_loop(self, run_id, claimed_worker_id, stop_event):
-        interval_seconds = max(1.0, float(self.settings.chat_run_lease_seconds) / 3.0)
-        while not stop_event.wait(interval_seconds):
+    def _heartbeat_and_flush_loop(self, run_id, claimed_worker_id, stop_event, delta_buffer):
+        heartbeat_interval = max(1.0, float(self.settings.chat_run_lease_seconds) / 3.0)
+        flush_interval = max(0.05, min(0.2, heartbeat_interval))
+        last_heartbeat = time.monotonic()
+        while not stop_event.wait(flush_interval):
+            delta_buffer.tick()
+            now = time.monotonic()
+            if (now - last_heartbeat) < heartbeat_interval:
+                continue
             if not self.run_store.heartbeat(run_id, claimed_worker_id, self.settings.chat_run_lease_seconds):
                 break
+            last_heartbeat = now
 
     def _emit_state(self, run_id, state, _turn):
         self.run_store.append_event(run_id, "state", state.name, None)
 
     def _emit_event(self, run_id, event_type, payload):
         self.run_store.append_event(run_id, "event", event_type, payload or None)
+
+    def _publish_text_delta(self, run_id, delta_text, window):
+        if not delta_text:
+            return
+        self.run_store._publish(
+            run_id,
+            0,
+            "event",
+            "text_delta",
+            {"delta": delta_text, "window": int(window)},
+        )
 
     def _complete_run(self, run, claimed_worker_id, turn):
         done_payload = {
@@ -119,17 +199,29 @@ class ChatRunWorkerService:
             self._fail_run(run, claimed_worker_id, "Run lease expired before completion.")
             return
 
+        delta_buffer = _DeltaBuffer(
+            run_id=run.id,
+            run_store=self.run_store,
+            redis_publish_fn=self._publish_text_delta,
+        )
         heartbeat_stop = threading.Event()
         heartbeat_thread = threading.Thread(
-            target=self._heartbeat_loop,
-            args=(run.id, claimed_worker_id, heartbeat_stop),
+            target=self._heartbeat_and_flush_loop,
+            args=(run.id, claimed_worker_id, heartbeat_stop, delta_buffer),
             daemon=True,
         )
         heartbeat_thread.start()
         try:
             router = self._build_router(run)
             router.set_state_listener(lambda state, turn: self._emit_state(run.id, state, turn))
-            router.set_event_listener(lambda event_type, payload: self._emit_event(run.id, event_type, payload))
+
+            def _event_listener(event_type, payload):
+                if event_type == "text_delta":
+                    delta_buffer.push((payload or {}).get("delta", ""))
+                    return
+                self._emit_event(run.id, event_type, payload)
+
+            router.set_event_listener(_event_listener)
 
             response_text = router.ask_question_stream(run.request_content, magi=run.magi)
             turn = router.last_turn
@@ -140,10 +232,13 @@ class ChatRunWorkerService:
             if turn is None:
                 raise RuntimeError("Worker completed without a router turn.")
 
+            delta_buffer.flush()
             self._complete_run(run, claimed_worker_id, turn)
         except RunCancelledError as exc:
+            delta_buffer.flush()
             self._cancel_run(run, claimed_worker_id, str(exc) or "Run cancelled.")
         except Exception as exc:
+            delta_buffer.flush()
             self._fail_run(run, claimed_worker_id, str(exc))
         finally:
             heartbeat_stop.set()
@@ -151,13 +246,36 @@ class ChatRunWorkerService:
 
     def _worker_loop(self, slot_index):
         claimed_worker_id = f"{self.worker_id}:{slot_index}"
-        poll_seconds = max(0.1, float(self.settings.chat_run_worker_poll_ms) / 1000.0)
-        while not self._stop_event.is_set():
-            run = self.run_store.claim_next_run(claimed_worker_id, self.settings.chat_run_lease_seconds)
-            if run is None:
-                self._stop_event.wait(poll_seconds)
-                continue
-            self._handle_claimed_run(run, claimed_worker_id)
+        poll_seconds = max(0.05, float(self.settings.chat_run_worker_poll_ms) / 1000.0)
+        wakeup_sub = None
+        redis_client = _get_redis_client()
+        if redis_client is not None:
+            try:
+                from streaming.redis_events import subscribe_wakeup
+
+                wakeup_sub = subscribe_wakeup(redis_client)
+            except Exception:
+                wakeup_sub = None
+        try:
+            while not self._stop_event.is_set():
+                run = self.run_store.claim_next_run(claimed_worker_id, self.settings.chat_run_lease_seconds)
+                if run is None:
+                    if wakeup_sub is not None:
+                        try:
+                            wakeup_sub.get_message(timeout=poll_seconds)
+                        except Exception:
+                            self._stop_event.wait(poll_seconds)
+                    else:
+                        self._stop_event.wait(poll_seconds)
+                    continue
+                self._handle_claimed_run(run, claimed_worker_id)
+        finally:
+            if wakeup_sub is not None:
+                try:
+                    wakeup_sub.unsubscribe()
+                    wakeup_sub.close()
+                except Exception:
+                    pass
 
     def run(self):
         concurrency = max(1, int(self.settings.chat_run_worker_concurrency))

@@ -13,6 +13,7 @@ from persistence.postgres_run_store import (
     RunRequeueError,
     TERMINAL_RUN_STATUSES,
 )
+from streaming.replay_filters import should_forward_text_delta as _should_forward_text_delta
 from streaming.event_serializer import serialize_run_event
 from streaming.redis_events import get_shared_client as _get_redis_client
 
@@ -362,10 +363,17 @@ def create_app():
         ps = subscribe_run_events(redis_client, run_id)
         try:
             current_seq = max(0, int(after_seq))
+            max_checkpoint_window = -1
             # Replay backlog
             for event_row in run_store.list_events_after(run_id, after_seq=current_seq, limit=1000):
                 current_seq = max(current_seq, int(event_row.seq))
                 payload = _serialize_event_row(event_row)
+                if payload.get("code") == "text_checkpoint":
+                    checkpoint_window = (payload.get("payload") or {}).get("window")
+                    try:
+                        max_checkpoint_window = max(max_checkpoint_window, int(checkpoint_window))
+                    except (TypeError, ValueError):
+                        pass
                 yield _sse_payload(payload)
                 if payload["type"] in {"done", "error", "cancelled"}:
                     return
@@ -386,9 +394,20 @@ def create_app():
                 if msg["type"] != "message":
                     continue
                 data = json.loads(msg["data"])
-                if int(data.get("seq", 0)) <= current_seq:
+                seq = int(data.get("seq", 0) or 0)
+                if seq > 0 and seq <= current_seq:
                     continue  # already sent via backlog
-                current_seq = int(data.get("seq", current_seq))
+                if data.get("type") == "event" and data.get("code") == "text_delta":
+                    if not _should_forward_text_delta(data, max_checkpoint_window):
+                        continue
+                if seq > 0:
+                    current_seq = seq
+                if data.get("code") == "text_checkpoint":
+                    checkpoint_window = (data.get("payload") or {}).get("window")
+                    try:
+                        max_checkpoint_window = max(max_checkpoint_window, int(checkpoint_window))
+                    except (TypeError, ValueError):
+                        pass
                 yield _sse_payload(data)
                 if data.get("type") in {"done", "error", "cancelled"}:
                     return

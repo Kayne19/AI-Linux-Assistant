@@ -50,7 +50,7 @@ def _seed_chat(session_factory, username="u", project_name="P", title="T"):
 
 def _make_run(store, sf):
     user, project, chat = _seed_chat(sf)
-    return store.create_or_reuse_run(
+    run = store.create_or_reuse_run(
         chat_session_id=chat.id,
         project_id=project.id,
         user_id=user.id,
@@ -59,6 +59,11 @@ def _make_run(store, sf):
         client_request_id="crid-1",
         max_active_runs_per_user=5,
     )
+    publish = getattr(getattr(store, "_redis_client", None), "publish", None)
+    reset_mock = getattr(publish, "reset_mock", None)
+    if callable(reset_mock):
+        reset_mock()
+    return run
 
 
 # ---------------------------------------------------------------------------

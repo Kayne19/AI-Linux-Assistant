@@ -19,7 +19,8 @@ Current streaming covers:
 - durable run-event replay and live follow
 - live router state updates emitted by the claimed worker
 - live backend event updates emitted by the claimed worker
-- live OpenAI text deltas for the responder path
+- live text deltas for the responder path
+- durable `text_checkpoint` events for reconnect/replay
 - live Magi council role deltas/events when `magi` is `lite` or `full`
 - final persisted message handoff at completion
 
@@ -61,6 +62,7 @@ The stream currently sends JSON payloads shaped like:
 
 - retrieval activity
 - streamed text deltas
+- durable text checkpoints
 - memory events
 - provider/tool events
 - Magi phase and role events
@@ -115,6 +117,12 @@ Owns:
 
 `chat_runs.latest_*` and `partial_assistant_text` are convenience snapshot fields only.
 
+For partial assistant text:
+
+- `text_delta` is live fanout
+- `text_checkpoint` is the durable replay source
+- reconnecting clients rebuild text from checkpoints, then only forward newer live delta windows
+
 ### Worker
 
 [app/chat_run_worker.py](app/chat_run_worker.py)
@@ -122,11 +130,13 @@ Owns:
 Owns:
 
 - claiming eligible runs
+- waking promptly when Redis signals newly queued work
 - lease heartbeats
 - safe cancellation checkpoints
 - stale-run failure/recovery handling
 - executing the router FSM for one claimed run
 - publishing durable state/event records
+- batching checkpoint writes off the provider hot path
 
 ### Responder
 
@@ -183,7 +193,8 @@ Owns:
 
 - per-chat temporary run state
 - optimistic temporary user/assistant messages
-- applying text deltas into the in-progress assistant message
+- replacing optimistic assistant text from `text_checkpoint`
+- batching rapid `text_delta` appends into the in-progress assistant message
 - rendering Magi council progress when present
 - mapping backend event codes into human labels
 - reconnecting with `after_seq` when a running chat is reopened
@@ -212,20 +223,21 @@ The backend should not hardcode those labels.
 
 ## Live Fanout via Redis
 
-When `REDIS_URL` is set, events are pushed to connected SSE clients immediately after each Postgres commit rather than on the next 500 ms poll cycle.
+When `REDIS_URL` is set, events are pushed to connected SSE clients immediately after each Postgres commit rather than on the next 500 ms poll cycle. Live `text_delta` fanout is also published directly to Redis before the next checkpoint reaches Postgres.
 
 ### Architecture
 
 ```
 Worker
-  └─ append_event() / mark_failed() / mark_cancelled() / complete_run_with_messages()
-       └─ INSERT INTO chat_run_events   ← Postgres, always
+  ├─ publish live text_delta to Redis immediately
+  └─ append_event() / append_text_checkpoint() / mark_failed() / mark_cancelled() / complete_run_with_messages()
+       ├─ INSERT INTO chat_run_events   ← Postgres, always for durable events
        └─ PUBLISH run:{run_id}:events   ← Redis, if REDIS_URL is set
               │
        SSE client (api.py _stream_via_redis)
               ├─ SUBSCRIBE run:{run_id}:events   (opened before Postgres backlog query)
               ├─ replay backlog from Postgres via list_events_after()
-              └─ forward Redis messages with seq > last_replayed_seq
+              └─ forward Redis messages, filtering stale text_delta windows already covered by replayed checkpoints
 ```
 
 ### Subscribe-before-replay ordering guarantee
@@ -253,6 +265,15 @@ When `REDIS_URL` is absent, empty, or the Redis server is unreachable at startup
 ### Postgres remains authoritative
 
 Redis is fire-and-forget pub/sub. It stores nothing. Every durability guarantee, every replay guarantee, and every recovery guarantee continues to be provided by Postgres `chat_run_events`.
+
+## Text Checkpoint Model
+
+The worker keeps an in-memory delta buffer per run.
+
+- each provider delta is published immediately as live `text_delta`
+- the buffer flushes every ~200 ms or when the buffered chunk grows large
+- each flush writes one durable `text_checkpoint` event containing absolute assistant text and a monotonic `window`
+- reconnecting clients track the highest replayed checkpoint window and drop older live deltas from Redis
 
 ## Architectural Rules
 
