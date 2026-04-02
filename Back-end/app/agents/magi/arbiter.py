@@ -28,6 +28,20 @@ def _clean_list(value):
     return cleaned
 
 
+def _first_sentence(text):
+    text = _clean_text(text)
+    if not text:
+        return ""
+    sentence = text.splitlines()[0].strip()
+    if "." in sentence:
+        sentence = sentence.split(".", 1)[0].strip()
+    return sentence[:180].strip()
+
+
+def _normalize_key(text):
+    return " ".join(_clean_text(text).lower().split())
+
+
 class MagiArbiter:
     def __init__(self, worker, tools=None, tool_handler=None, max_tool_rounds=4, event_listener=None, cancel_check=None):
         self.worker = worker
@@ -47,6 +61,72 @@ class MagiArbiter:
             return
         self._emit_event(event_type, payload)
 
+    def _normalize_decision_mode(self, parsed):
+        decision_mode = _clean_text(parsed.get("decision_mode")).lower()
+        if decision_mode not in VALID_DECISION_MODES:
+            return "best_current_branch"
+        return decision_mode
+
+    def _normalize_uncertainty_level(self, parsed):
+        uncertainty_level = _clean_text(parsed.get("uncertainty_level")).lower()
+        if uncertainty_level not in VALID_UNCERTAINTY_LEVELS:
+            return "medium"
+        return uncertainty_level
+
+    def _normalize_required_fields(self, parsed, raw_text):
+        decision_mode = self._normalize_decision_mode(parsed)
+        uncertainty_level = self._normalize_uncertainty_level(parsed)
+        winning_branch = _clean_text(parsed.get("winning_branch"))
+        strongest_surviving_objection = _clean_text(parsed.get("strongest_surviving_objection"))
+        missing_decisive_artifact = _clean_text(parsed.get("missing_decisive_artifact"))
+        evidence_sources = _clean_list(parsed.get("evidence_sources"))
+        final_answer = _clean_text(parsed.get("final_answer"))
+        if not final_answer:
+            final_answer = _clean_text(raw_text)
+
+        primary_issue = _clean_text(parsed.get("primary_issue"))
+        if not primary_issue:
+            primary_issue = winning_branch or _first_sentence(final_answer) or "Clarify the highest-order issue."
+
+        immediate_obligation = _clean_text(parsed.get("immediate_obligation"))
+        if not immediate_obligation:
+            if missing_decisive_artifact:
+                immediate_obligation = f"Obtain the decisive artifact: {missing_decisive_artifact}"
+            elif uncertainty_level == "high":
+                immediate_obligation = "Resolve the decisive uncertainty before lower-order optimization."
+            else:
+                immediate_obligation = "Advance the best current branch without losing the higher-order framing."
+
+        if not final_answer:
+            final_answer = " ".join(
+                part for part in [
+                    primary_issue,
+                    immediate_obligation,
+                    f"Missing decisive artifact: {missing_decisive_artifact}" if missing_decisive_artifact else "",
+                ] if part
+            ).strip()
+
+        if (
+            primary_issue
+            and winning_branch
+            and _normalize_key(primary_issue) != _normalize_key(winning_branch)
+            and not _normalize_key(final_answer).startswith(_normalize_key(primary_issue))
+        ):
+            separator = "" if primary_issue.endswith((".", "!", "?")) else "."
+            final_answer = f"{primary_issue}{separator} {final_answer}".strip()
+
+        return {
+            "primary_issue": primary_issue,
+            "immediate_obligation": immediate_obligation,
+            "decision_mode": decision_mode,
+            "uncertainty_level": uncertainty_level,
+            "winning_branch": winning_branch,
+            "strongest_surviving_objection": strongest_surviving_objection,
+            "missing_decisive_artifact": missing_decisive_artifact,
+            "evidence_sources": evidence_sources,
+            "final_answer": final_answer,
+        }
+
     def _parse_response(self, raw_text):
         raw_text = _clean_text(raw_text)
         if raw_text.startswith("```"):
@@ -62,27 +142,8 @@ class MagiArbiter:
         if not isinstance(parsed, dict):
             parsed = {"final_answer": raw_text}
 
-        decision_mode = _clean_text(parsed.get("decision_mode")).lower()
-        if decision_mode not in VALID_DECISION_MODES:
-            decision_mode = "best_current_branch"
-
-        uncertainty_level = _clean_text(parsed.get("uncertainty_level")).lower()
-        if uncertainty_level not in VALID_UNCERTAINTY_LEVELS:
-            uncertainty_level = "medium"
-
-        final_answer = _clean_text(parsed.get("final_answer"))
-        if not final_answer:
-            final_answer = raw_text
-
-        return {
-            "decision_mode": decision_mode,
-            "uncertainty_level": uncertainty_level,
-            "winning_branch": _clean_text(parsed.get("winning_branch")),
-            "strongest_surviving_objection": _clean_text(parsed.get("strongest_surviving_objection")),
-            "missing_decisive_artifact": _clean_text(parsed.get("missing_decisive_artifact")),
-            "evidence_sources": _clean_list(parsed.get("evidence_sources")),
-            "final_answer": final_answer,
-        }
+        # Arbiter metadata is required. Missing fields fall into deterministic normalization instead of vanishing.
+        return self._normalize_required_fields(parsed, raw_text)
 
     def synthesize(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, deliberation_transcript):
         if summarized_conversation_history is None:

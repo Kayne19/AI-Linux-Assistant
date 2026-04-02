@@ -327,15 +327,15 @@ Role models are configured through `AppSettings`; `full` and `lite` use differen
 
 **Protocol:**
 
-1. **Opening Arguments** — Eager → Skeptic → Historian each produce a structured position. Historian also reports grounding quality explicitly as `strong`, `weak`, `absent`, or `conflicted`.
-2. **Discussion Gate** — The Magi system evaluates whether discussion is required. Aligned openings with strong grounding may skip discussion. Materially divergent openings or weak / absent / conflicted grounding force at least one discussion round.
-3. **Discussion** (bounded, up to `magi_max_discussion_rounds` or `magi_lite_max_discussion_rounds`) — Roles are expected to contribute only delta-value updates. Early-stop is allowed only after the forced first discussion round has run.
-4. **Closing Arguments** — Eager → Skeptic → Historian produce concise final stance updates after discussion.
-5. **Arbiter Synthesis** — Reads the full transcript + original context, emits required internal synthesis metadata, and produces the final user-facing response.
+1. **Opening Arguments** — Eager → Skeptic → Historian each produce a role-shaped structured position. Eager carries `primary_issue` / `immediate_obligation` / `provisional_branch`; Skeptic attacks the live branch without choosing the winner; Historian reports grounding quality explicitly as `strong`, `weak`, `absent`, or `conflicted`.
+2. **Discussion Gate** — The Magi system evaluates whether discussion is required. Aligned openings with strong grounding may skip discussion. Materially divergent openings or weak / absent / conflicted grounding force at least one discussion round and mark the round as `discussion_mode="forced"`.
+3. **Discussion** (bounded, up to `magi_max_discussion_rounds` or `magi_lite_max_discussion_rounds`) — Roles contribute only delta-value updates against an explicit router-owned `unresolved_issue`. In forced rounds, a role must provide either a real delta or an inspectable unchanged response via `no_delta_reason`; early-stop is allowed only after the forced first discussion round has run.
+4. **Closing Arguments** — Eager → Skeptic → Historian produce concise role-consistent stance updates after discussion rather than mini final answers.
+5. **Arbiter Synthesis** — Reads the full structured transcript + original context, emits required internal synthesis metadata (`primary_issue`, `immediate_obligation`, `winning_branch`, `decision_mode`, `uncertainty_level`, `strongest_surviving_objection`, `missing_decisive_artifact`, `evidence_sources`), and produces the final user-facing response.
 
 **FSM:** `MagiState` is explicit and traceable. The router appends `MAGI_`-prefixed trace markers via `_handle_magi_state`. Current states include `OPENING_ARGUMENTS`, `ROLE_EAGER`, `ROLE_SKEPTIC`, `ROLE_HISTORIAN`, `DISCUSSION_GATE`, `DISCUSSION`, `DISCUSSION_EAGER`, `DISCUSSION_SKEPTIC`, `DISCUSSION_HISTORIAN`, `CLOSING_ARGUMENTS`, `CLOSING_EAGER`, `CLOSING_SKEPTIC`, `CLOSING_HISTORIAN`, `ARBITER`, `COMPLETE`, `ERROR`.
 
-**Streaming:** Each role emits lifecycle events (`magi_phase`, `magi_role_start`, `magi_role_complete`) and live text deltas (`magi_role_text_delta`) so the frontend can render the council in real time. The Magi system also emits explicit gating / round-summary / synthesis events (`magi_discussion_gate`, `magi_discussion_round`, `magi_synthesis_complete`). The Arbiter's final response streams through the normal text-delta channel.
+**Streaming:** Each role emits lifecycle events (`magi_phase`, `magi_role_start`, `magi_role_complete`) and live text deltas (`magi_role_text_delta`) so the frontend can render the council in real time. The Magi system also emits explicit gating / round-summary / synthesis events (`magi_discussion_gate`, `magi_discussion_round`, `magi_synthesis_complete`). Discussion events now expose the router-owned `discussion_mode` / `unresolved_issue`, discussion role completions can expose `no_delta_reason`, and the Arbiter's final response still streams through the normal text-delta channel.
 
 **Router integration:** The `MagiSystem` is lazily constructed on first Magi turn and cached. It plugs into `_generate_response` as an alternative to `self.responder` — no new router states needed.
 

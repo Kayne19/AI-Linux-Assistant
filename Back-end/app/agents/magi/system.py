@@ -64,7 +64,7 @@ class MagiSystem:
         return text[:max_chars - 3].rstrip() + "..."
 
     def _make_role_streamer_listener(self, role_name, phase, round_number=None):
-        """Returns an event listener that forwards non-text provider events with role/phase context kept external."""
+        """Forward non-text provider events; visible role text is emitted only from parsed payloads."""
 
         def listener(event_type, payload):
             if event_type == "text_delta":
@@ -86,52 +86,8 @@ class MagiSystem:
     def _check_cancel(self, checkpoint):
         invoke_cancel_check(self.cancel_check, checkpoint)
 
-    def _format_position(self, role_name, parsed):
-        branch = parsed.get("branch", "")
-        position = parsed.get("position", "")
-        confidence = parsed.get("confidence", "?")
-        claims = parsed.get("key_claims", [])
-        best_next_check = parsed.get("best_next_check", "")
-        strongest_objection = parsed.get("strongest_objection", "")
-        missing_decisive_artifact = parsed.get("missing_decisive_artifact", "")
-        missing_evidence = parsed.get("missing_evidence", [])
-        evidence_sources = parsed.get("evidence_sources", [])
-        lines = [f"[{role_name.upper()}] (confidence: {confidence})"]
-        if branch:
-            lines.append(f"Branch: {branch}")
-        lines.append(position)
-        if claims:
-            lines.append("Key claims: " + "; ".join(claims))
-        if best_next_check:
-            lines.append("Best next check: " + best_next_check)
-        if strongest_objection:
-            lines.append("Strongest objection: " + strongest_objection)
-        if missing_decisive_artifact:
-            lines.append("Missing decisive artifact: " + missing_decisive_artifact)
-        if missing_evidence:
-            lines.append("Missing evidence: " + "; ".join(item for item in missing_evidence if item))
-        if evidence_sources:
-            lines.append("Evidence sources: " + "; ".join(item for item in evidence_sources if item))
-        if role_name == "historian":
-            grounding_strength = parsed.get("grounding_strength", "")
-            memory_facts = parsed.get("memory_facts", [])
-            doc_support = parsed.get("doc_support", [])
-            attempt_history = parsed.get("attempt_history", [])
-            environment_fit = parsed.get("environment_fit", "")
-            operator_warnings = parsed.get("operator_warnings", [])
-            if grounding_strength:
-                lines.append("Grounding strength: " + grounding_strength)
-            if memory_facts:
-                lines.append("Memory facts: " + "; ".join(item for item in memory_facts if item))
-            if doc_support:
-                lines.append("Doc support: " + "; ".join(item for item in doc_support if item))
-            if attempt_history:
-                lines.append("Attempt history: " + "; ".join(item for item in attempt_history if item))
-            if environment_fit:
-                lines.append("Environment fit: " + environment_fit)
-            if operator_warnings:
-                lines.append("Operator warnings: " + "; ".join(item for item in operator_warnings if item))
-        return "\n".join(lines)
+    def _normalize_branch_key(self, value):
+        return " ".join(str(value or "").strip().lower().split())
 
     def _find_role_payload(self, positions, role_name):
         for candidate_role, parsed in positions:
@@ -139,24 +95,32 @@ class MagiSystem:
                 return parsed
         return {}
 
-    def _normalize_branch_key(self, value):
-        return " ".join(str(value or "").strip().lower().split())
+    def _latest_role_payloads(self, opening_positions, discussion_rounds):
+        latest = {role_name: parsed for role_name, parsed in opening_positions}
+        for round_positions in discussion_rounds:
+            for role_name, parsed in round_positions:
+                latest[role_name] = parsed
+        return latest
 
     def _openings_materially_diverge(self, opening_positions):
-        branches = {
-            self._normalize_branch_key(parsed.get("branch", ""))
-            for _, parsed in opening_positions
-            if self._normalize_branch_key(parsed.get("branch", ""))
-        }
-        if len(branches) > 1:
-            return True
+        eager = self._find_role_payload(opening_positions, "eager")
+        skeptic = self._find_role_payload(opening_positions, "skeptic")
+        historian = self._find_role_payload(opening_positions, "historian")
 
-        next_checks = {
-            self._normalize_branch_key(parsed.get("best_next_check", ""))
-            for _, parsed in opening_positions
-            if self._normalize_branch_key(parsed.get("best_next_check", ""))
-        }
-        return len(next_checks) > 1
+        eager_branch = self._normalize_branch_key(eager.get("provisional_branch") or eager.get("branch"))
+        eager_issue = self._normalize_branch_key(eager.get("primary_issue"))
+        eager_obligation = self._normalize_branch_key(eager.get("immediate_obligation"))
+        skeptic_target = self._normalize_branch_key(skeptic.get("target_branch") or skeptic.get("branch"))
+        skeptic_counterframe = self._normalize_branch_key(skeptic.get("counterframe"))
+        historian_branch = self._normalize_branch_key(historian.get("evaluated_branch") or historian.get("branch"))
+
+        if eager_branch and skeptic_target and eager_branch != skeptic_target:
+            return True
+        if eager_branch and historian_branch and eager_branch != historian_branch:
+            return True
+        if skeptic_counterframe and skeptic_counterframe not in {eager_issue, eager_obligation, eager_branch}:
+            return True
+        return False
 
     def _discussion_gate(self, opening_positions):
         historian = self._find_role_payload(opening_positions, "historian")
@@ -172,10 +136,132 @@ class MagiSystem:
             reason = "aligned_openings_with_strong_grounding"
         return {
             "force_discussion": force_discussion,
+            "discussion_mode": "forced" if force_discussion else "optional",
             "materially_divergent_openings": materially_divergent,
             "grounding_strength": grounding_strength,
             "reason": reason,
         }
+
+    def _determine_unresolved_issue(self, opening_positions, discussion_rounds):
+        latest = self._latest_role_payloads(opening_positions, discussion_rounds)
+        eager = latest.get("eager", {})
+        skeptic = latest.get("skeptic", {})
+        historian = latest.get("historian", {})
+
+        primary_issue = (eager.get("primary_issue") or "").strip()
+        provisional_branch = (eager.get("provisional_branch") or eager.get("branch") or "").strip()
+        if primary_issue and self._normalize_branch_key(primary_issue) != self._normalize_branch_key(provisional_branch):
+            return f"Primary issue: {primary_issue}"
+
+        immediate_obligation = (eager.get("immediate_obligation") or "").strip()
+        if immediate_obligation:
+            return f"Immediate obligation: {immediate_obligation}"
+
+        counterframe = (skeptic.get("counterframe") or "").strip()
+        if counterframe:
+            return f"Counterframe: {counterframe}"
+
+        strongest_objection = (skeptic.get("strongest_objection") or "").strip()
+        if strongest_objection:
+            return f"Surviving objection: {strongest_objection}"
+
+        grounding_strength = (historian.get("grounding_strength") or "").strip()
+        if grounding_strength in {"weak", "absent", "conflicted"}:
+            grounding_gap = (
+                historian.get("most_important_gap")
+                or historian.get("missing_decisive_artifact")
+                or historian.get("position")
+                or ""
+            ).strip()
+            if grounding_gap:
+                return f"Grounding gap ({grounding_strength}): {grounding_gap}"
+            return f"Grounding remains {grounding_strength} for the current branch."
+
+        missing_artifact = (
+            eager.get("missing_decisive_artifact")
+            or skeptic.get("blocking_missing_artifact")
+            or historian.get("most_important_gap")
+            or ""
+        ).strip()
+        if missing_artifact:
+            return f"Missing decisive artifact: {missing_artifact}"
+
+        best_next_check = (
+            eager.get("best_next_check")
+            or skeptic.get("falsifying_check")
+            or ""
+        ).strip()
+        if best_next_check:
+            return f"Best next check: {best_next_check}"
+
+        if provisional_branch:
+            return f"Clarify whether the branch '{provisional_branch}' is actually supported."
+
+        return "Clarify the strongest unresolved issue before lower-order optimization."
+
+    def _structured_transcript_payload(self, role_name, parsed):
+        entry = {
+            "role": role_name,
+            "phase": parsed.get("phase", ""),
+            "confidence": parsed.get("confidence", ""),
+            "position": parsed.get("position", ""),
+        }
+
+        if role_name == "eager":
+            entry.update({
+                "primary_issue": parsed.get("primary_issue", ""),
+                "immediate_obligation": parsed.get("immediate_obligation", ""),
+                "provisional_branch": parsed.get("provisional_branch", ""),
+                "best_next_check": parsed.get("best_next_check", ""),
+                "strongest_caveat": parsed.get("strongest_caveat", ""),
+                "missing_decisive_artifact": parsed.get("missing_decisive_artifact", ""),
+                "key_claims": parsed.get("key_claims", []),
+                "evidence_sources": parsed.get("evidence_sources", []),
+            })
+        elif role_name == "skeptic":
+            entry.update({
+                "target_branch": parsed.get("target_branch", ""),
+                "weakest_assumption": parsed.get("weakest_assumption", ""),
+                "strongest_objection": parsed.get("strongest_objection", ""),
+                "counterframe": parsed.get("counterframe", ""),
+                "falsifying_check": parsed.get("falsifying_check", ""),
+                "blocking_missing_artifact": parsed.get("blocking_missing_artifact", ""),
+                "key_claims": parsed.get("key_claims", []),
+                "evidence_sources": parsed.get("evidence_sources", []),
+            })
+        elif role_name == "historian":
+            entry.update({
+                "evaluated_branch": parsed.get("evaluated_branch", ""),
+                "grounding_strength": parsed.get("grounding_strength", ""),
+                "branch_support_status": parsed.get("branch_support_status", ""),
+                "memory_facts": parsed.get("memory_facts", []),
+                "doc_support": parsed.get("doc_support", []),
+                "attempt_history": parsed.get("attempt_history", []),
+                "environment_fit": parsed.get("environment_fit", ""),
+                "operator_warnings": parsed.get("operator_warnings", []),
+                "most_relevant_evidence": parsed.get("most_relevant_evidence", ""),
+                "most_important_gap": parsed.get("most_important_gap", ""),
+                "evidence_sources": parsed.get("evidence_sources", []),
+            })
+
+        if parsed.get("phase") == "discussion":
+            entry["new_information"] = parsed.get("new_information", False)
+            if parsed.get("no_delta_reason"):
+                entry["no_delta_reason"] = parsed.get("no_delta_reason")
+
+        if parsed.get("phase") == "closing_arguments":
+            entry["changed_since_opening"] = parsed.get("changed_since_opening", False)
+
+        return {key: value for key, value in entry.items() if value not in ("", [], None)}
+
+    def _format_position(self, role_name, parsed):
+        # The arbiter needs compact structured state, not only flattened prose.
+        return json.dumps(
+            self._structured_transcript_payload(role_name, parsed),
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=False,
+        )
 
     def _build_transcript(self, opening_positions, discussion_rounds, closing_positions=None):
         sections = ["=== OPENING ARGUMENTS ==="]
@@ -186,10 +272,8 @@ class MagiSystem:
         for round_num, round_positions in enumerate(discussion_rounds, 1):
             sections.append(f"=== DISCUSSION ROUND {round_num} ===")
             for role_name, parsed in round_positions:
-                position_text = parsed.get("position", "").strip()
-                if position_text:
-                    sections.append(self._truncate(self._format_position(role_name, parsed)))
-                    sections.append("")
+                sections.append(self._truncate(self._format_position(role_name, parsed)))
+                sections.append("")
 
         if closing_positions:
             sections.append("=== CLOSING ARGUMENTS ===")
@@ -243,7 +327,12 @@ class MagiSystem:
 
         for round_num in range(1, self.max_discussion_rounds + 1):
             self._check_cancel(f"before_magi_discussion_round:{round_num}")
-            self._set_state(MagiState.DISCUSSION, {"round": round_num})
+            unresolved_issue = self._determine_unresolved_issue(opening_positions, discussion_rounds)
+            self._set_state(MagiState.DISCUSSION, {
+                "round": round_num,
+                "discussion_mode": gate["discussion_mode"],
+                "unresolved_issue": unresolved_issue,
+            })
             self._emit_event("magi_phase", {"phase": "discussion", "round": round_num})
 
             transcript = self._build_transcript(opening_positions, discussion_rounds)
@@ -267,6 +356,8 @@ class MagiSystem:
                     memory_snapshot_text,
                     transcript,
                     round_num,
+                    discussion_mode=gate["discussion_mode"],
+                    unresolved_issue=unresolved_issue,
                     event_listener=self._make_role_streamer_listener(role_name, "discussion", round_num),
                 )
                 position_text = parsed.get("position", "")
@@ -276,8 +367,10 @@ class MagiSystem:
                     "role": role_name,
                     "phase": "discussion",
                     "round": round_num,
+                    "discussion_mode": gate["discussion_mode"],
                     "text": position_text,
                     "new_information": new_info,
+                    "no_delta_reason": parsed.get("no_delta_reason", ""),
                     "position_length": len(position_text),
                 })
                 round_positions.append((role_name, parsed))
@@ -289,9 +382,11 @@ class MagiSystem:
             early_stop = len(contributors) == 0 and round_num >= 1
             self._emit_event("magi_discussion_round", {
                 "round": round_num,
+                "discussion_mode": gate["discussion_mode"],
+                "unresolved_issue": unresolved_issue,
                 "contributors": contributors,
                 "early_stop": early_stop,
-                "forced_round": round_num == 1,
+                "forced_round": gate["discussion_mode"] == "forced" and round_num == 1,
                 "gate_reason": gate["reason"],
                 "materially_divergent_openings": gate["materially_divergent_openings"],
                 "grounding_strength": gate["grounding_strength"],
@@ -352,6 +447,8 @@ class MagiSystem:
             )
 
         self.last_arbiter_metadata = {
+            "primary_issue": arbiter_result.get("primary_issue", ""),
+            "immediate_obligation": arbiter_result.get("immediate_obligation", ""),
             "decision_mode": arbiter_result.get("decision_mode", "best_current_branch"),
             "uncertainty_level": arbiter_result.get("uncertainty_level", "medium"),
             "winning_branch": arbiter_result.get("winning_branch", ""),

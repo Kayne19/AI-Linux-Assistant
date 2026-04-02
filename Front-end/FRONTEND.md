@@ -142,7 +142,7 @@ Owns the dev/admin debug drawer:
 - live SSE attach/reconnect for active runs
 - client-side event tab filtering
 - grouped execution detail for responder, Magi, provider, tool, retrieval, memory, and naming events beneath top-level router states
-- rendering explicit Magi gating / round-summary / synthesis events without recreating council policy in React
+- rendering explicit Magi gating / round-summary / synthesis events, including discussion `discussion_mode` / `unresolved_issue` and Arbiter synthesis metadata, without recreating council policy in React
 
 ## Application Model
 
@@ -176,6 +176,7 @@ When a message is sent:
 7. `text_checkpoint` events are tracked for reconnect seeding and are only applied to visible text while replaying after a reconnect.
 8. When `done` arrives, the frontend lets any queued visible text finish draining before replacing the optimistic pair with the final persisted backend messages.
 9. When `magi_role_complete` arrives, the frontend also waits for any queued council delta batch to drain before finalizing that council entry, and only uses the completion payload to catch up a missing suffix that the live council stream never rendered.
+10. For forced Magi discussion rounds, the frontend can treat `no_delta_reason` on `magi_role_complete` as inspectable context about why a role held its stance even when `new_information` is false.
 
 For live assistant rendering:
 
@@ -188,6 +189,7 @@ For live council rendering:
 - the backend sends `magi_role_text_delta` as visible role text, not raw partial JSON
 - live council entries append only `magi_role_text_delta` while active, matching the assistant text path
 - `magi_role_text_checkpoint` is a reconnect seed, not a live replacement
+- discussion round events may include `discussion_mode` and `unresolved_issue`, while Arbiter synthesis events may include `primary_issue` and `immediate_obligation` for debug/status surfaces
 - live council entries render directly from the run UI state when not viewing a past assistant message
 - stored `councilEntries` state is only for past deliberation replay, not for duplicating the live council stream
 
