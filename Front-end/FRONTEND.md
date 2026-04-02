@@ -144,6 +144,24 @@ Owns the dev/admin debug drawer:
 - grouped execution detail for responder, Magi, provider, tool, retrieval, memory, and naming events beneath top-level router states
 - rendering explicit Magi gating / round-summary / synthesis events, including discussion `discussion_mode` / `unresolved_issue` and Arbiter synthesis metadata, without recreating council policy in React
 
+Debug event loading currently works like this:
+
+- active runs load their current event history and then attach to the shared SSE reconnect/backfill session
+- inactive runs only load durable events via `GET /runs/{run_id}/events`
+- that REST fetch is currently bounded to the first `200` events from `after_seq=0`
+
+Known operator-facing limitation:
+
+- long completed Magi runs can emit more than `200` durable events while the router is still in `GENERATE_RESPONSE`
+- when that happens, the debug drawer truncates the visible state trace because it never loads the later event rows for completed runs
+- active runs are less affected because the SSE path replays a larger backlog and keeps appending live events
+
+Current fix direction for this surface:
+
+- paginate or tail-load durable events for non-live runs instead of stopping at the first page
+- keep the debug drawer and shared stream session aligned so reconnect/backfill behavior stays identical once a run becomes active
+- preserve sequence ordering and deduplication when stitching together multiple durable event pages with live SSE events
+
 ## Application Model
 
 The frontend mirrors the backend product model:
@@ -236,6 +254,7 @@ When the user switches away from a running chat:
 7. Composer input stays editable while a run is active, but sending remains disabled until the active run ends or is cancelled.
 8. Live council streaming remains plain-text while incomplete so partial markdown markers do not flicker during delta rendering.
 9. The current UI is usable, but still product-iteration code rather than a finished design system.
+10. The debug drawer still has a completed-run pagination gap: it only loads the earliest `200` durable events unless the run is active enough to attach SSE.
 
 ## Safe Change Guidelines
 
