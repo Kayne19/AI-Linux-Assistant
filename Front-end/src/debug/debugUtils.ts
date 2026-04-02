@@ -14,7 +14,7 @@ export type DebugTab = (typeof DEBUG_TABS)[number];
 
 export const TAB_FILTERS: Record<DebugTab, (event: RunEvent) => boolean> = {
   Timeline: () => true,
-  States: (event) => event.type === "state" || (event.type === "event" && SUBSYSTEM_STATE_CODES.has(event.code)),
+  States: (event) => event.type === "state" || (event.type === "event" && !STREAMING_CODES.has(event.code)),
   Retrieval: (event) => (event.type === "state" || event.type === "event") && event.code.startsWith("retrieval_"),
   Memory: (event) => (event.type === "state" || event.type === "event") && event.code.includes("memory"),
   Streaming: (event) => event.type === "event" && STREAMING_CODES.has(event.code),
@@ -79,6 +79,92 @@ function parseSubsystemStatePayload(event: RunEvent) {
     stateCode,
     details,
   };
+}
+
+function eventPhase(event: RunEvent): string {
+  if (event.type === "state") {
+    return "router";
+  }
+  if (event.type !== "event") {
+    return event.type;
+  }
+  const subsystem = parseSubsystemStatePayload(event);
+  if (subsystem) {
+    return subsystem.phase;
+  }
+  if (event.code.startsWith("retrieval_")) {
+    return "retrieval";
+  }
+  if (event.code.startsWith("memory_")) {
+    return "memory";
+  }
+  if (event.code.startsWith("chat_name") || event.code === "chat_named" || event.code === "auto_name_scheduled") {
+    return "naming";
+  }
+  if (event.code.startsWith("magi_")) {
+    return "magi";
+  }
+  if (event.code.startsWith("tool_")) {
+    return "tool";
+  }
+  if (["request_submitted", "web_search_used", "tool_calls_received", "tool_results_submitted", "response_completed"].includes(event.code)) {
+    return "provider";
+  }
+  return "event";
+}
+
+function summarizeGenericEventPayload(event: RunEvent): string {
+  if (event.type !== "event") {
+    return "";
+  }
+  const payload = isObjectRecord(event.payload) ? event.payload : {};
+  switch (event.code) {
+    case "request_submitted":
+      return typeof payload.round === "number" ? `round ${payload.round}` : "request sent";
+    case "web_search_used":
+      return [
+        typeof payload.provider === "string" ? payload.provider : "",
+        typeof payload.count === "number" ? `${payload.count} search${payload.count === 1 ? "" : "es"}` : "",
+        typeof payload.round === "number" ? `round ${payload.round}` : "",
+      ].filter(Boolean).join(" • ");
+    case "tool_calls_received":
+      return [
+        typeof payload.round === "number" ? `round ${payload.round}` : "",
+        typeof payload.count === "number" ? `${payload.count} tool call${payload.count === 1 ? "" : "s"}` : "",
+        Array.isArray(payload.names) ? payload.names.join(", ") : "",
+      ].filter(Boolean).join(" • ");
+    case "tool_results_submitted":
+      return typeof payload.round === "number" ? `round ${payload.round}` : "tool results submitted";
+    case "response_completed":
+      return typeof payload.tool_rounds === "number"
+        ? `${payload.tool_rounds} tool round${payload.tool_rounds === 1 ? "" : "s"}`
+        : "response complete";
+    case "tool_start":
+      return [
+        typeof payload.name === "string" ? payload.name : "",
+        isObjectRecord(payload.args) ? JSON.stringify(payload.args) : "",
+      ].filter(Boolean).join(" • ");
+    case "tool_complete":
+      return [
+        typeof payload.name === "string" ? payload.name : "",
+        typeof payload.result_size === "number" ? `${payload.result_size} chars` : "",
+      ].filter(Boolean).join(" • ");
+    case "tool_error":
+      return [
+        typeof payload.name === "string" ? payload.name : "",
+        typeof payload.error === "string" ? payload.error : "",
+      ].filter(Boolean).join(" • ");
+    case "auto_name_scheduled":
+      return typeof payload.mode === "string" ? payload.mode : "scheduled";
+    case "chat_named":
+      return typeof payload.title === "string" ? payload.title : "title updated";
+    case "chat_name_skipped":
+      return typeof payload.reason === "string" ? payload.reason : "skipped";
+    case "chat_name_error":
+      return typeof payload.error === "string" ? payload.error : "title error";
+    default:
+      return event.payload ? JSON.stringify(event.payload).slice(0, 220) : "";
+  }
 }
 
 function summarizeDetails(details: Record<string, unknown>): string {
@@ -187,17 +273,14 @@ export function getStateRows(events: RunEvent[]): StateRow[] {
     }
 
     const parsed = parseSubsystemStatePayload(event);
-    if (!parsed) {
-      continue;
-    }
     const nestedRow: NestedStateRow = {
       kind: "nested",
       key: `substate:${event.seq}`,
       event,
       durationMs: null,
-      phase: parsed.phase,
-      stateCode: parsed.stateCode || "UNKNOWN",
-      details: parsed.details,
+      phase: parsed?.phase || eventPhase(event),
+      stateCode: parsed?.stateCode || eventTitle(event) || (event.type === "event" ? event.code : event.type),
+      details: parsed?.details || (event.type === "event" && isObjectRecord(event.payload) ? event.payload : {}),
     };
     if (currentRouterRow) {
       currentRouterRow.nestedRows.push(nestedRow);
@@ -209,9 +292,9 @@ export function getStateRows(events: RunEvent[]): StateRow[] {
       event,
       durationMs: null,
       nestedRows: [],
-      phase: parsed.phase,
-      stateCode: parsed.stateCode || "UNKNOWN",
-      details: parsed.details,
+      phase: parsed?.phase || eventPhase(event),
+      stateCode: parsed?.stateCode || eventTitle(event) || (event.type === "event" ? event.code : event.type),
+      details: parsed?.details || (event.type === "event" && isObjectRecord(event.payload) ? event.payload : {}),
     });
   }
 
@@ -331,6 +414,9 @@ export function eventTitle(event: RunEvent): string {
   if (event.type === "done") {
     return "done";
   }
+  if (event.type === "event") {
+    return event.code;
+  }
   return "";
 }
 
@@ -349,8 +435,8 @@ export function eventSummary(event: RunEvent): string {
   if (event.type === "state") {
     return event.code;
   }
-  if (event.payload) {
-    return JSON.stringify(event.payload).slice(0, 220);
+  if (event.type === "event") {
+    return summarizeGenericEventPayload(event);
   }
   return "";
 }

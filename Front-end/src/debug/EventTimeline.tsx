@@ -39,7 +39,7 @@ function NestedStateTrace({
             <span className="debug-event-time">{formatTimestamp(row.event.created_at)}</span>
           </div>
           <div className="debug-event-body">
-            <strong>{row.stateCode}</strong>
+            <strong>{eventTitle(row.event)}</strong>
             <span className="debug-event-summary">{eventSummary(row.event)}</span>
           </div>
           <div className="debug-event-duration">{formatDuration(row.durationMs)}</div>

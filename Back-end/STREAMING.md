@@ -183,6 +183,7 @@ Important detail:
 - this keeps normal chat streaming aligned with the Magi arbiter path and avoids partial-markdown or tool-round artifacts reaching the UI
 - responder sub-states such as `PREPARE_REQUEST`, `REQUEST_MODEL`, `PROCESS_TOOL_CALLS`, and `COMPLETE` are emitted as `responder_state` events with structured `phase/state/details` payloads
 - those sub-states are intentionally event-scoped rather than top-level router `state` rows, so the frontend can show them as nested execution detail under `GENERATE_RESPONSE`
+- other non-streaming execution events such as provider lifecycle, tool calls, retrieval activity, memory events, and naming events remain normal `event` rows and can be grouped beneath the active router state in debug views
 
 ### Magi
 
