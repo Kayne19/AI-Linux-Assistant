@@ -193,6 +193,7 @@ Owns:
 
 - the deliberation protocol for `magi="lite"` and `magi="full"`
 - role lifecycle events such as `magi_phase`, `magi_role_start`, `magi_role_complete`
+- explicit deliberation control events such as `magi_discussion_gate`, `magi_discussion_round`, `magi_synthesis_complete`
 - live role text emission through `magi_role_text_delta`
 - durable in-progress role replay through `magi_role_text_checkpoint`
 - the final synthesized response handed back to the router
@@ -201,6 +202,9 @@ Important detail:
 
 - `magi_role_text_delta` is visible `position` text emitted from the final parsed role output, not the raw partial JSON produced by the role model
 - `magi_role_text_checkpoint` stores that same visible council text as an absolute replace for reconnect/replay
+- Magi now exposes an explicit `DISCUSSION_GATE` decision before discussion rounds begin so the frontend/debug surfaces can distinguish "discussion skipped because openings aligned with strong grounding" from "discussion forced because openings diverged or grounding was weak / absent / conflicted"
+- Historian grounding quality is part of normal Magi control flow, not just debug annotation
+- Arbiter emits required internal synthesis metadata before the final answer is handed back to the router, but only the natural `final_answer` text is sent down the user-facing assistant message path
 - Magi arbiter streaming also suppresses partial provider text and emits finalized assistant text into the normal `text_delta` path so the frontend can pace it without partial-JSON or tool-round artifacts
 
 ### Provider

@@ -11,6 +11,41 @@ from prompting.magi_prompts import (
     ROLE_REMINDERS,
 )
 
+VALID_CONFIDENCE = {"high", "medium", "low"}
+VALID_GROUNDING_STRENGTH = {"strong", "weak", "absent", "conflicted"}
+VALID_ENVIRONMENT_FIT = {"aligned", "mismatch", "unknown"}
+
+
+def _clean_text(value):
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    return value.strip()
+
+
+def _clean_list(value):
+    if not isinstance(value, list):
+        return []
+    cleaned = []
+    for item in value:
+        text = _clean_text(item)
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
+def _clean_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "1"}:
+            return True
+        if normalized in {"false", "no", "0"}:
+            return False
+    return default
+
 
 class MagiRole:
     role_name = "role"
@@ -51,31 +86,106 @@ USER QUESTION:
             user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text,
         )
 
+    def _derive_branch(self, parsed):
+        branch = _clean_text(parsed.get("branch"))
+        if branch:
+            return branch
+        key_claims = _clean_list(parsed.get("key_claims"))
+        if key_claims:
+            return key_claims[0][:120]
+        best_next_check = _clean_text(parsed.get("best_next_check"))
+        if best_next_check:
+            return best_next_check[:120]
+        position = _clean_text(parsed.get("position"))
+        if not position:
+            return ""
+        return position.splitlines()[0][:120].strip()
+
+    def _normalize_common_fields(self, parsed):
+        confidence = _clean_text(parsed.get("confidence")).lower()
+        if confidence not in VALID_CONFIDENCE:
+            confidence = "medium"
+
+        normalized = {
+            "branch": self._derive_branch(parsed),
+            "position": _clean_text(parsed.get("position")),
+            "confidence": confidence,
+            "key_claims": _clean_list(parsed.get("key_claims")),
+            "best_next_check": _clean_text(parsed.get("best_next_check")),
+            "strongest_objection": _clean_text(parsed.get("strongest_objection")),
+            "missing_decisive_artifact": _clean_text(parsed.get("missing_decisive_artifact")),
+            "missing_evidence": _clean_list(parsed.get("missing_evidence")),
+            "evidence_sources": _clean_list(parsed.get("evidence_sources")),
+        }
+        if not normalized["missing_decisive_artifact"] and normalized["missing_evidence"]:
+            normalized["missing_decisive_artifact"] = normalized["missing_evidence"][0]
+        return normalized
+
+    def _normalize_historian_fields(self, parsed):
+        grounding_strength = _clean_text(parsed.get("grounding_strength")).lower()
+        if grounding_strength not in VALID_GROUNDING_STRENGTH:
+            has_any_grounding = any(
+                (
+                    _clean_list(parsed.get("memory_facts")),
+                    _clean_list(parsed.get("doc_support")),
+                    _clean_list(parsed.get("attempt_history")),
+                    _clean_list(parsed.get("evidence_sources")),
+                )
+            )
+            grounding_strength = "weak" if has_any_grounding else "absent"
+
+        environment_fit = _clean_text(parsed.get("environment_fit")).lower()
+        if environment_fit not in VALID_ENVIRONMENT_FIT:
+            environment_fit = "unknown"
+
+        return {
+            "grounding_strength": grounding_strength,
+            "memory_facts": _clean_list(parsed.get("memory_facts")),
+            "doc_support": _clean_list(parsed.get("doc_support")),
+            "attempt_history": _clean_list(parsed.get("attempt_history")),
+            "environment_fit": environment_fit,
+            "operator_warnings": _clean_list(parsed.get("operator_warnings")),
+        }
+
+    def _normalize_payload(self, parsed):
+        normalized = self._normalize_common_fields(parsed)
+        normalized["new_information"] = _clean_bool(
+            parsed.get("new_information"),
+            default=bool(
+                normalized["position"]
+                or normalized["strongest_objection"]
+                or normalized["best_next_check"]
+                or normalized["missing_decisive_artifact"]
+            ),
+        )
+        normalized["changed_since_opening"] = _clean_bool(
+            parsed.get("changed_since_opening"),
+            default=bool(
+                normalized["position"]
+                or normalized["strongest_objection"]
+                or normalized["best_next_check"]
+            ),
+        )
+        if self.role_name == "historian":
+            normalized.update(self._normalize_historian_fields(parsed))
+        return normalized
+
     def _parse_response(self, raw_text):
         raw_text = (raw_text or "").strip()
         if raw_text.startswith("```"):
             lines = raw_text.split("\n")
             lines = [l for l in lines if not l.strip().startswith("```")]
             raw_text = "\n".join(lines).strip()
+        parsed = None
         try:
             parsed = json.loads(raw_text)
-            if isinstance(parsed, dict) and "position" in parsed:
-                parsed.setdefault("confidence", "medium")
-                parsed.setdefault("key_claims", [])
-                parsed.setdefault("best_next_check", "")
-                parsed.setdefault("missing_evidence", [])
-                parsed.setdefault("evidence_sources", [])
-                return parsed
+            if isinstance(parsed, dict):
+                return self._normalize_payload(parsed)
         except (json.JSONDecodeError, TypeError):
             pass
-        return {
+        return self._normalize_payload({
             "position": raw_text,
-            "confidence": "medium",
-            "key_claims": [],
-            "best_next_check": "",
-            "missing_evidence": [],
-            "evidence_sources": [],
-        }
+        })
 
     def _get_generate_fn(self, event_listener):
         """Use generate_text_stream when a custom listener is provided and the worker supports it."""

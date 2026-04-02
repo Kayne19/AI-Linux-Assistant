@@ -162,6 +162,24 @@ function summarizeGenericEventPayload(event: RunEvent): string {
       return typeof payload.reason === "string" ? payload.reason : "skipped";
     case "chat_name_error":
       return typeof payload.error === "string" ? payload.error : "title error";
+    case "magi_discussion_gate":
+      return [
+        payload.force_discussion === true ? "forced" : "skipped",
+        typeof payload.reason === "string" ? payload.reason : "",
+        typeof payload.grounding_strength === "string" ? `grounding=${payload.grounding_strength}` : "",
+      ].filter(Boolean).join(" • ");
+    case "magi_discussion_round":
+      return [
+        typeof payload.round === "number" ? `round ${payload.round}` : "",
+        Array.isArray(payload.contributors) ? `contributors=${payload.contributors.join(",") || "none"}` : "",
+        payload.early_stop === true ? "early stop" : "",
+      ].filter(Boolean).join(" • ");
+    case "magi_synthesis_complete":
+      return [
+        typeof payload.decision_mode === "string" ? payload.decision_mode : "",
+        typeof payload.uncertainty_level === "string" ? `uncertainty=${payload.uncertainty_level}` : "",
+        typeof payload.winning_branch === "string" && payload.winning_branch ? payload.winning_branch : "",
+      ].filter(Boolean).join(" • ");
     default:
       return event.payload ? JSON.stringify(event.payload).slice(0, 220) : "";
   }

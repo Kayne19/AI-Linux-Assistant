@@ -323,18 +323,19 @@ Instead of a single responder, Magi runs a bounded deliberation protocol with fo
 | **Historian** | Ground truth — retrieves project memory, prior actions, documentation |
 | **Arbiter** | Synthesizer — reads the full deliberation transcript, produces the final user-facing response |
 
-Role models are configured through `AppSettings`; `full` and `lite` use different role defaults. All roles have the same tool surface as the standard responder (RAG search, memory tools when available, history search, and provider-native web search when the worker supports it).
+Role models are configured through `AppSettings`; `full` and `lite` use different role defaults but follow the same protocol. Eager, Skeptic, and Historian use the normal responder tool surface. The Arbiter is synthesis-only and does not reopen tool or retrieval work.
 
 **Protocol:**
 
-1. **Opening Arguments** — Eager → Skeptic → Historian each produce a structured position (JSON with `position`, `confidence`, `key_claims`)
-2. **Discussion** (bounded, up to `magi_max_discussion_rounds` or `magi_lite_max_discussion_rounds`) — Each role responds only if adding new information. Early-stops when no role contributes new info.
-3. **Closing Arguments** — Eager → Skeptic → Historian produce a final position after discussion.
-4. **Arbiter Synthesis** — Reads the full transcript + original context and produces the final user-facing response.
+1. **Opening Arguments** — Eager → Skeptic → Historian each produce a structured position. Historian also reports grounding quality explicitly as `strong`, `weak`, `absent`, or `conflicted`.
+2. **Discussion Gate** — The Magi system evaluates whether discussion is required. Aligned openings with strong grounding may skip discussion. Materially divergent openings or weak / absent / conflicted grounding force at least one discussion round.
+3. **Discussion** (bounded, up to `magi_max_discussion_rounds` or `magi_lite_max_discussion_rounds`) — Roles are expected to contribute only delta-value updates. Early-stop is allowed only after the forced first discussion round has run.
+4. **Closing Arguments** — Eager → Skeptic → Historian produce concise final stance updates after discussion.
+5. **Arbiter Synthesis** — Reads the full transcript + original context, emits required internal synthesis metadata, and produces the final user-facing response.
 
-**FSM:** `MagiState` is explicit and traceable. The router appends `MAGI_`-prefixed trace markers via `_handle_magi_state`. Current states include `OPENING_ARGUMENTS`, `ROLE_EAGER`, `ROLE_SKEPTIC`, `ROLE_HISTORIAN`, `DISCUSSION`, `DISCUSSION_EAGER`, `DISCUSSION_SKEPTIC`, `DISCUSSION_HISTORIAN`, `CLOSING_ARGUMENTS`, `CLOSING_EAGER`, `CLOSING_SKEPTIC`, `CLOSING_HISTORIAN`, `ARBITER`, `COMPLETE`, `ERROR`.
+**FSM:** `MagiState` is explicit and traceable. The router appends `MAGI_`-prefixed trace markers via `_handle_magi_state`. Current states include `OPENING_ARGUMENTS`, `ROLE_EAGER`, `ROLE_SKEPTIC`, `ROLE_HISTORIAN`, `DISCUSSION_GATE`, `DISCUSSION`, `DISCUSSION_EAGER`, `DISCUSSION_SKEPTIC`, `DISCUSSION_HISTORIAN`, `CLOSING_ARGUMENTS`, `CLOSING_EAGER`, `CLOSING_SKEPTIC`, `CLOSING_HISTORIAN`, `ARBITER`, `COMPLETE`, `ERROR`.
 
-**Streaming:** Each role emits lifecycle events (`magi_phase`, `magi_role_start`, `magi_role_complete`) and live text deltas (`magi_role_text_delta`) so the frontend can render the council in real time. The Arbiter's final response streams through the normal text-delta channel.
+**Streaming:** Each role emits lifecycle events (`magi_phase`, `magi_role_start`, `magi_role_complete`) and live text deltas (`magi_role_text_delta`) so the frontend can render the council in real time. The Magi system also emits explicit gating / round-summary / synthesis events (`magi_discussion_gate`, `magi_discussion_round`, `magi_synthesis_complete`). The Arbiter's final response streams through the normal text-delta channel.
 
 **Router integration:** The `MagiSystem` is lazily constructed on first Magi turn and cached. It plugs into `_generate_response` as an alternative to `self.responder` — no new router states needed.
 

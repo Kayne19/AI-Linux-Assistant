@@ -229,6 +229,12 @@ Example:
 
 - suggesting ordinary Debian host steps when the remembered project context says the machine is actually a Proxmox host
 
+Magi note:
+
+- the Historian role uses the same project-scoped memory surface as the main responder
+- `memory is silent` is a valid Historian grounding outcome, not a malformed response
+- weak, absent, or conflicted memory grounding should remain visible to the router-owned Magi protocol because those outcomes can force a discussion round instead of allowing premature convergence
+
 ## Retrieval vs Memory
 
 These are different responsibilities.

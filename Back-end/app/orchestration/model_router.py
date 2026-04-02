@@ -441,7 +441,7 @@ class ModelRouter:
         )
         arbiter = MagiArbiter(
             worker=self._build_worker(None, self.settings.magi_arbiter),
-            tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
+            tools=[], tool_handler=None, max_tool_rounds=0,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
         )
@@ -480,7 +480,7 @@ class ModelRouter:
         )
         arbiter = MagiArbiter(
             worker=self._build_worker(None, self.settings.magi_lite_arbiter),
-            tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
+            tools=[], tool_handler=None, max_tool_rounds=0,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
         )

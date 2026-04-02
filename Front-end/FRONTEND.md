@@ -126,6 +126,8 @@ Owns mapping backend state/event codes into human-facing labels and aliases.
 
 This is where product voice for streaming statuses belongs.
 
+It also carries the lightweight status wording for Magi sub-states such as the explicit `DISCUSSION_GATE` checkpoint before discussion begins.
+
 ### `src/styles.css`
 
 Owns the current app layout and visual treatment.
@@ -140,6 +142,7 @@ Owns the dev/admin debug drawer:
 - live SSE attach/reconnect for active runs
 - client-side event tab filtering
 - grouped execution detail for responder, Magi, provider, tool, retrieval, memory, and naming events beneath top-level router states
+- rendering explicit Magi gating / round-summary / synthesis events without recreating council policy in React
 
 ## Application Model
 

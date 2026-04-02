@@ -253,6 +253,13 @@ const STREAM_STATUS_TEXT: Record<string, StatusEntry> = {
       "Consulting past experience",
     ],
   },
+  "magi:DISCUSSION_GATE": {
+    label: "Checking whether debate is needed",
+    aliases: [
+      "Checking whether debate is needed",
+      "Deciding whether to push deeper",
+    ],
+  },
   "magi:DISCUSSION": {
     label: "Agents are discussing",
     aliases: [

@@ -3,10 +3,13 @@ OUTPUT FORMAT (mandatory):
 Respond with valid JSON only. No markdown fences, no prose outside the JSON.
 
 {
+  "branch": "Short name for your current leading branch or stance.",
   "position": "Your argument in 2-4 concise paragraphs.",
   "confidence": "high | medium | low",
   "key_claims": ["claim 1", "claim 2", "..."],
   "best_next_check": "single best discriminating next check, or empty string",
+  "strongest_objection": "single strongest unresolved objection against your branch, or empty string",
+  "missing_decisive_artifact": "single artifact that would most decisively confirm or reject your branch, or empty string",
   "missing_evidence": ["specific missing artifact 1", "specific missing artifact 2"],
   "evidence_sources": ["memory: ...", "docs: ...", "history: ..."]
 }
@@ -105,12 +108,23 @@ CONSTRAINTS:
 - You are part of a bounded deliberation. An Eager agent proposes, a Skeptic challenges. You provide ground truth.
 - Prefer concrete evidence over elegant reasoning.
 - If memory, history, or docs are silent on an important point, say they are silent instead of inferring.
+- Treat weak, absent, or conflicted grounding as valid outcomes. Report them plainly instead of forcing confidence.
 - Check whether the proposed branch fits the remembered environment, not just whether it is technically possible in the abstract.
 - Name the most relevant evidence source plainly so the arbiter can synthesize from it.
 - Only in strategic / planning mode: verify the few facts that actually change the recommendation. Do not inflate the answer with low-impact verification work.
 - In troubleshooting / debugging mode: prefer logs, exact errors, prior attempts, environment facts, and doc-supported checks over general architecture talk.
 
 {MAGI_ROLE_OUTPUT_FORMAT}
+
+Additional Historian fields (required for Historian):
+{{
+  "grounding_strength": "strong | weak | absent | conflicted",
+  "memory_facts": ["fact 1", "fact 2"],
+  "doc_support": ["doc-backed support 1", "docs are silent"],
+  "attempt_history": ["attempt 1", "attempt history is weak"],
+  "environment_fit": "aligned | mismatch | unknown",
+  "operator_warnings": ["warning 1", "warning 2"]
+}}
 """.strip()
 
 MAGI_DISCUSSION_PROMPT_TEMPLATE = """
@@ -143,6 +157,7 @@ RULES:
   {{"position": "", "new_information": false}}
 - Do not repeat yourself. Do not agree just to agree.
 - Stay in your role. {role_reminder}
+- Treat this round as delta-only. Add only a new contradiction, a changed branch, stronger grounding, or a sharper decisive next check.
 - Prefer concrete contradictions, newly surfaced evidence, or a more discriminating next check over repetition.
 - If you cite docs, memory, or history, name them in `evidence_sources`.
 - Respect project-scoped environment facts and prior failed attempts.
@@ -151,10 +166,13 @@ RULES:
 
 OUTPUT FORMAT (mandatory JSON):
 {{
+  "branch": "Short name for your current branch or updated stance.",
   "position": "Your new argument or updated position (empty string if nothing to add).",
   "confidence": "high | medium | low",
   "key_claims": ["claim 1", "claim 2"],
   "best_next_check": "single best discriminating next check, or empty string",
+  "strongest_objection": "single strongest unresolved objection against your branch, or empty string",
+  "missing_decisive_artifact": "single artifact that would most decisively confirm or reject your branch, or empty string",
   "missing_evidence": ["specific missing artifact"],
   "evidence_sources": ["memory: ...", "docs: ...", "history: ..."],
   "new_information": true | false
@@ -172,7 +190,7 @@ Rules:
 - Do not use tools. All evidence has already been gathered.
 - Do not introduce new hypotheses or pivot to new directions.
 - Commit to your best current conclusion based on everything seen.
-- Be concise — 1-2 paragraphs maximum.
+- Be concise. This is a final stance update, not a mini-essay.
 
 USER QUESTION:
 {user_query}
@@ -182,9 +200,13 @@ FULL DELIBERATION TRANSCRIPT:
 
 Respond with JSON only:
 {{
-  "position": "Your final committed position (1-2 paragraphs).",
+  "branch": "Short name for your final branch or stance.",
+  "position": "Your final committed position in 2-5 sentences.",
   "confidence": "high | medium | low",
-  "key_claims": ["final claim 1", "final claim 2"]
+  "key_claims": ["final claim 1", "final claim 2"],
+  "changed_since_opening": true | false,
+  "strongest_objection": "single strongest surviving objection or caveat, or empty string",
+  "missing_decisive_artifact": "single artifact that would most decisively confirm or reject your final stance, or empty string"
 }}
 """
 
@@ -202,13 +224,22 @@ DELIBERATION TRANSCRIPT:
 YOUR JOB:
 1. Read the full deliberation above.
 2. Identify the diagnosis with the strongest evidence support. Do not average the agents together mechanically.
-3. Produce a final response to the user that:
+3. Produce required internal synthesis metadata plus a final response to the user.
+4. The internal synthesis metadata must always include:
+   - `decision_mode`: `consensus` or `best_current_branch`
+   - `uncertainty_level`: `high | medium | low`
+   - `winning_branch`
+   - `strongest_surviving_objection`
+   - `missing_decisive_artifact`
+   - `evidence_sources`
+   - `final_answer`
+5. The `final_answer` must:
    - States the most supported diagnosis or leading branch clearly.
    - Recommends the single best next discriminating action, grounded in evidence from the deliberation.
    - Explicitly respects remembered project environment facts, prior attempts, and known constraints.
    - Cites sources from the deliberation where relevant (docs, memory, prior attempts).
    - If significant uncertainty remains after deliberation, asks for the single most decisive missing artifact rather than guessing or giving a broad fix list.
-4. Follow all the rules from your base system prompt regarding citations, evidence hierarchy, and response style.
+6. Follow all the rules from your base system prompt regarding citations, evidence hierarchy, and response style.
 
 ADDITIONAL RULES:
 - Use the same high-level mode distinction as the main assistant:
@@ -228,6 +259,19 @@ ADDITIONAL RULES:
 - Do not over-compress the final answer just because the debate was long. The response length should fit the task.
 - For strategic / planning questions, it is acceptable to give a fuller answer with a recommended architecture or path, a short rationale, concrete next steps, and the key assumptions.
 - For troubleshooting / debugging questions, stay concise but include enough explanation for the user to understand why the proposed next check matters.
+- The internal metadata is required even if the user-facing answer is short.
+- Express uncertainty and surviving objections in normal prose when they materially affect the recommendation. Do not silently smooth them away.
+
+Respond with valid JSON only:
+{{
+  "decision_mode": "consensus | best_current_branch",
+  "uncertainty_level": "high | medium | low",
+  "winning_branch": "short name for the selected branch",
+  "strongest_surviving_objection": "single strongest unresolved objection, or empty string",
+  "missing_decisive_artifact": "single artifact that would most decisively confirm or reject the selected branch, or empty string",
+  "evidence_sources": ["memory: ...", "docs: ...", "history: ..."],
+  "final_answer": "Natural user-facing answer with no mention of the deliberation or internal roles."
+}}
 
 Do NOT mention the deliberation, the agents, or the Magi system to the user. The user should receive a natural, well-grounded response as if from a single expert.
 """.strip()
