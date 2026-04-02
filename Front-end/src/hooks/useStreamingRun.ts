@@ -25,6 +25,7 @@ type CouncilController = {
   handleMagiRoleTextDelta: (chatId: string, payload: Record<string, unknown>) => void;
   handleMagiRoleTextCheckpoint: (chatId: string, payload: Record<string, unknown>) => void;
   handleMagiRoleComplete: (chatId: string, payload: Record<string, unknown>) => void;
+  handleMagiInterventionAdded: (chatId: string, payload: Record<string, unknown>, seq?: number) => void;
   hasPendingCouncilWork: (chatId: string) => boolean;
 };
 
@@ -134,6 +135,62 @@ export function useStreamingRun({
 
   function updateRunUiStreamStatus(chatId: string, nextStreamStatus: StreamStatusEvent) {
     setRunUiForChat(chatId, (current) => (current ? { ...current, streamStatus: nextStreamStatus } : current));
+  }
+
+  function handlePausedRun(chatId: string, run: ChatRun, message: string) {
+    streamingActiveRef.current[chatId] = false;
+    updateChatRunStatusRef.current(chatId, run.id, "paused");
+    updateRunUiStreamStatus(chatId, {
+      source: "event",
+      code: "paused",
+      payload: message ? { message } : undefined,
+    });
+  }
+
+  async function handlePauseActiveRun(): Promise<boolean> {
+    const runId = selectedChat?.active_run_id || selectedRunUi?.runId;
+    if (!runId || !selectedChatId) {
+      return false;
+    }
+
+    try {
+      const run = await api.pauseRun(runId);
+      updateChatRunStatusRef.current(selectedChatId, run.id, run.status);
+      updateRunUiStreamStatus(selectedChatId, {
+        source: "event",
+        code: run.status === "pause_requested" ? "pause_requested" : "paused",
+        payload: { run_id: run.id, status: run.status },
+      });
+      return true;
+    } catch (err) {
+      onErrorRef.current((err as Error).message);
+      return false;
+    }
+  }
+
+  async function handleResumeActiveRun(
+    inputText = "",
+    inputKind?: "fact" | "correction" | "constraint" | "goal_clarification",
+  ): Promise<boolean> {
+    const runId = selectedChat?.active_run_id || selectedRunUi?.runId;
+    if (!runId || !selectedChatId) {
+      return false;
+    }
+
+    try {
+      const run = await api.resumeRun(runId, {
+        inputText,
+        inputKind,
+      });
+      updateChatRunStatusRef.current(selectedChatId, run.id, run.status);
+      if (!streamControllersRef.current[selectedChatId]) {
+        await attachRunStream(selectedChatId, run);
+      }
+      return true;
+    } catch (err) {
+      onErrorRef.current((err as Error).message);
+      return false;
+    }
   }
 
   function scheduleAutoNameRefreshes(projectId: string) {
@@ -283,6 +340,11 @@ export function useStreamingRun({
       await streamRunSession(
         run.id,
         {
+          onRunEvent: (event) => {
+            if (event.type === "event" && event.code === "magi_intervention_added") {
+              council.handleMagiInterventionAdded(chatId, { ...(event.payload || {}), seq: event.seq }, event.seq);
+            }
+          },
           onSequence: (seq) =>
             setRunUiForChat(chatId, (current) =>
               current ? { ...current, lastSeenSeq: Math.max(current.lastSeenSeq, seq) } : current,
@@ -309,6 +371,9 @@ export function useStreamingRun({
             if (code === "magi_role_complete" && payload) {
               council.handleMagiRoleComplete(chatId, payload);
             }
+          },
+          onPaused: (event) => {
+            handlePausedRun(chatId, run, event.message);
           },
           onMagiRoleTextCheckpoint: (payload) => {
             council.handleMagiRoleTextCheckpoint(chatId, payload);
@@ -494,6 +559,8 @@ export function useStreamingRun({
     attachRunStream,
     clearRunUi,
     handleCancelActiveRun,
+    handlePauseActiveRun,
+    handleResumeActiveRun,
     setRunUiForChat,
     resetAll,
   };

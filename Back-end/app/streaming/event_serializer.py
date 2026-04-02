@@ -25,4 +25,12 @@ def serialize_run_event(seq, event_type, code, payload_json, created_at=None):
             "message": payload.get("message", "Run cancelled."),
             "created_at": created_at_value,
         }
+    if event_type == "paused":
+        return {
+            "type": "paused",
+            "seq": seq,
+            "message": payload.get("message", "Run paused."),
+            "created_at": created_at_value,
+            "payload": payload,
+        }
     return {"type": event_type, "seq": seq, "code": code, "payload": payload, "created_at": created_at_value}

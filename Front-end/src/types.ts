@@ -29,6 +29,8 @@ export type CouncilEntry = {
   phase: string;
   round?: number | null;
   text: string;
+  entry_kind?: "role" | "user_intervention" | string;
+  input_kind?: "fact" | "correction" | "constraint" | "goal_clarification" | string;
 };
 
 export type UICouncilEntry = {
@@ -40,6 +42,8 @@ export type UICouncilEntry = {
   complete: boolean;
   streamBuffer?: string;
   streamPreview?: string;
+  entryKind?: "role" | "user_intervention" | string;
+  inputKind?: "fact" | "correction" | "constraint" | "goal_clarification" | string;
 };
 
 export type ChatRunUIState = {
@@ -178,7 +182,15 @@ export type RunCancelledEvent = {
   created_at: string;
 };
 
-export type RunEvent = RunStateEvent | RunGenericEvent | RunDoneEvent | RunErrorEvent | RunCancelledEvent;
+export type RunPausedEvent = {
+  type: "paused";
+  seq: number;
+  message: string;
+  created_at: string;
+  payload?: Record<string, unknown>;
+};
+
+export type RunEvent = RunStateEvent | RunGenericEvent | RunDoneEvent | RunErrorEvent | RunCancelledEvent | RunPausedEvent;
 
 export type BootstrapResponse = {
   user: User;

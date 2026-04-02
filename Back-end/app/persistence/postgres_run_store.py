@@ -16,10 +16,16 @@ except ImportError:  # pragma: no cover - optional until SQLAlchemy is installed
 from persistence.postgres_models import ChatMessage, ChatRun, ChatRunEvent, ChatSession, User
 
 
-ACTIVE_RUN_STATUSES = {"queued", "running", "cancel_requested"}
+ACTIVE_RUN_STATUSES = {"queued", "running", "cancel_requested", "pause_requested", "paused"}
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 MESSAGE_RUN_KIND = "message"
 AUTO_NAME_RUN_KIND = "auto_name"
+DISCUSSION_PAUSEABLE_MAGI_STATES = {
+    "DISCUSSION",
+    "DISCUSSION_EAGER",
+    "DISCUSSION_SKEPTIC",
+    "DISCUSSION_HISTORIAN",
+}
 
 
 def _utc_now():
@@ -104,6 +110,10 @@ class PostgresRunStore:
             if "run_kind" not in chat_run_columns:
                 connection.exec_driver_sql(
                     "ALTER TABLE chat_runs ADD COLUMN run_kind VARCHAR(32) NOT NULL DEFAULT 'message'"
+                )
+            if "pause_state_json" not in chat_run_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE chat_runs ADD COLUMN pause_state_json JSON NULL"
                 )
         if hasattr(inspector, "clear_cache"):
             inspector.clear_cache()
@@ -333,6 +343,8 @@ class PostgresRunStore:
                     run.partial_assistant_text = (run.partial_assistant_text or "") + delta
             elif event_type == "error":
                 run.error_message = str((payload or {}).get("message", "") or "")
+            elif event_type == "paused":
+                run.pause_state_json = payload.get("pause_state") if isinstance(payload, dict) else None
 
             event = ChatRunEvent(
                 run_id=run_id,
@@ -366,6 +378,8 @@ class PostgresRunStore:
                     run.partial_assistant_text = (run.partial_assistant_text or "") + delta
             elif event_type == "error":
                 run.error_message = str((payload or {}).get("message", "") or "")
+            elif event_type == "paused":
+                run.pause_state_json = payload.get("pause_state") if isinstance(payload, dict) else None
 
             event = ChatRunEvent(
                 run_id=run_id,
@@ -502,7 +516,7 @@ class PostgresRunStore:
                     or_(
                         ChatRun.status == "queued",
                         and_(
-                            ChatRun.status.in_({"running", "cancel_requested"}),
+                            ChatRun.status.in_({"running", "cancel_requested", "pause_requested"}),
                             ChatRun.lease_expires_at.is_not(None),
                             ChatRun.lease_expires_at <= now,
                         ),
@@ -562,7 +576,7 @@ class PostgresRunStore:
             if run.status in TERMINAL_RUN_STATUSES:
                 session.commit()
                 return run
-            if run.status not in {"running", "cancel_requested"}:
+            if run.status not in {"running", "cancel_requested", "pause_requested"}:
                 raise RunStateConflictError(
                     f"Run '{run_id}' is '{run.status}' and cannot be marked cancel_requested for worker handling."
                 )
@@ -571,6 +585,39 @@ class PostgresRunStore:
             session.commit()
             session.refresh(run)
             return run
+
+    def request_pause(self, run_id):
+        with self._session() as session:
+            run = self._load_run_for_update(session, run_id)
+            if run.status in TERMINAL_RUN_STATUSES:
+                session.commit()
+                return run
+            if run.status in {"pause_requested", "paused"}:
+                session.commit()
+                session.refresh(run)
+                return run
+            if run.status != "running":
+                raise RunStateConflictError(
+                    f"Run '{run_id}' is '{run.status}' and cannot be paused."
+                )
+            run.status = "pause_requested"
+            next_seq = int(run.latest_event_seq or 0) + 1
+            run.latest_event_seq = next_seq
+            payload = {"message": "Pause requested."}
+            event = ChatRunEvent(
+                run_id=run_id,
+                seq=next_seq,
+                type="event",
+                code="magi_pause_requested",
+                payload_json=payload,
+            )
+            session.add(event)
+            session.flush()
+            created_at = event.created_at
+            session.commit()
+            session.refresh(run)
+        self._publish(run_id, next_seq, "event", "magi_pause_requested", payload, created_at=created_at)
+        return run
 
     def cancel_queued_run(self, run_id, *, error_message="Run cancelled.", event_payload=None):
         created_at = None
@@ -584,6 +631,7 @@ class PostgresRunStore:
                     f"Run '{run_id}' is '{run.status}' and cannot be terminalized as a queued cancellation."
                 )
             run.status = "cancelled"
+            run.pause_state_json = None
             run.cancel_requested = True
             run.error_message = error_message or ""
             run.finished_at = _utc_now()
@@ -616,6 +664,133 @@ class PostgresRunStore:
                 raise RunNotFoundError(f"Unknown run '{run_id}'")
             return bool(run.cancel_requested)
 
+    def is_pause_requested(self, run_id):
+        with self._session() as session:
+            run = session.scalar(select(ChatRun).where(ChatRun.id == run_id))
+            if run is None:
+                raise RunNotFoundError(f"Unknown run '{run_id}'")
+            return (run.status or "") == "pause_requested"
+
+    def get_latest_event_by_code(self, run_id, code):
+        with self._session() as session:
+            return session.scalar(
+                select(ChatRunEvent)
+                .where(
+                    ChatRunEvent.run_id == run_id,
+                    ChatRunEvent.code == (code or ""),
+                )
+                .order_by(ChatRunEvent.seq.desc())
+                .limit(1)
+            )
+
+    def mark_paused(self, run_id, *, worker_id, pause_state=None, event_payload=None):
+        created_at = None
+        with self._session() as session:
+            run = self._load_run_for_update(
+                session,
+                run_id,
+                worker_id=worker_id,
+                require_active_owner=bool(worker_id),
+            )
+            if run.status == "completed":
+                session.commit()
+                return run
+            run.status = "paused"
+            run.pause_state_json = dict(pause_state or {})
+            run.lease_expires_at = None
+            run.worker_id = ""
+            next_seq = int(run.latest_event_seq or 0) + 1
+            run.latest_event_seq = next_seq
+            payload = dict(event_payload or {})
+            if run.pause_state_json and "pause_state" not in payload:
+                payload["pause_state"] = run.pause_state_json
+            if "message" not in payload:
+                payload["message"] = "Run paused."
+            event = ChatRunEvent(
+                run_id=run_id,
+                seq=next_seq,
+                type="paused",
+                code="paused",
+                payload_json=payload,
+            )
+            session.add(event)
+            session.flush()
+            created_at = event.created_at
+            session.commit()
+            session.refresh(run)
+        self._publish(run_id, next_seq, "paused", "paused", payload, created_at=created_at)
+        return run
+
+    def resume_paused_run(self, run_id, *, input_text="", input_kind="fact"):
+        intervention_text = str(input_text or "").strip()
+        normalized_kind = str(input_kind or "fact").strip() or "fact"
+        publish_rows = []
+        with self._session() as session:
+            run = self._load_run_for_update(session, run_id)
+            if run.status != "paused":
+                raise RunStateConflictError(
+                    f"Run '{run_id}' is '{run.status}' and cannot be resumed."
+                )
+            pause_state = dict(run.pause_state_json or {})
+            interventions = list(pause_state.get("interventions") or [])
+            if intervention_text:
+                checkpoint = dict(pause_state.get("resume_checkpoint") or {})
+                intervention = {
+                    "entry_kind": "user_intervention",
+                    "role": "user",
+                    "phase": "discussion",
+                    "round": checkpoint.get("round"),
+                    "after_role_count": int(checkpoint.get("after_role_count", 0) or 0),
+                    "input_kind": normalized_kind,
+                    "text": intervention_text,
+                }
+                interventions.append(intervention)
+                pause_state["interventions"] = interventions
+                next_seq = int(run.latest_event_seq or 0) + 1
+                run.latest_event_seq = next_seq
+                event = ChatRunEvent(
+                    run_id=run_id,
+                    seq=next_seq,
+                    type="event",
+                    code="magi_intervention_added",
+                    payload_json=intervention,
+                )
+                session.add(event)
+                session.flush()
+                publish_rows.append((next_seq, "event", "magi_intervention_added", intervention, event.created_at))
+            run.pause_state_json = pause_state or None
+            run.status = "queued"
+            run.worker_id = ""
+            run.lease_expires_at = None
+            next_seq = int(run.latest_event_seq or 0) + 1
+            run.latest_event_seq = next_seq
+            resumed_payload = {
+                "message": "Run resumed.",
+                "has_input": bool(intervention_text),
+                "input_kind": normalized_kind if intervention_text else "",
+            }
+            resumed_event = ChatRunEvent(
+                run_id=run_id,
+                seq=next_seq,
+                type="event",
+                code="magi_resumed",
+                payload_json=resumed_payload,
+            )
+            session.add(resumed_event)
+            session.flush()
+            publish_rows.append((next_seq, "event", "magi_resumed", resumed_payload, resumed_event.created_at))
+            session.commit()
+            session.refresh(run)
+        for next_seq, event_type, code, payload, created_at in publish_rows:
+            self._publish(run_id, next_seq, event_type, code, payload, created_at=created_at)
+        if self._redis_client is not None:
+            try:
+                from streaming.redis_events import publish_wakeup
+                publish_wakeup(self._redis_client)
+            except Exception:
+                pass
+        return run
+
     def mark_failed(self, run_id, *, worker_id="", error_message="", event_payload=None):
         created_at = None
         with self._session() as session:
@@ -629,6 +804,7 @@ class PostgresRunStore:
                 session.commit()
                 return run
             run.status = "failed"
+            run.pause_state_json = None
             run.error_message = error_message or ""
             if worker_id:
                 run.worker_id = worker_id
@@ -665,6 +841,7 @@ class PostgresRunStore:
                 session.commit()
                 return run
             run.status = "cancelled"
+            run.pause_state_json = None
             run.cancel_requested = True
             run.error_message = error_message or ""
             if worker_id:
@@ -761,6 +938,7 @@ class PostgresRunStore:
 
             chat_session.updated_at = _utc_now()
             run.status = "completed"
+            run.pause_state_json = None
             run.finished_at = _utc_now()
             run.lease_expires_at = None
             run.worker_id = worker_id or run.worker_id
@@ -814,6 +992,7 @@ class PostgresRunStore:
                 require_active_owner=bool(worker_id),
             )
             run.status = "completed"
+            run.pause_state_json = None
             run.finished_at = _utc_now()
             run.lease_expires_at = None
             run.worker_id = worker_id or run.worker_id

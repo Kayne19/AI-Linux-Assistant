@@ -2,7 +2,7 @@ import { Fragment, ReactNode } from "react";
 
 function renderInline(text: string): ReactNode[] {
   const parts: ReactNode[] = [];
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[([^\]]+)\]\(([^)]+)\))/g;
+  const pattern = /(\*\*[^*]+\*\*|\*[^*\n]+\*|_[^_\n]+_|`[^`]+`|\[([^\]]+)\]\(([^)]+)\))/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let key = 0;
@@ -15,6 +15,11 @@ function renderInline(text: string): ReactNode[] {
     const token = match[0];
     if (token.startsWith("**") && token.endsWith("**")) {
       parts.push(<strong key={`strong-${key++}`}>{token.slice(2, -2)}</strong>);
+    } else if (
+      ((token.startsWith("*") && token.endsWith("*")) || (token.startsWith("_") && token.endsWith("_"))) &&
+      token.length >= 3
+    ) {
+      parts.push(<em key={`em-${key++}`}>{token.slice(1, -1)}</em>);
     } else if (token.startsWith("`") && token.endsWith("`")) {
       parts.push(<code key={`code-${key++}`}>{token.slice(1, -1)}</code>);
     } else if (token.startsWith("[")) {

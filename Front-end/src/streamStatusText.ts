@@ -320,6 +320,27 @@ const STREAM_STATUS_TEXT: Record<string, StatusEntry> = {
       "Writing final answer",
     ],
   },
+  paused: {
+    label: "Paused",
+    aliases: [
+      "Waiting for your input",
+      "Holding for intervention",
+    ],
+  },
+  pause_requested: {
+    label: "Pausing",
+    aliases: [
+      "Stopping at a safe point",
+      "Finishing the current checkpoint",
+    ],
+  },
+  magi_intervention_added: {
+    label: "User input added",
+    aliases: [
+      "Incorporating your input",
+      "Updating the discussion",
+    ],
+  },
   "magi:default": {
     label: "Deliberating",
     aliases: [

@@ -79,6 +79,8 @@ Compatibility wrappers over the durable run system.
 - `GET /runs/{run_id}`
 - `GET /runs/{run_id}/events`
 - `GET /runs/{run_id}/events/stream`
+- `POST /runs/{run_id}/pause`
+- `POST /runs/{run_id}/resume`
 - `POST /runs/{run_id}/cancel`
 - `POST /runs/{run_id}/fail`
 - `POST /runs/{run_id}/requeue`
@@ -88,6 +90,11 @@ Current request body:
 - `content: str`
 - `magi: "off" | "lite" | "full"` (defaults to `"off"`)
 - `client_request_id: str` for idempotent create-run semantics
+
+Resume request body:
+
+- `input_text: str = ""`
+- `input_kind: "fact" | "correction" | "constraint" | "goal_clarification" = "fact"`
 
 `GET /chats/{chat_session_id}/runs` is the chat-scoped run history endpoint used by the dev/admin debug drawer.
 
@@ -195,12 +202,14 @@ These are defined in [app/api.py](app/api.py).
 Current notable fields:
 
 - `ChatMessageResponse.council_entries` carries persisted Magi deliberation entries when present.
+- persisted council entries may now include `entry_kind="user_intervention"` plus `input_kind` for paused-run user intervention rows
 - `AssistantDebugResponse` includes `state_trace`, `tool_events`, `retrieval_query`, and `retrieved_sources`.
 - `ChatSessionResponse.active_run_id` / `active_run_status` expose only user-visible active `message` runs, not internal follow-up runs like `auto_name`.
 - `ChatRunResponse.run_kind` distinguishes normal `message` runs from internal follow-up runs such as `auto_name`.
 - `ChatRunResponse.latest_*` fields are snapshot conveniences; `chat_run_events` remains the replay source of truth.
 - Run-event payloads returned by `/runs/{run_id}/events` and `/runs/{run_id}/events/stream` include durable `created_at` timestamps so the frontend can compute timing diagnostics from backend event time.
 - `GET /runs/{run_id}/events` supports `after_seq` plus `limit`, and serialized run events include `created_at` for operator/debug timing inspection.
+- non-terminal stream-stop replay now also includes `type="paused"` for MAGI runs that paused at a safe checkpoint
 
 ## Important Rules
 
@@ -211,6 +220,7 @@ Current notable fields:
 5. Run creation must be idempotent when the same `client_request_id` is retried for the same chat.
 6. Concurrency policy belongs in the durable run system, not in ad hoc API threads.
 7. Cancel policy selection is explicit in the control plane: queued runs are terminalized immediately, running runs are marked `cancel_requested`.
+8. Paused MAGI intervention is run-scoped control data, not a normal chat-thread user message.
 
 ## Files To Read First
 

@@ -5,6 +5,13 @@ class RunCancelledError(RuntimeError):
     pass
 
 
+class RunPausedError(RuntimeError):
+    def __init__(self, message="Run paused.", pause_state=None, payload=None):
+        super().__init__(message)
+        self.pause_state = pause_state or {}
+        self.payload = payload or {}
+
+
 def invoke_cancel_check(cancel_check, checkpoint):
     if cancel_check is None:
         return

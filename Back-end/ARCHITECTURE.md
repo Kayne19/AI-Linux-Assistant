@@ -51,6 +51,7 @@ It owns:
 - idempotent create-run semantics
 - one-active-run-per-chat enforcement
 - configurable per-user active-run caps
+- pause/resume control for in-flight MAGI discussion runs
 - claimability
 - durable event persistence
 
@@ -59,6 +60,12 @@ Workers do not become a second orchestrator.
 They claim eligible runs, execute the router FSM, heartbeat leases, and publish durable events.
 
 The router still owns the workflow of the turn that is running inside that worker.
+
+Paused MAGI rule:
+
+- pause/resume is durable run control, not a second chat turn
+- a paused run keeps the same `run_id`
+- user intervention during pause is stored as run-scoped MAGI control data/events, then reintroduced into the same router-owned deliberation
 
 ### 2. Important Work Must Be Visible
 
@@ -184,6 +191,7 @@ This applies to:
 - web search
 - system-profile lookup
 - conversation-history search
+- paused MAGI intervention and resume events
 
 The goal is not only capability. The goal is auditable capability.
 

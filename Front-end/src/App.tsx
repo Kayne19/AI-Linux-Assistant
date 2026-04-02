@@ -94,6 +94,9 @@ export default function App() {
     runUiCouncilEntriesUpdaterRef,
     runUiStreamStatusUpdaterRef,
   });
+  const selectedChatRunStatus = chats.selectedChat?.active_run_status || "";
+  const composerLocked =
+    streaming.selectedChatBusy || selectedChatRunStatus === "pause_requested" || selectedChatRunStatus === "paused";
   const scroll = useScrollManager({
     selectedChatId: chats.selectedChatId,
     messages: messages.messages,
@@ -146,6 +149,26 @@ export default function App() {
 
   const liveStatusKey = getStreamStatusKey(streaming.streamStatus);
   const liveStatusAliases = getStreamStatusAliases(streaming.streamStatus);
+  const canPauseCouncilRun = (() => {
+    if (selectedChatRunStatus !== "running") {
+      return false;
+    }
+    const statusEvent = streaming.streamStatus;
+    if (!statusEvent || statusEvent.source !== "event") {
+      return false;
+    }
+    const payload = statusEvent.payload || {};
+    if (statusEvent.code === "magi_state") {
+      return String(payload.state || "").startsWith("DISCUSSION");
+    }
+    if (statusEvent.code === "magi_phase") {
+      return String(payload.phase || "") === "discussion";
+    }
+    if (statusEvent.code === "magi_role_start" || statusEvent.code === "magi_role_complete") {
+      return String(payload.phase || "") === "discussion";
+    }
+    return statusEvent.code === "magi_discussion_round";
+  })();
 
   useEffect(() => {
     setStatusAliasIndex(0);
@@ -230,7 +253,7 @@ export default function App() {
 
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!chats.selectedChatId || !messages.messageInput.trim() || streaming.selectedChatBusy) {
+    if (!chats.selectedChatId || !messages.messageInput.trim() || composerLocked) {
       return;
     }
 
@@ -264,16 +287,42 @@ export default function App() {
     }
   }
 
+  async function handlePauseCouncilRun() {
+    await streaming.handlePauseActiveRun();
+  }
+
+  async function handleResumeCouncilRun() {
+    const resumed = await streaming.handleResumeActiveRun("", undefined);
+    if (resumed) {
+      council.setCouncilInterventionInput("");
+    }
+  }
+
+  async function handleResumeCouncilRunWithInput(
+    inputText: string,
+    inputKind?: "fact" | "correction" | "constraint" | "goal_clarification",
+  ) {
+    const resumed = await streaming.handleResumeActiveRun(inputText, inputKind);
+    if (resumed) {
+      council.setCouncilInterventionInput("");
+    }
+  }
+
   const appShellStyle = {
     "--sidebar-width": `${sidebarCollapsed ? 0 : sidebarWidth}px`,
   } as CSSProperties;
-  const composerPlaceholder = !projects.selectedProject
-    ? "Create a project first."
-    : !chats.selectedChatId
-      ? "Create a chat inside this project."
-      : messages.messages.length === 0
-        ? `Ask about ${projects.selectedProject.name}...`
-        : "Reply...";
+  let composerPlaceholder = "Reply...";
+  if (!projects.selectedProject) {
+    composerPlaceholder = "Create a project first.";
+  } else if (!chats.selectedChatId) {
+    composerPlaceholder = "Create a chat inside this project.";
+  } else if (selectedChatRunStatus === "paused") {
+    composerPlaceholder = "Council is paused. Resume it from the panel.";
+  } else if (selectedChatRunStatus === "pause_requested") {
+    composerPlaceholder = "Pausing the council...";
+  } else if (messages.messages.length === 0) {
+    composerPlaceholder = `Ask about ${projects.selectedProject.name}...`;
+  }
   const liveStatusLabel = getStreamStatusLabel(streaming.streamStatus);
   const liveStatusSubtext = liveStatusAliases[statusAliasIndex] || liveStatusAliases[0] || liveStatusLabel;
 
@@ -340,7 +389,16 @@ export default function App() {
               <CouncilPanel
                 entries={displayedCouncilEntries}
                 viewingPast={council.viewingCouncilMessageId !== null}
+                runStatus={selectedChatRunStatus}
+                selectedChatBusy={streaming.selectedChatBusy}
+                canPauseRun={canPauseCouncilRun}
+                interventionInput={council.councilInterventionInput}
+                onInterventionChange={council.setCouncilInterventionInput}
                 onClose={() => council.setCouncilPanelCollapsed(true)}
+                onPauseRun={handlePauseCouncilRun}
+                onResumeRun={handleResumeCouncilRun}
+                onResumeRunWithInput={handleResumeCouncilRunWithInput}
+                onCancelRun={streaming.handleCancelActiveRun}
                 councilFeedRef={council.councilFeedRef}
                 councilEndRef={council.councilEndRef}
               />
@@ -350,7 +408,7 @@ export default function App() {
                 selectedProject={projects.selectedProject}
                 selectedChat={chats.selectedChat}
                 selectedChatId={chats.selectedChatId}
-                selectedChatBusy={streaming.selectedChatBusy}
+                selectedChatBusy={composerLocked}
                 streamingAssistantId={streaming.streamingAssistantId}
                 liveStatusLabel={liveStatusLabel}
                 liveStatusSubtext={liveStatusSubtext}
@@ -369,7 +427,7 @@ export default function App() {
           <MessageComposer
             error={error}
             councilMode={council.councilMode}
-            selectedChatBusy={streaming.selectedChatBusy}
+            selectedChatBusy={composerLocked}
             selectedChatId={chats.selectedChatId}
             messageInput={messages.messageInput}
             placeholder={composerPlaceholder}

@@ -112,6 +112,18 @@ def test_serialize_cancelled():
     assert result == {"type": "cancelled", "seq": 5, "message": "gone", "created_at": created_at.isoformat()}
 
 
+def test_serialize_paused():
+    created_at = datetime(2026, 4, 1, 12, 4, tzinfo=timezone.utc)
+    result = serialize_run_event(5, "paused", "paused", {"message": "hold", "pause_state": {"k": "v"}}, created_at=created_at)
+    assert result == {
+        "type": "paused",
+        "seq": 5,
+        "message": "hold",
+        "created_at": created_at.isoformat(),
+        "payload": {"message": "hold", "pause_state": {"k": "v"}},
+    }
+
+
 def test_serialize_unknown_type():
     created_at = datetime(2026, 4, 1, 12, 5, tzinfo=timezone.utc)
     result = serialize_run_event(6, "custom", "x", {"k": "v"}, created_at=created_at)

@@ -1,7 +1,7 @@
 import json
 from enum import Enum, auto
 
-from orchestration.run_control import invoke_cancel_check
+from orchestration.run_control import RunPausedError, invoke_cancel_check
 
 
 class MagiState(Enum):
@@ -37,6 +37,7 @@ class MagiSystem:
         state_listener=None,
         event_listener=None,
         cancel_check=None,
+        pause_check=None,
     ):
         self.eager = eager
         self.skeptic = skeptic
@@ -48,6 +49,8 @@ class MagiSystem:
         self.last_council_entries = []
         self.last_arbiter_metadata = {}
         self.cancel_check = cancel_check
+        self.pause_check = pause_check
+        self.last_pause_state = {}
 
     def _set_state(self, state, payload=None):
         if self.state_listener is not None:
@@ -85,6 +88,23 @@ class MagiSystem:
 
     def _check_cancel(self, checkpoint):
         invoke_cancel_check(self.cancel_check, checkpoint)
+
+    def _maybe_pause(self, checkpoint, pause_state_factory):
+        self._check_cancel(f"before_pause_checkpoint:{checkpoint}")
+        if self.pause_check is None:
+            return
+        if not bool(self.pause_check(checkpoint)):
+            return
+        pause_state = pause_state_factory() if callable(pause_state_factory) else dict(pause_state_factory or {})
+        self.last_pause_state = dict(pause_state or {})
+        raise RunPausedError(
+            "Run paused.",
+            pause_state=self.last_pause_state,
+            payload={
+                "message": "Run paused.",
+                "checkpoint": checkpoint,
+            },
+        )
 
     def _normalize_branch_key(self, value):
         return " ".join(str(value or "").strip().lower().split())
@@ -263,17 +283,81 @@ class MagiSystem:
             sort_keys=False,
         )
 
-    def _build_transcript(self, opening_positions, discussion_rounds, closing_positions=None):
+    def _normalize_interventions(self, interventions):
+        normalized = []
+        for entry in interventions or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                round_number = None if entry.get("round") is None else int(entry.get("round"))
+            except (TypeError, ValueError):
+                round_number = None
+            try:
+                after_role_count = int(entry.get("after_role_count", 0) or 0)
+            except (TypeError, ValueError):
+                after_role_count = 0
+            text = str(entry.get("text") or "").strip()
+            if not text:
+                continue
+            normalized.append({
+                "entry_kind": "user_intervention",
+                "role": "user",
+                "phase": "discussion",
+                "round": round_number,
+                "after_role_count": max(0, after_role_count),
+                "input_kind": str(entry.get("input_kind") or "fact"),
+                "text": text,
+            })
+        return normalized
+
+    def _interventions_by_round(self, interventions):
+        grouped = {}
+        for entry in self._normalize_interventions(interventions):
+            try:
+                round_number = int(entry.get("round") or 1)
+            except (TypeError, ValueError):
+                round_number = 1
+            grouped.setdefault(round_number, []).append(entry)
+        for round_entries in grouped.values():
+            round_entries.sort(key=lambda item: int(item.get("after_role_count", 0) or 0))
+        return grouped
+
+    def _format_intervention(self, intervention):
+        return json.dumps(
+            {
+                "entry_kind": "user_intervention",
+                "input_kind": intervention.get("input_kind", "fact"),
+                "position": intervention.get("text", ""),
+            },
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=False,
+        )
+
+    def _build_transcript(self, opening_positions, discussion_rounds, closing_positions=None, interventions=None):
         sections = ["=== OPENING ARGUMENTS ==="]
         for role_name, parsed in opening_positions:
             sections.append(self._truncate(self._format_position(role_name, parsed)))
             sections.append("")
 
+        interventions_by_round = self._interventions_by_round(interventions)
         for round_num, round_positions in enumerate(discussion_rounds, 1):
             sections.append(f"=== DISCUSSION ROUND {round_num} ===")
+            pending_interventions = list(interventions_by_round.get(round_num, []))
+
+            def _append_interventions(after_role_count):
+                while pending_interventions and int(pending_interventions[0].get("after_role_count", 0) or 0) <= after_role_count:
+                    sections.append(self._truncate(self._format_intervention(pending_interventions.pop(0))))
+                    sections.append("")
+
+            _append_interventions(0)
+            rendered_roles = 0
             for role_name, parsed in round_positions:
                 sections.append(self._truncate(self._format_position(role_name, parsed)))
                 sections.append("")
+                rendered_roles += 1
+                _append_interventions(rendered_roles)
+            _append_interventions(999)
 
         if closing_positions:
             sections.append("=== CLOSING ARGUMENTS ===")
@@ -317,15 +401,104 @@ class MagiSystem:
         return positions
 
     def _run_discussion(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, opening_positions):
-        discussion_rounds = []
-        gate = self._discussion_gate(opening_positions)
+        return self._resume_discussion(
+            user_query,
+            retrieved_docs,
+            summarized_conversation_history,
+            memory_snapshot_text,
+            opening_positions,
+            discussion_rounds=[],
+            gate=None,
+            start_round=1,
+            start_role_index=0,
+            interventions=[],
+            emit_gate_event=True,
+        )
+
+    def _serialize_history(self, summarized_conversation_history):
+        history = summarized_conversation_history
+        if history is None:
+            return {"summary_text": "", "recent_turns": []}
+        return {
+            "summary_text": str(getattr(history, "summary_text", "") or ""),
+            "recent_turns": list(getattr(history, "recent_turns", []) or []),
+        }
+
+    def _serialize_positions(self, positions):
+        serialized = []
+        for role_name, parsed in positions or []:
+            serialized.append({
+                "role": role_name,
+                "parsed": dict(parsed or {}),
+            })
+        return serialized
+
+    def _deserialize_positions(self, serialized):
+        positions = []
+        for item in serialized or []:
+            if not isinstance(item, dict):
+                continue
+            role_name = str(item.get("role") or "")
+            parsed = dict(item.get("parsed") or {})
+            if role_name:
+                positions.append((role_name, parsed))
+        return positions
+
+    def _serialize_pause_state(
+        self,
+        *,
+        user_query,
+        retrieved_docs,
+        summarized_conversation_history,
+        memory_snapshot_text,
+        opening_positions,
+        discussion_rounds,
+        gate,
+        resume_checkpoint,
+        interventions,
+    ):
+        return {
+            "user_query": user_query,
+            "retrieved_docs": retrieved_docs,
+            "history": self._serialize_history(summarized_conversation_history),
+            "memory_snapshot_text": memory_snapshot_text,
+            "opening_positions": self._serialize_positions(opening_positions),
+            "discussion_rounds": [self._serialize_positions(round_positions) for round_positions in discussion_rounds],
+            "discussion_gate": dict(gate or {}),
+            "resume_checkpoint": dict(resume_checkpoint or {}),
+            "interventions": self._normalize_interventions(interventions),
+        }
+
+    def _resume_discussion(
+        self,
+        user_query,
+        retrieved_docs,
+        summarized_conversation_history,
+        memory_snapshot_text,
+        opening_positions,
+        *,
+        discussion_rounds,
+        gate,
+        start_round,
+        start_role_index,
+        interventions,
+        emit_gate_event,
+    ):
+        discussion_rounds = [list(round_positions or []) for round_positions in discussion_rounds or []]
+        interventions = self._normalize_interventions(interventions)
+        gate = dict(gate or self._discussion_gate(opening_positions))
         self._check_cancel("before_magi_discussion_gate")
         self._set_state(MagiState.DISCUSSION_GATE, gate)
-        self._emit_event("magi_discussion_gate", gate)
+        if emit_gate_event:
+            self._emit_event("magi_discussion_gate", gate)
         if self.max_discussion_rounds <= 0 or not gate["force_discussion"]:
             return discussion_rounds
 
         for round_num in range(1, self.max_discussion_rounds + 1):
+            if round_num < int(start_round or 1):
+                continue
+            while len(discussion_rounds) < round_num:
+                discussion_rounds.append([])
             self._check_cancel(f"before_magi_discussion_round:{round_num}")
             unresolved_issue = self._determine_unresolved_issue(opening_positions, discussion_rounds)
             self._set_state(MagiState.DISCUSSION, {
@@ -335,9 +508,10 @@ class MagiSystem:
             })
             self._emit_event("magi_phase", {"phase": "discussion", "round": round_num})
 
-            transcript = self._build_transcript(opening_positions, discussion_rounds)
-            round_positions = []
-            contributors = []
+            transcript = self._build_transcript(opening_positions, discussion_rounds, interventions=interventions)
+            round_positions = discussion_rounds[round_num - 1]
+            contributors = [role_name for role_name, parsed in round_positions if parsed.get("new_information")]
+            role_start_index = int(start_role_index or 0) if round_num == int(start_round or 1) else len(round_positions)
 
             role_states = [
                 ("eager", self.eager, MagiState.DISCUSSION_EAGER),
@@ -345,7 +519,9 @@ class MagiSystem:
                 ("historian", self.historian, MagiState.DISCUSSION_HISTORIAN),
             ]
 
-            for role_name, role_agent, state in role_states:
+            for role_index, (role_name, role_agent, state) in enumerate(role_states):
+                if role_index < role_start_index:
+                    continue
                 self._check_cancel(f"before_magi_role:{role_name}:discussion:{round_num}")
                 self._set_state(state, {"round": round_num})
                 self._emit_event("magi_role_start", {"role": role_name, "phase": "discussion", "round": round_num})
@@ -358,6 +534,7 @@ class MagiSystem:
                     round_num,
                     discussion_mode=gate["discussion_mode"],
                     unresolved_issue=unresolved_issue,
+                    user_intervention_block=self._discussion_prompt_intervention_block(interventions),
                     event_listener=self._make_role_streamer_listener(role_name, "discussion", round_num),
                 )
                 position_text = parsed.get("position", "")
@@ -377,8 +554,27 @@ class MagiSystem:
                 if new_info:
                     contributors.append(role_name)
                 self._check_cancel(f"after_magi_role:{role_name}:discussion:{round_num}")
+                discussion_rounds[round_num - 1] = round_positions
+                self._maybe_pause(
+                    f"after_magi_role:{role_name}:discussion:{round_num}",
+                    lambda round_num=round_num, role_index=role_index: self._serialize_pause_state(
+                        user_query=user_query,
+                        retrieved_docs=retrieved_docs,
+                        summarized_conversation_history=summarized_conversation_history,
+                        memory_snapshot_text=memory_snapshot_text,
+                        opening_positions=opening_positions,
+                        discussion_rounds=discussion_rounds,
+                        gate=gate,
+                        resume_checkpoint={
+                            "round": round_num,
+                            "after_role_count": len(round_positions),
+                            "next_round": round_num + 1 if (role_index + 1) >= len(role_states) else round_num,
+                            "next_role_index": 0 if (role_index + 1) >= len(role_states) else (role_index + 1),
+                        },
+                        interventions=interventions,
+                    ),
+                )
 
-            discussion_rounds.append(round_positions)
             early_stop = len(contributors) == 0 and round_num >= 1
             self._emit_event("magi_discussion_round", {
                 "round": round_num,
@@ -391,6 +587,25 @@ class MagiSystem:
                 "materially_divergent_openings": gate["materially_divergent_openings"],
                 "grounding_strength": gate["grounding_strength"],
             })
+            self._maybe_pause(
+                f"after_magi_discussion_round:{round_num}",
+                lambda round_num=round_num: self._serialize_pause_state(
+                    user_query=user_query,
+                    retrieved_docs=retrieved_docs,
+                    summarized_conversation_history=summarized_conversation_history,
+                    memory_snapshot_text=memory_snapshot_text,
+                    opening_positions=opening_positions,
+                    discussion_rounds=discussion_rounds,
+                    gate=gate,
+                    resume_checkpoint={
+                        "round": round_num,
+                        "after_role_count": len(round_positions),
+                        "next_round": round_num + 1,
+                        "next_role_index": 0,
+                    },
+                    interventions=interventions,
+                ),
+            )
 
             if early_stop:
                 break
@@ -428,12 +643,12 @@ class MagiSystem:
             self._check_cancel(f"after_magi_role:{role_name}:closing_arguments")
         return closing_positions
 
-    def _run_arbiter(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, opening_positions, discussion_rounds, closing_positions=None, stream=False):
+    def _run_arbiter(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, opening_positions, discussion_rounds, closing_positions=None, stream=False, interventions=None):
         self._check_cancel("before_magi_arbiter")
         self._set_state(MagiState.ARBITER)
         self._emit_event("magi_phase", {"phase": "arbiter"})
 
-        transcript = self._build_transcript(opening_positions, discussion_rounds, closing_positions)
+        transcript = self._build_transcript(opening_positions, discussion_rounds, closing_positions, interventions=interventions)
 
         if stream:
             arbiter_result = self.arbiter.synthesize_stream(
@@ -468,28 +683,51 @@ class MagiSystem:
         self._check_cancel("after_magi_arbiter")
         return response
 
-    def _build_council_entries(self, opening_positions, discussion_rounds, closing_positions=None):
+    def _build_council_entries(self, opening_positions, discussion_rounds, closing_positions=None, interventions=None):
         entries = []
         for role_name, parsed in opening_positions:
             entries.append({
+                "entry_kind": "role",
                 "role": role_name,
                 "phase": "opening_arguments",
                 "round": None,
                 "text": parsed.get("position", ""),
             })
+        interventions_by_round = self._interventions_by_round(interventions)
         for round_num, round_positions in enumerate(discussion_rounds, 1):
+            pending_interventions = list(interventions_by_round.get(round_num, []))
+
+            def _append_interventions(after_role_count):
+                while pending_interventions and int(pending_interventions[0].get("after_role_count", 0) or 0) <= after_role_count:
+                    intervention = pending_interventions.pop(0)
+                    entries.append({
+                        "entry_kind": "user_intervention",
+                        "role": "user",
+                        "phase": "discussion",
+                        "round": round_num,
+                        "input_kind": intervention.get("input_kind", "fact"),
+                        "text": intervention.get("text", ""),
+                    })
+
+            _append_interventions(0)
+            rendered_roles = 0
             for role_name, parsed in round_positions:
                 position_text = parsed.get("position", "").strip()
                 if position_text:
                     entries.append({
+                        "entry_kind": "role",
                         "role": role_name,
                         "phase": "discussion",
                         "round": round_num,
                         "text": position_text,
                     })
+                rendered_roles += 1
+                _append_interventions(rendered_roles)
+            _append_interventions(999)
         if closing_positions:
             for role_name, parsed in closing_positions:
                 entries.append({
+                    "entry_kind": "role",
                     "role": role_name,
                     "phase": "closing_arguments",
                     "round": None,
@@ -497,46 +735,120 @@ class MagiSystem:
                 })
         return entries
 
-    def call_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
-        try:
-            self.last_arbiter_metadata = {}
+    def _discussion_prompt_intervention_block(self, interventions):
+        lines = []
+        for entry in self._normalize_interventions(interventions):
+            lines.append(f"- {entry.get('input_kind', 'fact')}: {entry.get('text', '')}")
+        return "\n".join(lines) if lines else "none"
+
+    def _resume_from_pause_state(self, pause_state):
+        pause_state = dict(pause_state or {})
+        return {
+            "user_query": str(pause_state.get("user_query") or ""),
+            "retrieved_docs": str(pause_state.get("retrieved_docs") or ""),
+            "memory_snapshot_text": str(pause_state.get("memory_snapshot_text") or ""),
+            "history": dict(pause_state.get("history") or {}),
+            "opening_positions": self._deserialize_positions(pause_state.get("opening_positions") or []),
+            "discussion_rounds": [
+                self._deserialize_positions(round_positions)
+                for round_positions in (pause_state.get("discussion_rounds") or [])
+            ],
+            "discussion_gate": dict(pause_state.get("discussion_gate") or {}),
+            "resume_checkpoint": dict(pause_state.get("resume_checkpoint") or {}),
+            "interventions": self._normalize_interventions(pause_state.get("interventions") or []),
+        }
+
+    def _run(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", *, stream=False, pause_state=None):
+        self.last_arbiter_metadata = {}
+        self.last_pause_state = {}
+        interventions = []
+        if pause_state:
+            resumed = self._resume_from_pause_state(pause_state)
+            user_query = resumed["user_query"] or user_query
+            retrieved_docs = resumed["retrieved_docs"] or retrieved_docs
+            memory_snapshot_text = resumed["memory_snapshot_text"] or memory_snapshot_text
+            opening_positions = resumed["opening_positions"]
+            discussion_rounds = resumed["discussion_rounds"]
+            gate = resumed["discussion_gate"]
+            checkpoint = resumed["resume_checkpoint"]
+            interventions = resumed["interventions"]
+            if hasattr(summarized_conversation_history, "summary_text"):
+                history_summary = resumed["history"].get("summary_text", "")
+                recent_turns = list(resumed["history"].get("recent_turns") or [])
+                summarized_conversation_history.summary_text = history_summary
+                summarized_conversation_history.recent_turns = recent_turns
+            discussion_rounds = self._resume_discussion(
+                user_query,
+                retrieved_docs,
+                summarized_conversation_history,
+                memory_snapshot_text,
+                opening_positions,
+                discussion_rounds=discussion_rounds,
+                gate=gate,
+                start_round=int(checkpoint.get("next_round", 1) or 1),
+                start_role_index=int(checkpoint.get("next_role_index", 0) or 0),
+                interventions=interventions,
+                emit_gate_event=False,
+            )
+        else:
             opening_positions = self._run_opening_arguments(
                 user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text,
             )
             discussion_rounds = self._run_discussion(
                 user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, opening_positions,
             )
-            closing_positions = self._run_closing_arguments(user_query, opening_positions, discussion_rounds)
-            self.last_council_entries = self._build_council_entries(opening_positions, discussion_rounds, closing_positions)
-            response = self._run_arbiter(
-                user_query, retrieved_docs, summarized_conversation_history,
-                memory_snapshot_text, opening_positions, discussion_rounds,
-                closing_positions=closing_positions,
+        closing_positions = self._run_closing_arguments(user_query, opening_positions, discussion_rounds)
+        self.last_council_entries = self._build_council_entries(opening_positions, discussion_rounds, closing_positions, interventions=interventions)
+        return self._run_arbiter(
+            user_query,
+            retrieved_docs,
+            summarized_conversation_history,
+            memory_snapshot_text,
+            opening_positions,
+            discussion_rounds,
+            closing_positions=closing_positions,
+            stream=stream,
+            interventions=interventions,
+        )
+
+    def call_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
+        try:
+            return self._run(
+                user_query,
+                retrieved_docs,
+                summarized_conversation_history,
+                memory_snapshot_text,
                 stream=False,
+                pause_state=None,
             )
-            return response
         except Exception:
             self._set_state(MagiState.ERROR)
             raise
 
     def stream_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
         try:
-            self.last_arbiter_metadata = {}
-            opening_positions = self._run_opening_arguments(
-                user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text,
-            )
-            discussion_rounds = self._run_discussion(
-                user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, opening_positions,
-            )
-            closing_positions = self._run_closing_arguments(user_query, opening_positions, discussion_rounds)
-            self.last_council_entries = self._build_council_entries(opening_positions, discussion_rounds, closing_positions)
-            response = self._run_arbiter(
-                user_query, retrieved_docs, summarized_conversation_history,
-                memory_snapshot_text, opening_positions, discussion_rounds,
-                closing_positions=closing_positions,
+            return self._run(
+                user_query,
+                retrieved_docs,
+                summarized_conversation_history,
+                memory_snapshot_text,
                 stream=True,
+                pause_state=None,
             )
-            return response
+        except Exception:
+            self._set_state(MagiState.ERROR)
+            raise
+
+    def resume_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", pause_state=None, stream=False):
+        try:
+            return self._run(
+                user_query,
+                retrieved_docs,
+                summarized_conversation_history,
+                memory_snapshot_text,
+                stream=stream,
+                pause_state=pause_state,
+            )
         except Exception:
             self._set_state(MagiState.ERROR)
             raise

@@ -1,6 +1,6 @@
 import type { ChatRun, RunEvent } from "../types";
 
-export const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancel_requested"]);
+export const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancel_requested", "pause_requested", "paused"]);
 export const STREAMING_CODES = new Set([
   "text_delta",
   "text_checkpoint",
@@ -85,6 +85,9 @@ function eventPhase(event: RunEvent): string {
   if (event.type === "state") {
     return "router";
   }
+  if (event.type === "paused") {
+    return "run";
+  }
   if (event.type !== "event") {
     return event.type;
   }
@@ -104,6 +107,9 @@ function eventPhase(event: RunEvent): string {
   if (event.code.startsWith("magi_")) {
     return "magi";
   }
+  if (event.code === "pause_requested") {
+    return "run";
+  }
   if (event.code.startsWith("tool_")) {
     return "tool";
   }
@@ -114,6 +120,9 @@ function eventPhase(event: RunEvent): string {
 }
 
 function summarizeGenericEventPayload(event: RunEvent): string {
+  if (event.type === "paused") {
+    return event.message || "paused";
+  }
   if (event.type !== "event") {
     return "";
   }
@@ -179,6 +188,11 @@ function summarizeGenericEventPayload(event: RunEvent): string {
         typeof payload.decision_mode === "string" ? payload.decision_mode : "",
         typeof payload.uncertainty_level === "string" ? `uncertainty=${payload.uncertainty_level}` : "",
         typeof payload.winning_branch === "string" && payload.winning_branch ? payload.winning_branch : "",
+      ].filter(Boolean).join(" • ");
+    case "magi_intervention_added":
+      return [
+        typeof payload.input_kind === "string" ? payload.input_kind : "input",
+        typeof payload.seq === "number" ? `seq ${payload.seq}` : "",
       ].filter(Boolean).join(" • ");
     default:
       return event.payload ? JSON.stringify(event.payload).slice(0, 220) : "";
@@ -483,10 +497,10 @@ export function toneForStatus(status: string): "ok" | "warn" | "bad" | "neutral"
   if (status === "failed" || status === "cancelled") {
     return "bad";
   }
-  if (status === "cancel_requested" || status === "queued") {
+  if (status === "cancel_requested" || status === "pause_requested" || status === "queued") {
     return "warn";
   }
-  if (status === "running") {
+  if (status === "running" || status === "paused") {
     return "ok";
   }
   return "neutral";

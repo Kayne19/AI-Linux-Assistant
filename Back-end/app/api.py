@@ -8,6 +8,7 @@ from persistence.postgres_app_store import PostgresAppStore
 from persistence.postgres_run_store import (
     ActiveChatRunExistsError,
     ActiveRunLimitExceededError,
+    DISCUSSION_PAUSEABLE_MAGI_STATES,
     PostgresRunStore,
     RunNotFoundError,
     RunRequeueError,
@@ -78,6 +79,11 @@ class RunCreateRequest(BaseModel):
 
 class MessageCreateRequest(RunCreateRequest):
     pass
+
+
+class RunResumeRequest(BaseModel):
+    input_text: str = ""
+    input_kind: str = "fact"
 
 
 class UserResponse(BaseModel):
@@ -295,11 +301,35 @@ def _degraded_terminal_event_from_snapshot(run, app_store):
     return None
 
 
+def _degraded_paused_event_from_snapshot(run):
+    created_at = _iso(getattr(run, "updated_at", None))
+    payload = {
+        "message": "Run paused.",
+        "pause_state": getattr(run, "pause_state_json", None) or None,
+    }
+    return {
+        "type": "paused",
+        "seq": int(getattr(run, "latest_event_seq", 0) or 0),
+        "message": payload["message"],
+        "created_at": created_at,
+        "payload": payload,
+    }
+
+
 def _terminal_event_payload(run_store, run_id, run, app_store):
     event_row = run_store.get_terminal_event(run_id)
     if event_row is not None:
         return _serialize_event_row(event_row)
     return _degraded_terminal_event_from_snapshot(run, app_store)
+
+
+def _stream_stop_payload(run_store, run_id, run, app_store):
+    if run.status == "paused":
+        event_row = run_store.get_latest_event_by_code(run_id, "paused")
+        if event_row is not None:
+            return _serialize_event_row(event_row)
+        return _degraded_paused_event_from_snapshot(run)
+    return _terminal_event_payload(run_store, run_id, run, app_store)
 
 
 def _wait_for_terminal_run(run_store, run_id, timeout_seconds=1800):
@@ -383,7 +413,11 @@ def create_app():
             try:
                 if run.status == "queued":
                     return run_store.cancel_queued_run(run_id, error_message="Run cancelled.")
+                if run.status == "paused":
+                    return run_store.mark_cancelled(run_id, error_message="Run cancelled.")
                 if run.status in {"running", "cancel_requested"}:
+                    return run_store.request_running_cancel(run_id)
+                if run.status == "pause_requested":
                     return run_store.request_running_cancel(run_id)
                 raise HTTPException(status_code=409, detail=f"Run '{run_id}' cannot be cancelled from status '{run.status}'.")
             except RunStateConflictError:
@@ -392,9 +426,40 @@ def create_app():
         run = run_store.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found.")
-        if run.status in TERMINAL_RUN_STATUSES | {"running", "cancel_requested"}:
+        if run.status in TERMINAL_RUN_STATUSES | {"running", "cancel_requested", "pause_requested", "paused"}:
             return run
         raise HTTPException(status_code=409, detail=f"Run '{run_id}' cannot be cancelled from status '{run.status}'.")
+
+    def _pause_run_explicitly(run_id: str):
+        run = run_store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found.")
+        if (run.run_kind or "message") != "message" or (run.magi or "off") not in {"full", "lite"}:
+            raise HTTPException(status_code=409, detail="Only active MAGI message runs can be paused.")
+        if run.status in {"pause_requested", "paused"}:
+            return run
+        if run.status != "running":
+            raise HTTPException(status_code=409, detail=f"Run '{run_id}' cannot be paused from status '{run.status}'.")
+        latest_magi_state = run_store.get_latest_event_by_code(run_id, "magi_state")
+        latest_state_name = str(((latest_magi_state.payload_json or {}).get("state") if latest_magi_state else "") or "")
+        if latest_state_name not in DISCUSSION_PAUSEABLE_MAGI_STATES:
+            raise HTTPException(status_code=409, detail="MAGI can only be paused during discussion.")
+        try:
+            return run_store.request_pause(run_id)
+        except RunStateConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    def _resume_run_explicitly(run_id: str, request: RunResumeRequest):
+        try:
+            return run_store.resume_paused_run(
+                run_id,
+                input_text=request.input_text,
+                input_kind=request.input_kind,
+            )
+        except RunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RunStateConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     def _chat_responses_for_rows(chat_rows):
         active_by_chat = run_store.get_active_runs_for_chat_ids([chat.id for chat in chat_rows])
@@ -417,7 +482,7 @@ def create_app():
                 payload = _serialize_event_row(event_row)
                 _register_checkpoint_window(checkpoint_windows, payload)
                 yield _sse_payload(payload)
-                if payload["type"] in {"done", "error", "cancelled"}:
+                if payload["type"] in {"done", "error", "cancelled", "paused"}:
                     return
             # Forward Redis messages
             while True:
@@ -427,8 +492,8 @@ def create_app():
                     if run is None:
                         yield _sse_payload({"type": "error", "message": "Run not found."})
                         return
-                    if run.status in TERMINAL_RUN_STATUSES:
-                        fallback_payload = _terminal_event_payload(run_store, run_id, run, app_store)
+                    if run.status in TERMINAL_RUN_STATUSES | {"paused"}:
+                        fallback_payload = _stream_stop_payload(run_store, run_id, run, app_store)
                         if fallback_payload is not None:
                             yield _sse_payload(fallback_payload)
                         return
@@ -446,7 +511,7 @@ def create_app():
                     current_seq = seq
                 _register_checkpoint_window(checkpoint_windows, data)
                 yield _sse_payload(data)
-                if data.get("type") in {"done", "error", "cancelled"}:
+                if data.get("type") in {"done", "error", "cancelled", "paused"}:
                     return
         finally:
             ps.unsubscribe()
@@ -472,7 +537,7 @@ def create_app():
                     current_seq = max(current_seq, int(event_row.seq))
                     payload = _serialize_event_row(event_row)
                     yield _sse_payload(payload)
-                    if payload["type"] in {"done", "error", "cancelled"}:
+                    if payload["type"] in {"done", "error", "cancelled", "paused"}:
                         terminal_sent = True
                 if terminal_sent:
                     break
@@ -481,8 +546,8 @@ def create_app():
                 if run is None:
                     yield _sse_payload({"type": "error", "message": "Run not found."})
                     break
-                if run.status in TERMINAL_RUN_STATUSES:
-                    fallback_payload = _terminal_event_payload(run_store, run_id, run, app_store)
+                if run.status in TERMINAL_RUN_STATUSES | {"paused"}:
+                    fallback_payload = _stream_stop_payload(run_store, run_id, run, app_store)
                     if fallback_payload is not None:
                         yield _sse_payload(fallback_payload)
                     break
@@ -686,6 +751,14 @@ def create_app():
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _serialize_run(run)
+
+    @app.post("/runs/{run_id}/pause", response_model=ChatRunResponse)
+    def pause_run(run_id: str):
+        return _serialize_run(_pause_run_explicitly(run_id))
+
+    @app.post("/runs/{run_id}/resume", response_model=ChatRunResponse)
+    def resume_run(run_id: str, request: RunResumeRequest):
+        return _serialize_run(_resume_run_explicitly(run_id, request))
 
     @app.post("/runs/{run_id}/fail", response_model=ChatRunResponse)
     def fail_run(run_id: str):

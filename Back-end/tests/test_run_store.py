@@ -380,6 +380,74 @@ def test_request_running_cancel_marks_run_for_worker_handling():
     assert run_store.get_terminal_event(run.id) is None
 
 
+def test_pause_and_resume_paused_run_preserve_same_run_and_intervention_state():
+    run_store, session_factory = _build_run_store()
+    user, project, chat = _seed_chat(session_factory)
+
+    run = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="discuss this",
+        magi="full",
+        client_request_id="pause-me",
+        max_active_runs_per_user=3,
+    )
+    run_store.claim_next_run("worker-1", lease_seconds=30)
+
+    pause_requested = run_store.request_pause(run.id)
+    assert pause_requested.status == "pause_requested"
+
+    paused = run_store.mark_paused(
+        run.id,
+        worker_id="worker-1",
+        pause_state={
+            "resume_checkpoint": {"round": 1, "after_role_count": 3, "next_round": 2, "next_role_index": 0},
+            "interventions": [],
+        },
+    )
+    assert paused.status == "paused"
+    assert paused.pause_state_json["resume_checkpoint"]["next_round"] == 2
+    assert run_store.get_active_run_for_chat(chat.id).id == run.id
+
+    try:
+        run_store.create_or_reuse_run(
+            chat_session_id=chat.id,
+            project_id=project.id,
+            user_id=user.id,
+            request_content="second send",
+            magi="off",
+            client_request_id="second-send",
+            max_active_runs_per_user=3,
+        )
+        assert False, "expected paused run to keep same-chat blocking active"
+    except ActiveChatRunExistsError:
+        pass
+
+    resumed = run_store.resume_paused_run(run.id, input_text="This host is Debian 12.", input_kind="fact")
+    events = run_store.list_events_after(run.id, after_seq=0)
+
+    assert resumed.id == run.id
+    assert resumed.status == "queued"
+    assert resumed.pause_state_json["interventions"] == [
+        {
+            "entry_kind": "user_intervention",
+            "role": "user",
+            "phase": "discussion",
+            "round": 1,
+            "after_role_count": 3,
+            "input_kind": "fact",
+            "text": "This host is Debian 12.",
+        }
+    ]
+    assert [event.code for event in events] == [
+        "magi_pause_requested",
+        "paused",
+        "magi_intervention_added",
+        "magi_resumed",
+    ]
+
+
 def test_request_running_cancel_rejects_queued_run():
     run_store, session_factory = _build_run_store()
     user, project, chat = _seed_chat(session_factory)

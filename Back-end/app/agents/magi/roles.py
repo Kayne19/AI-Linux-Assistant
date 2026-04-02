@@ -262,6 +262,7 @@ USER QUESTION:
         round_number=1,
         discussion_mode="optional",
         unresolved_issue="",
+        user_intervention_block="none",
         event_listener=None,
     ):
         listener = event_listener if event_listener is not None else self._forward_worker_event
@@ -278,6 +279,7 @@ USER QUESTION:
             memory_snapshot_text=memory_snapshot_text,
             retrieved_docs=retrieved_docs,
             transcript=transcript,
+            user_intervention_block=user_intervention_block or "none",
             role_reminder=ROLE_REMINDERS.get(self.role_name, ""),
             role_output_format=self.discussion_output_format,
         )

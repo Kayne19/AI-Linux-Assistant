@@ -39,13 +39,14 @@ export type StreamHandlers = {
   onTextDelta?: (delta: string) => void;
   onTextCheckpoint?: (text: string, seq: number, payload?: Record<string, unknown>) => void;
   onMagiRoleTextCheckpoint?: (payload: Record<string, unknown>, seq: number) => void;
+  onPaused?: (event: Extract<BackendStreamEvent, { type: "paused" }>) => void;
   onDone?: (payload: SendMessageResponse) => void;
   onError?: (message: string) => void;
   onCancelled?: (message: string) => void;
 };
 
 export function isTerminalRunEvent(event: BackendStreamEvent): boolean {
-  return event.type === "done" || event.type === "error" || event.type === "cancelled";
+  return event.type === "done" || event.type === "error" || event.type === "cancelled" || event.type === "paused";
 }
 
 export function dispatchRunEvent(event: BackendStreamEvent, handlers: StreamHandlers): SendMessageResponse | null {
@@ -83,6 +84,10 @@ export function dispatchRunEvent(event: BackendStreamEvent, handlers: StreamHand
   }
   if (event.type === "cancelled") {
     handlers.onCancelled?.(event.message);
+    return null;
+  }
+  if (event.type === "paused") {
+    handlers.onPaused?.(event);
     return null;
   }
   if (event.type === "error") {
@@ -245,6 +250,21 @@ export const api = {
   cancelRun: (runId: string) =>
     request<ChatRun>(`/runs/${runId}/cancel`, {
       method: "POST",
+    }),
+  pauseRun: (runId: string) =>
+    request<ChatRun>(`/runs/${runId}/pause`, {
+      method: "POST",
+    }),
+  resumeRun: (
+    runId: string,
+    payload: { inputText?: string; inputKind?: "fact" | "correction" | "constraint" | "goal_clarification" } = {},
+  ) =>
+    request<ChatRun>(`/runs/${runId}/resume`, {
+      method: "POST",
+      body: JSON.stringify({
+        input_text: payload.inputText || "",
+        input_kind: payload.inputKind || "",
+      }),
     }),
   streamRun: (runId: string, handlers: StreamHandlers = {}, options: { afterSeq?: number; signal?: AbortSignal } = {}) =>
     readEventStream(`/runs/${runId}/events/stream?after_seq=${Math.max(0, options.afterSeq || 0)}`, handlers, options.signal),

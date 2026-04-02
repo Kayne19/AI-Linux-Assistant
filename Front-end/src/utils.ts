@@ -24,6 +24,7 @@ function formatCouncilPhase(phase: string, round?: number): string {
   if (phase === "opening_arguments") return "Opening Argument";
   if (phase === "discussion") return `Discussion · Round ${round ?? ""}`.trim();
   if (phase === "closing_arguments") return "Closing Argument";
+  if (phase === "intervention") return "User input";
   if (phase === "arbiter") return "Synthesis";
   return phase;
 }

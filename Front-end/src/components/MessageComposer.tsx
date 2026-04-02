@@ -14,14 +14,6 @@ type MessageComposerProps = {
   onCycleCouncilMode: () => void;
 };
 
-function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
-    return;
-  }
-  event.preventDefault();
-  event.currentTarget.form?.requestSubmit();
-}
-
 export function MessageComposer({
   error,
   councilMode,
@@ -35,6 +27,18 @@ export function MessageComposer({
   onCycleCouncilMode,
 }: MessageComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+      return;
+    }
+    if (selectedChatBusy) {
+      event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  }
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -70,8 +74,8 @@ export function MessageComposer({
               {councilMode === "lite" ? "Council Lite" : "Council"}
             </button>
             {selectedChatBusy ? (
-              <button type="button" className="ghost-button compact" onClick={onCancelRun}>
-                Cancel run
+              <button type="button" className="cancel-run-btn" onClick={onCancelRun}>
+                Cancel
               </button>
             ) : null}
           </div>

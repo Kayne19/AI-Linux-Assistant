@@ -53,6 +53,7 @@ The stream currently sends JSON payloads shaped like:
 
 - `type: "state"`
 - `type: "event"`
+- `type: "paused"`
 - `type: "done"`
 - `type: "error"`
 - `type: "cancelled"`
@@ -72,6 +73,9 @@ The stream currently sends JSON payloads shaped like:
 - memory events
 - provider/tool events
 - Magi phase and role events
+- paused-run control events such as `magi_pause_requested`, `magi_intervention_added`, and `magi_resumed`
+
+`paused` reports a MAGI run that stopped at a durable discussion checkpoint and can later be resumed with the same `run_id`.
 
 `done` contains the final serialized user/assistant messages and debug payload.
 
@@ -109,11 +113,13 @@ Owns:
 - state transitions
 - emitting state-visible and tool-visible events
 - buffering and finalizing the completed answer
+- resuming paused MAGI discussion from a durable run snapshot
 
 Important rule:
 
 Memory extraction/resolution/commit still happen after the streamed answer completes, not on partial output.
 First-turn chat auto-naming must not delay the terminal `done` handoff for streamed message runs.
+Paused MAGI runs do not persist final messages, do not run post-turn memory phases, and do not auto-name until the resumed run reaches normal completion.
 
 Current streamed naming contract:
 
@@ -160,6 +166,7 @@ Owns:
 - waking promptly when Redis signals newly queued work
 - lease heartbeats
 - safe cancellation checkpoints
+- safe MAGI pause checkpoints
 - stale-run failure/recovery handling
 - executing the router FSM for one claimed run
 - publishing durable state/event records
@@ -196,6 +203,7 @@ Owns:
 - explicit deliberation control events such as `magi_discussion_gate`, `magi_discussion_round`, `magi_synthesis_complete`
 - live role text emission through `magi_role_text_delta`
 - durable in-progress role replay through `magi_role_text_checkpoint`
+- explicit paused-run intervention context for resumed discussion rounds
 - the final synthesized response handed back to the router
 
 Important detail:
@@ -204,10 +212,12 @@ Important detail:
 - `magi_role_text_checkpoint` stores that same visible council text as an absolute replace for reconnect/replay
 - Magi now exposes an explicit `DISCUSSION_GATE` decision before discussion rounds begin so the frontend/debug surfaces can distinguish "discussion skipped because openings aligned with strong grounding" from "discussion forced because openings diverged or grounding was weak / absent / conflicted"
 - discussion rounds now carry explicit `discussion_mode` plus the router-computed `unresolved_issue` they are trying to advance
+- a resumed MAGI run may inject explicit `USER INTERVENTION SINCE PAUSE` context into remaining discussion rounds, and roles must cite it explicitly in `evidence_sources` when they rely on it
 - `magi_role_complete` for discussion rounds may include `new_information=false` together with a `no_delta_reason` when a forced round produced a reasoned unchanged stance instead of a real delta
 - Historian grounding quality is part of normal Magi control flow, not just debug annotation
 - Arbiter emits required internal synthesis metadata (`primary_issue`, `immediate_obligation`, `winning_branch`, `decision_mode`, `uncertainty_level`, `strongest_surviving_objection`, `missing_decisive_artifact`, `evidence_sources`) before the final answer is handed back to the router, but only the natural `final_answer` text is sent down the user-facing assistant message path
 - Magi arbiter streaming also suppresses partial provider text and emits finalized assistant text into the normal `text_delta` path so the frontend can pace it without partial-JSON or tool-round artifacts
+- pause is only honored during MAGI discussion checkpoints; openings, closing arguments, and arbiter synthesis remain non-pauseable
 
 ### Provider
 
@@ -245,6 +255,7 @@ Owns:
 - seeding optimistic assistant text from `text_checkpoint` during replay/reconnect
 - batching rapid `text_delta` appends into the in-progress assistant message
 - rendering Magi council progress when present
+- preserving live council state when a run pauses and later resumes
 - mapping backend event codes into human labels
 - reconnecting with `after_seq` when a running chat is reopened
 - replacing optimistic messages with the final persisted backend messages at completion

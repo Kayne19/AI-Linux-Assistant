@@ -84,6 +84,8 @@ The v1 state model is:
 - `queued`
 - `running`
 - `cancel_requested`
+- `pause_requested`
+- `paused`
 - `completed`
 - `failed`
 - `cancelled`
@@ -97,6 +99,14 @@ High-level lifecycle:
 5. The worker appends durable events and updates run snapshots as the run progresses.
 6. The worker terminalizes the run exactly once as `completed`, `failed`, or `cancelled`.
 7. On normal completion, final chat messages are persisted once through the normal persistence path.
+
+Paused MAGI lifecycle:
+
+1. A running `message` run in `magi="lite"` or `magi="full"` may receive `POST /runs/{run_id}/pause`.
+2. The run is marked `pause_requested` immediately, but the worker continues until the next MAGI discussion-safe checkpoint.
+3. At that checkpoint the worker writes a resumable `pause_state_json`, emits a durable `paused` row, clears the lease, and stops without persisting final chat messages.
+4. `POST /runs/{run_id}/resume` appends optional user intervention, keeps the same `run_id`, and requeues that paused run for the worker.
+5. The router resumes the same Magi deliberation from the durable snapshot, then continues to normal completion and single-pass final persistence.
 
 Internal follow-up rule:
 
@@ -113,6 +123,7 @@ v1 rules:
 - same-chat second send while an active run exists returns `409`
 - per-user active-run cap is configurable
 - the default cap is `MAX_ACTIVE_RUNS_PER_USER_DEFAULT=3`
+- paused MAGI runs still count as active for same-chat blocking
 
 Run-kind boundary:
 
@@ -209,6 +220,24 @@ Persistence rule:
 - do not partially persist a final assistant message unless the run has already reached normal completion semantics
 - queued-vs-running cancel choice is explicit control-plane logic; the store only exposes atomic transitions
 
+## Pause And Resume Semantics
+
+Pause is also cooperative and checkpoint-based.
+
+Rules:
+
+- only `run_kind="message"` with `magi="lite"` or `magi="full"` can pause
+- pause is only honored inside MAGI discussion checkpoints, not during openings, closing arguments, or arbiter synthesis
+- pause does not create a second run or a second user message
+- user intervention submitted during pause is stored as run-scoped MAGI data/events, not as a normal chat-thread message
+- a paused run remains the active run for that chat until resumed or cancelled
+
+Durable snapshot rule:
+
+- `pause_state_json` stores the resumable MAGI state needed to continue the same deliberation
+- replayable pause/resume/intervention visibility still comes from `chat_run_events`
+- the snapshot is control state; it is not a substitute for the durable event timeline
+
 ## API Surface
 
 The FastAPI layer stays thin.
@@ -234,6 +263,8 @@ Primary durable-run endpoints:
 - `GET /runs/{run_id}`
 - `GET /runs/{run_id}/events`
 - `GET /runs/{run_id}/events/stream?after_seq=...`
+- `POST /runs/{run_id}/pause`
+- `POST /runs/{run_id}/resume`
 - `POST /runs/{run_id}/cancel`
 
 Operator/debug endpoints may also expose fail/requeue controls for v1 operations support.

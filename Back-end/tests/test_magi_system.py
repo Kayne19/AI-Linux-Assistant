@@ -14,6 +14,7 @@ import json
 from agents.magi.arbiter import MagiArbiter
 from agents.magi.roles import MagiEager, MagiHistorian, MagiSkeptic
 from agents.magi.system import MagiState, MagiSystem
+from orchestration.run_control import RunPausedError
 from prompting.magi_prompts import (
     MAGI_ARBITER_PROMPT,
     MAGI_EAGER_SYSTEM_PROMPT,
@@ -266,6 +267,7 @@ def _build_magi(
     max_discussion_rounds=1,
     tools=None,
     tool_handler=None,
+    pause_check=None,
 ):
     eager_worker = FakeMagiWorker(eager_text)
     skeptic_worker = FakeMagiWorker(skeptic_text)
@@ -294,6 +296,7 @@ def _build_magi(
         max_discussion_rounds=max_discussion_rounds,
         state_listener=on_state,
         event_listener=on_event,
+        pause_check=pause_check,
     )
     return system, events, states, {
         "eager_worker": eager_worker,
@@ -563,6 +566,83 @@ def test_magi_forces_one_discussion_round_when_grounding_is_absent():
     assert gate_event["grounding_strength"] == "absent"
     assert len(round_events) == 1
     assert round_events[0]["gate_reason"] == "grounding_absent"
+
+
+def test_magi_can_pause_after_discussion_round_and_resume_with_user_intervention():
+    system, events, _, _ = _build_magi(
+        eager_text=[
+            _make_eager_response(provisional_branch="branch-a"),
+            _make_eager_response(position="Round 1 eager delta", provisional_branch="branch-a", new_information=True),
+            _make_eager_response(position="Round 2 eager delta", provisional_branch="branch-a", new_information=True),
+            _make_eager_closing_response(provisional_branch="branch-a"),
+        ],
+        skeptic_text=[
+            _make_skeptic_response(target_branch="branch-a"),
+            _make_skeptic_response(position="Round 1 skeptic delta", target_branch="branch-a", new_information=True),
+            _make_skeptic_response(position="Round 2 skeptic delta", target_branch="branch-a", new_information=True),
+            _make_skeptic_closing_response(target_branch="branch-a"),
+        ],
+        historian_text=[
+            _make_historian_response(
+                evaluated_branch="branch-a",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                most_important_gap="Need one more fact.",
+            ),
+            _make_historian_response(
+                position="Round 1 grounding delta",
+                evaluated_branch="branch-a",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                new_information=True,
+            ),
+            _make_historian_response(
+                position="Round 2 grounding delta",
+                evaluated_branch="branch-a",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                new_information=True,
+            ),
+            _make_historian_closing_response(evaluated_branch="branch-a"),
+        ],
+        arbiter_text=_make_arbiter_response(final_answer="final answer"),
+        max_discussion_rounds=2,
+        pause_check=lambda checkpoint: checkpoint == "after_magi_discussion_round:1",
+    )
+
+    try:
+        system.stream_api("question", "docs")
+        assert False, "expected pause after round 1"
+    except RunPausedError as exc:
+        pause_state = dict(exc.pause_state)
+
+    assert pause_state["resume_checkpoint"]["next_round"] == 2
+    pause_state["interventions"] = [
+        {
+            "entry_kind": "user_intervention",
+            "role": "user",
+            "phase": "discussion",
+            "round": 1,
+            "after_role_count": 3,
+            "input_kind": "fact",
+            "text": "The server is Debian 12.",
+        }
+    ]
+    system.pause_check = None
+
+    response = system.resume_api("ignored", "", pause_state=pause_state, stream=False)
+
+    assert response == "final answer"
+    intervention_index = next(
+        index for index, entry in enumerate(system.last_council_entries)
+        if entry.get("entry_kind") == "user_intervention"
+    )
+    round_two_index = next(
+        index for index, entry in enumerate(system.last_council_entries)
+        if entry.get("phase") == "discussion" and entry.get("round") == 2
+    )
+    assert intervention_index < round_two_index
+    assert any(event_type == "magi_discussion_round" and payload.get("round") == 1 for event_type, payload in events)
 
 
 def test_magi_all_roles_receive_tools():

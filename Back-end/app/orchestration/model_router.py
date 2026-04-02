@@ -7,6 +7,7 @@ from providers.local_caller import LocalWorker
 from agents.context_agent import Contextualizer
 from providers.openAI_caller import OpenAIWorker
 from agents.response_agent import ResponseAgent
+from orchestration.history_preparer import PreparedHistory
 from orchestration.routing_registry import get_allowed_labels, get_searchable_labels, get_skip_rag_labels
 from orchestration.run_control import RunCancelledError, invoke_cancel_check
 from config.settings import SETTINGS
@@ -67,6 +68,7 @@ class TurnContext:
     persisted_assistant_message: object | None = None
     schedule_auto_name: bool = False
     generated_chat_title: str = ""
+    magi_resume_state: dict | None = None
 
 
 class ModelRouter:
@@ -92,6 +94,7 @@ class ModelRouter:
         chat_store=None,
         chat_session_id=None,
         cancel_check=None,
+        pause_check=None,
         persist_turn_messages=True,
     ):
         self.chat_store = chat_store
@@ -110,6 +113,7 @@ class ModelRouter:
             build_default=self.memory_store is not None,
         )
         self.cancel_check = cancel_check
+        self.pause_check = pause_check
         self.persist_turn_messages = persist_turn_messages
         self.memory_resolver = MemoryResolver()
         self.current_state = RouterState.DONE
@@ -230,6 +234,27 @@ class ModelRouter:
         return self._execute_turn(
             turn,
             RouterState.START,
+            stream_response=stream_response,
+            magi=magi,
+            manage_memory_turn=True,
+        )
+
+    def run_magi_resumption(self, pause_state, *, stream_response=True, magi="full"):
+        pause_state = dict(pause_state or {})
+        history_payload = dict(pause_state.get("history") or {})
+        turn = TurnContext(
+            user_question=str(pause_state.get("user_query") or ""),
+            retrieved_docs=str(pause_state.get("retrieved_docs") or ""),
+            memory_snapshot_text=str(pause_state.get("memory_snapshot_text") or ""),
+            summarized_conversation_history=PreparedHistory(
+                recent_turns=list(history_payload.get("recent_turns") or []),
+                summary_text=str(history_payload.get("summary_text") or ""),
+            ),
+            magi_resume_state=pause_state,
+        )
+        return self._execute_turn(
+            turn,
+            RouterState.GENERATE_RESPONSE,
             stream_response=stream_response,
             magi=magi,
             manage_memory_turn=True,
@@ -454,6 +479,7 @@ class ModelRouter:
             state_listener=self._handle_magi_state,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
+            pause_check=self.pause_check,
         )
 
     def _build_magi_lite_responder(self):
@@ -493,6 +519,7 @@ class ModelRouter:
             state_listener=self._handle_magi_state,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
+            pause_check=self.pause_check,
         )
 
     def _build_history_summarizer(self, history_summarizer):
@@ -818,13 +845,23 @@ class ModelRouter:
             responder = self.magi_lite_responder
         else:
             responder = self.responder
-        responder_method = responder.stream_api if self._stream_response_enabled else responder.call_api
-        turn.response = responder_method(
-            turn.user_question,
-            turn.retrieved_docs,
-            turn.summarized_conversation_history,
-            turn.memory_snapshot_text,
-        )
+        if turn.magi_resume_state and hasattr(responder, "resume_api"):
+            turn.response = responder.resume_api(
+                turn.user_question,
+                turn.retrieved_docs,
+                turn.summarized_conversation_history,
+                turn.memory_snapshot_text,
+                pause_state=turn.magi_resume_state,
+                stream=self._stream_response_enabled,
+            )
+        else:
+            responder_method = responder.stream_api if self._stream_response_enabled else responder.call_api
+            turn.response = responder_method(
+                turn.user_question,
+                turn.retrieved_docs,
+                turn.summarized_conversation_history,
+                turn.memory_snapshot_text,
+            )
         self._check_cancel("after_generate_response")
         turn.council_entries = list(getattr(responder, "last_council_entries", None) or [])
         if not (turn.retrieved_docs or "").strip():

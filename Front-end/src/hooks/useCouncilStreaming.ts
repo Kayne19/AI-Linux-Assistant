@@ -24,6 +24,15 @@ export function getCouncilEntryId(role: string, phase: string, round?: number) {
   return `${phase}-${role}-${round ?? 0}`;
 }
 
+function getInterventionEntryId(seq?: number | null, inputKind?: string, text?: string) {
+  if (typeof seq === "number" && Number.isFinite(seq)) {
+    return `intervention-${seq}`;
+  }
+  const normalizedKind = String(inputKind || "input").trim().replace(/\s+/g, "-");
+  const normalizedText = String(text || "").trim().slice(0, 24).replace(/\s+/g, "-");
+  return `intervention-${normalizedKind}${normalizedText ? `-${normalizedText}` : ""}`;
+}
+
 export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete }: UseCouncilStreamingOptions) {
   const pendingCouncilDeltaBatchesRef = useRef<Record<string, PendingCouncilDeltaBatch>>({});
   const pendingCouncilCompletionsRef = useRef<Record<string, Record<string, unknown>>>({});
@@ -37,6 +46,7 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
   const [councilPanelCollapsed, setCouncilPanelCollapsed] = useState(false);
   const [councilEntries, setCouncilEntries] = useState<UICouncilEntry[]>([]);
   const [viewingCouncilMessageId, setViewingCouncilMessageId] = useState<number | null>(null);
+  const [councilInterventionInput, setCouncilInterventionInput] = useState("");
 
   const councilFeedRef = useRef<HTMLDivElement | null>(null);
   const councilEndRef = useRef<HTMLDivElement | null>(null);
@@ -103,6 +113,7 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
             round,
             text: finalText,
             complete: true,
+            entryKind: "role",
           },
         ];
       }
@@ -117,6 +128,34 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
             }
           : entry,
       );
+    });
+  }
+
+  function applyMagiInterventionAdded(chatId: string, payload: Record<string, unknown>, seq?: number) {
+    const inputText = String(payload.input_text || payload.text || payload.delta || payload.content || "");
+    if (!inputText) {
+      return;
+    }
+    const inputKind = String(payload.input_kind || payload.kind || payload.entry_kind || "fact");
+    const entryId = getInterventionEntryId(seq, inputKind, inputText);
+    const entryKey = liveCouncilEntryKey(chatId, entryId);
+
+    visibleCouncilTextRef.current[entryKey] = inputText;
+    updateRunUiCouncilEntriesRef.current(chatId, (entries) => {
+      const existingEntry = entries.find((entry) => entry.entryId === entryId);
+      const nextEntry: UICouncilEntry = {
+        entryId,
+        role: "user",
+        phase: "intervention",
+        text: inputText,
+        complete: true,
+        entryKind: "user_intervention",
+        inputKind,
+      };
+      if (!existingEntry) {
+        return [...entries, nextEntry];
+      }
+      return entries.map((entry) => (entry.entryId === entryId ? { ...entry, ...nextEntry } : entry));
     });
   }
 
@@ -279,6 +318,7 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
         complete: false,
         streamBuffer: "",
         streamPreview: "",
+        entryKind: "role",
       },
     ]);
   }
@@ -323,6 +363,7 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
             complete: false,
             streamBuffer: text,
             streamPreview: text,
+            entryKind: "role",
           },
         ];
       }
@@ -382,6 +423,8 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
       round: entry.round ?? undefined,
       text: entry.text,
       complete: true,
+      entryKind: entry.entry_kind || "role",
+      inputKind: entry.input_kind || undefined,
     }));
 
     setCouncilEntries(nextEntries);
@@ -401,6 +444,7 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
     setCouncilActive(false);
     setCouncilEntries([]);
     setViewingCouncilMessageId(null);
+    setCouncilInterventionInput("");
   }
 
   useEffect(
@@ -427,6 +471,8 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
     setCouncilPanelCollapsed,
     councilEntries,
     setCouncilEntries,
+    councilInterventionInput,
+    setCouncilInterventionInput,
     viewingCouncilMessageId,
     setViewingCouncilMessageId,
     councilFeedRef,
@@ -436,6 +482,8 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
     handleMagiRoleTextDelta,
     handleMagiRoleTextCheckpoint,
     handleMagiRoleComplete,
+    handleMagiInterventionAdded: (chatId: string, payload: Record<string, unknown>, seq?: number) =>
+      applyMagiInterventionAdded(chatId, payload, seq),
     handleViewCouncilEntries,
     syncLiveCouncilEntries,
     clearForChatSelection,

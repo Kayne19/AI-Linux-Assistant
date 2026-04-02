@@ -8,7 +8,7 @@ from typing import Any
 
 from config.settings import SETTINGS
 from orchestration.model_router import ModelRouter, RouterExecutionError
-from orchestration.run_control import RunCancelledError
+from orchestration.run_control import RunCancelledError, RunPausedError
 from persistence.postgres_app_store import PostgresAppStore
 from persistence.postgres_memory_store import PostgresMemoryStore
 from persistence.postgres_run_store import (
@@ -340,6 +340,7 @@ class ChatRunWorkerService:
             chat_store=self.app_store,
             chat_session_id=run.chat_session_id,
             cancel_check=lambda checkpoint: self.run_store.is_cancel_requested(run.id),
+            pause_check=lambda checkpoint: self.run_store.is_pause_requested(run.id),
             persist_turn_messages=False,
         )
 
@@ -536,6 +537,12 @@ class ChatRunWorkerService:
 
             if (getattr(run, "run_kind", MESSAGE_RUN_KIND) or MESSAGE_RUN_KIND) == AUTO_NAME_RUN_KIND:
                 turn = router.run_auto_name_follow_up()
+            elif getattr(run, "pause_state_json", None) and (run.magi or "off") in {"full", "lite"}:
+                turn = router.run_magi_resumption(
+                    getattr(run, "pause_state_json", None),
+                    stream_response=True,
+                    magi=run.magi,
+                )
             else:
                 turn = router.run_turn(run.request_content, stream_response=True, magi=run.magi)
             if self.run_store.is_cancel_requested(run.id):
@@ -563,6 +570,18 @@ class ChatRunWorkerService:
             except RunOwnershipLostError:
                 return
             self._cancel_run(run, claimed_worker_id, str(exc) or "Run cancelled.")
+        except RunPausedError as exc:
+            try:
+                delta_buffer.flush()
+                magi_role_delta_buffer.flush()
+            except RunOwnershipLostError:
+                return
+            self.run_store.mark_paused(
+                run.id,
+                worker_id=claimed_worker_id,
+                pause_state=getattr(exc, "pause_state", None) or {},
+                event_payload=getattr(exc, "payload", None) or {"message": "Run paused."},
+            )
         except RouterExecutionError as exc:
             try:
                 delta_buffer.flush()

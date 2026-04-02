@@ -251,6 +251,23 @@ textarea:focus {
   background: rgba(255, 255, 255, 0.025);
 }
 
+.cancel-run-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 80, 80, 0.35);
+  background: rgba(255, 50, 50, 0.08);
+  color: #ff7070;
+}
+
+.cancel-run-btn:hover {
+  background: rgba(255, 50, 50, 0.16);
+  border-color: rgba(255, 80, 80, 0.6);
+}
+
 .sidebar-resize-handle {
   position: absolute;
   top: 0;
@@ -1377,6 +1394,29 @@ textarea:focus {
   letter-spacing: 0.03em;
 }
 
+.council-run-status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text3);
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+}
+
+.council-run-status.paused {
+  color: #6ee7b7;
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.council-run-status.pause-requested {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.25);
+  background: rgba(251, 191, 36, 0.08);
+}
+
 .council-feed {
   flex: 1;
   overflow-y: auto;
@@ -1400,6 +1440,11 @@ textarea:focus {
   background: var(--surface1);
   padding: 10px 12px;
   animation: council-entry-in 0.25s ease forwards;
+}
+
+.council-entry.council-entry-intervention {
+  background: linear-gradient(180deg, rgba(52, 211, 153, 0.06), rgba(52, 211, 153, 0.03));
+  border-color: rgba(52, 211, 153, 0.24);
 }
 
 @keyframes council-entry-in {
@@ -1448,10 +1493,23 @@ textarea:focus {
   border: 1px solid rgba(124, 58, 237, 0.32);
 }
 
+.role-badge.role-user {
+  background: rgba(16, 185, 129, 0.14);
+  color: #6ee7b7;
+  border: 1px solid rgba(16, 185, 129, 0.24);
+}
+
 .council-entry-phase {
   font-size: 10px;
   color: var(--text3);
   letter-spacing: 0.03em;
+}
+
+.council-entry-input-kind {
+  font-size: 10px;
+  color: #6ee7b7;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .council-entry-text {
@@ -1546,6 +1604,87 @@ textarea:focus {
 .council-replay-btn .council-icon {
   width: 12px;
   height: 12px;
+}
+
+.council-panel-footer {
+  flex-shrink: 0;
+  padding: 12px 14px 16px;
+  border-top: 1px solid var(--surface2);
+  background: linear-gradient(180deg, rgba(10, 11, 16, 0.35), rgba(10, 11, 16, 0.72));
+  backdrop-filter: blur(10px);
+}
+
+.council-intervention-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.council-intervention-composer textarea {
+  min-height: 84px;
+  max-height: 180px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #0f1015;
+  border-color: var(--border);
+  color: var(--text);
+  font-family: "Geist", var(--sans);
+  line-height: 1.5;
+}
+
+.council-intervention-note {
+  font-size: 11px;
+  color: var(--text3);
+  line-height: 1.45;
+}
+
+.council-intervention-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.council-intervention-actions.single-row {
+  flex-wrap: nowrap;
+}
+
+.council-action-btn {
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text2);
+  font-family: var(--sans);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.council-action-btn:hover {
+  background: var(--surface2);
+  color: var(--text1);
+}
+
+.council-action-btn.primary {
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.28);
+  color: #d1fae5;
+}
+
+.council-action-btn.primary:hover {
+  background: rgba(52, 211, 153, 0.18);
+}
+
+.council-action-btn.primary.subtle {
+  background: rgba(139, 92, 246, 0.12);
+  border-color: rgba(139, 92, 246, 0.28);
+  color: #ddd6fe;
+}
+
+.council-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 @media (max-width: 960px) {

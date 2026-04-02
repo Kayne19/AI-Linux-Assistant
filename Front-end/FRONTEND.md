@@ -51,6 +51,7 @@ Owns stateful frontend behavior, split by responsibility:
   - council panel state, live role-delta batching, and deferred role completion until queued council text is visible
 - `useStreamingRun.ts`
   - durable run attach/reconnect/cancel lifecycle and optimistic run UI state
+  - paused-run attach/reconnect/resume lifecycle for MAGI runs
 - `useScrollManager.ts`
   - chat auto-scroll and stick-to-bottom behavior
 
@@ -65,6 +66,7 @@ Owns presentational UI surfaces:
 - `ChatView.tsx`
 - `MessageComposer.tsx`
 - `CouncilPanel.tsx`
+  - live pause / resume / resume-with-input controls for active MAGI runs
 - `dialogs/`
   - project/chat dialog shells
 
@@ -115,6 +117,7 @@ It keeps:
 - reconnect-after-disconnect behavior
 - replay of missed events before resuming live updates
 - terminal-event stopping rules
+- paused-event stopping rules for resumable MAGI runs
 
 ### `src/renderMessage.tsx`
 
@@ -195,6 +198,7 @@ When a message is sent:
 8. When `done` arrives, the frontend lets any queued visible text finish draining before replacing the optimistic pair with the final persisted backend messages.
 9. When `magi_role_complete` arrives, the frontend also waits for any queued council delta batch to drain before finalizing that council entry, and only uses the completion payload to catch up a missing suffix that the live council stream never rendered.
 10. For forced Magi discussion rounds, the frontend can treat `no_delta_reason` on `magi_role_complete` as inspectable context about why a role held its stance even when `new_information` is false.
+11. If a MAGI run emits `paused`, the frontend keeps the current council transcript, stops the live stream cleanly, and exposes resume controls in the council panel instead of replacing optimistic chat messages.
 
 For live assistant rendering:
 
@@ -208,6 +212,7 @@ For live council rendering:
 - live council entries append only `magi_role_text_delta` while active, matching the assistant text path
 - `magi_role_text_checkpoint` is a reconnect seed, not a live replacement
 - discussion round events may include `discussion_mode` and `unresolved_issue`, while Arbiter synthesis events may include `primary_issue` and `immediate_obligation` for debug/status surfaces
+- paused-run intervention events may add `entry_kind="user_intervention"` plus `input_kind`, and those entries should render as first-class council transcript rows rather than chat-thread messages
 - live council entries render directly from the run UI state when not viewing a past assistant message
 - stored `councilEntries` state is only for past deliberation replay, not for duplicating the live council stream
 
@@ -218,6 +223,13 @@ When the user switches away from a running chat:
 - the run continues server-side
 - the visible SSE attachment may be dropped
 - reopening the chat seeds from the latest durable checkpoint and then resumes live deltas
+
+Paused MAGI behavior:
+
+- a paused MAGI run remains the active run for the chat and keeps the main composer blocked
+- the council panel owns pause/resume controls and the temporary intervention composer
+- user intervention submitted while paused is rendered inside the council transcript and later appears in persisted `council_entries`
+- intervention is not rendered as a normal chat-thread `user` message
 - reopening the chat resumes from the highest durable sequence the client already saw, so reconnect does not replay already-consumed durable events
 - if a detached run finishes before the chat is reopened, stale optimistic run UI is discarded and the chat reloads persisted messages instead of staying stuck on the optimistic pair
 - the shared stream session client keeps chat and debug reconnect behavior aligned without moving policy into React

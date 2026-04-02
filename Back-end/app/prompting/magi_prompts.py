@@ -261,6 +261,9 @@ REFERENCE CONTEXT:
 PRIOR TRANSCRIPT:
 {transcript}
 
+USER INTERVENTION SINCE PAUSE:
+{user_intervention_block}
+
 RULES:
 - First classify the request using the same mode distinction as the main assistant.
 - Re-read the evidence bundle before speaking. Do not debate from transcript alone.
@@ -275,7 +278,8 @@ RULES:
 - Do not paraphrase the transcript.
 - Do not agree just to agree.
 - Respect project-scoped environment facts and prior failed attempts.
-- If you cite docs, memory, or history, name them in `evidence_sources`.
+- If you cite docs, memory, history, or paused user intervention, name them in `evidence_sources`.
+- Treat paused user intervention as explicit operator-provided context, not as silently merged ground truth.
 
 OUTPUT FORMAT (mandatory JSON):
 {role_output_format}
