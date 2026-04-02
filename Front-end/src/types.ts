@@ -76,6 +76,7 @@ export type PendingDonePayload = {
   payload: {
     user_message: ChatMessage;
     assistant_message: ChatMessage;
+    debug: AssistantDebug;
   };
   selectedProjectIdAtCompletion: string;
 };
@@ -101,6 +102,7 @@ export type ChatRun = {
   project_id: string;
   user_id: string;
   status: string;
+  run_kind: string;
   request_content: string;
   magi: string;
   client_request_id: string;
@@ -132,6 +134,7 @@ export type AssistantDebug = {
   tool_events: Array<Record<string, unknown>>;
   retrieval_query: string;
   retrieved_sources: string[];
+  auto_name_scheduled?: boolean;
 };
 
 export type SendMessageResponse = {

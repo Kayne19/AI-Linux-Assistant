@@ -3,11 +3,12 @@ from datetime import datetime, timedelta, timezone
 from persistence.database import Base, get_engine, get_session_factory
 
 try:
-    from sqlalchemy import and_, func, or_, select
+    from sqlalchemy import and_, func, inspect, or_, select
     from sqlalchemy.exc import IntegrityError
 except ImportError:  # pragma: no cover - optional until SQLAlchemy is installed
     and_ = None
     func = None
+    inspect = None
     or_ = None
     select = None
     IntegrityError = None
@@ -17,6 +18,8 @@ from persistence.postgres_models import ChatMessage, ChatRun, ChatRunEvent, Chat
 
 ACTIVE_RUN_STATUSES = {"queued", "running", "cancel_requested"}
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+MESSAGE_RUN_KIND = "message"
+AUTO_NAME_RUN_KIND = "auto_name"
 
 
 def _utc_now():
@@ -93,6 +96,23 @@ class PostgresRunStore:
             tables=[ChatRun.__table__, ChatRunEvent.__table__],
             checkfirst=True,
         )
+        if inspect is None:
+            return
+        inspector = inspect(engine)
+        chat_run_columns = {column["name"] for column in inspector.get_columns("chat_runs")}
+        with engine.begin() as connection:
+            if "run_kind" not in chat_run_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE chat_runs ADD COLUMN run_kind VARCHAR(32) NOT NULL DEFAULT 'message'"
+                )
+        if hasattr(inspector, "clear_cache"):
+            inspector.clear_cache()
+
+    def _active_run_predicates(self, include_background=False):
+        predicates = [ChatRun.status.in_(ACTIVE_RUN_STATUSES)]
+        if not include_background:
+            predicates.append(ChatRun.run_kind == MESSAGE_RUN_KIND)
+        return predicates
 
     def _session(self):
         return self.session_factory()
@@ -129,7 +149,9 @@ class PostgresRunStore:
         magi,
         client_request_id,
         max_active_runs_per_user,
+        run_kind=MESSAGE_RUN_KIND,
     ):
+        run_kind = (run_kind or MESSAGE_RUN_KIND).strip() or MESSAGE_RUN_KIND
         with self._session() as session:
             session.scalar(select(User).where(User.id == user_id).with_for_update())
             session.scalar(select(ChatSession).where(ChatSession.id == chat_session_id).with_for_update())
@@ -143,34 +165,36 @@ class PostgresRunStore:
             if existing is not None:
                 return existing
 
-            active_chat_run = session.scalar(
-                select(ChatRun)
-                .where(
-                    ChatRun.chat_session_id == chat_session_id,
-                    ChatRun.status.in_(ACTIVE_RUN_STATUSES),
+            if run_kind == MESSAGE_RUN_KIND:
+                active_chat_run = session.scalar(
+                    select(ChatRun)
+                    .where(
+                        ChatRun.chat_session_id == chat_session_id,
+                        *self._active_run_predicates(),
+                    )
+                    .order_by(ChatRun.created_at.desc())
+                    .limit(1)
                 )
-                .order_by(ChatRun.created_at.desc())
-                .limit(1)
-            )
-            if active_chat_run is not None:
-                raise ActiveChatRunExistsError(f"Chat '{chat_session_id}' already has an active run.")
+                if active_chat_run is not None:
+                    raise ActiveChatRunExistsError(f"Chat '{chat_session_id}' already has an active run.")
 
-            active_count = session.scalar(
-                select(func.count())
-                .select_from(ChatRun)
-                .where(
-                    ChatRun.user_id == user_id,
-                    ChatRun.status.in_(ACTIVE_RUN_STATUSES),
-                )
-            ) or 0
-            if int(active_count) >= max(1, int(max_active_runs_per_user)):
-                raise ActiveRunLimitExceededError(f"User '{user_id}' exceeded the active run limit.")
+                active_count = session.scalar(
+                    select(func.count())
+                    .select_from(ChatRun)
+                    .where(
+                        ChatRun.user_id == user_id,
+                        *self._active_run_predicates(),
+                    )
+                ) or 0
+                if int(active_count) >= max(1, int(max_active_runs_per_user)):
+                    raise ActiveRunLimitExceededError(f"User '{user_id}' exceeded the active run limit.")
 
             run = ChatRun(
                 chat_session_id=chat_session_id,
                 project_id=project_id,
                 user_id=user_id,
                 status="queued",
+                run_kind=run_kind,
                 request_content=request_content,
                 magi=(magi or "off").strip() or "off",
                 client_request_id=client_request_id,
@@ -188,27 +212,28 @@ class PostgresRunStore:
                 )
                 if existing is not None:
                     return existing
-                active_chat_run = session.scalar(
-                    select(ChatRun)
-                    .where(
-                        ChatRun.chat_session_id == chat_session_id,
-                        ChatRun.status.in_(ACTIVE_RUN_STATUSES),
+                if run_kind == MESSAGE_RUN_KIND:
+                    active_chat_run = session.scalar(
+                        select(ChatRun)
+                        .where(
+                            ChatRun.chat_session_id == chat_session_id,
+                            *self._active_run_predicates(),
+                        )
+                        .order_by(ChatRun.created_at.desc())
+                        .limit(1)
                     )
-                    .order_by(ChatRun.created_at.desc())
-                    .limit(1)
-                )
-                if active_chat_run is not None:
-                    raise ActiveChatRunExistsError(f"Chat '{chat_session_id}' already has an active run.")
-                active_count = session.scalar(
-                    select(func.count())
-                    .select_from(ChatRun)
-                    .where(
-                        ChatRun.user_id == user_id,
-                        ChatRun.status.in_(ACTIVE_RUN_STATUSES),
-                    )
-                ) or 0
-                if int(active_count) >= max(1, int(max_active_runs_per_user)):
-                    raise ActiveRunLimitExceededError(f"User '{user_id}' exceeded the active run limit.")
+                    if active_chat_run is not None:
+                        raise ActiveChatRunExistsError(f"Chat '{chat_session_id}' already has an active run.")
+                    active_count = session.scalar(
+                        select(func.count())
+                        .select_from(ChatRun)
+                        .where(
+                            ChatRun.user_id == user_id,
+                            *self._active_run_predicates(),
+                        )
+                    ) or 0
+                    if int(active_count) >= max(1, int(max_active_runs_per_user)):
+                        raise ActiveRunLimitExceededError(f"User '{user_id}' exceeded the active run limit.")
                 raise
             session.refresh(run)
         if self._redis_client is not None:
@@ -229,7 +254,7 @@ class PostgresRunStore:
                 select(ChatRun)
                 .where(
                     ChatRun.chat_session_id == chat_session_id,
-                    ChatRun.status.in_(ACTIVE_RUN_STATUSES),
+                    *self._active_run_predicates(),
                 )
                 .order_by(ChatRun.created_at.desc())
                 .limit(1)
@@ -245,7 +270,7 @@ class PostgresRunStore:
                     select(ChatRun)
                     .where(
                         ChatRun.chat_session_id.in_(chat_session_ids),
-                        ChatRun.status.in_(ACTIVE_RUN_STATUSES),
+                        *self._active_run_predicates(),
                     )
                     .order_by(ChatRun.created_at.desc())
                 )
@@ -778,6 +803,37 @@ class PostgresRunStore:
             session.refresh(run)
         self._publish(run_id, next_seq, "done", "done", payload or None, created_at=created_at)
         return user_message, assistant_message
+
+    def complete_run_without_messages(self, run_id, *, worker_id, done_payload=None):
+        created_at = None
+        with self._session() as session:
+            run = self._load_run_for_update(
+                session,
+                run_id,
+                worker_id=worker_id,
+                require_active_owner=bool(worker_id),
+            )
+            run.status = "completed"
+            run.finished_at = _utc_now()
+            run.lease_expires_at = None
+            run.worker_id = worker_id or run.worker_id
+            next_seq = int(run.latest_event_seq or 0) + 1
+            run.latest_event_seq = next_seq
+            payload = dict(done_payload or {})
+            event = ChatRunEvent(
+                run_id=run_id,
+                seq=next_seq,
+                type="done",
+                code="done",
+                payload_json=payload or None,
+            )
+            session.add(event)
+            session.flush()
+            created_at = event.created_at
+            session.commit()
+            session.refresh(run)
+        self._publish(run_id, next_seq, "done", "done", payload or None, created_at=created_at)
+        return run
 
     def get_terminal_event(self, run_id):
         with self._session() as session:

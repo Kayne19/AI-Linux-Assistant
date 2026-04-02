@@ -118,7 +118,7 @@ It keeps:
 
 ### `src/renderMessage.tsx`
 
-Owns message-content rendering, including markdown-like assistant output formatting.
+Owns message-content rendering, including markdown-like assistant and council formatting for completed text blocks.
 
 ### `src/streamStatusText.ts`
 
@@ -173,6 +173,12 @@ When a message is sent:
 8. When `done` arrives, the frontend lets any queued visible text finish draining before replacing the optimistic pair with the final persisted backend messages.
 9. When `magi_role_complete` arrives, the frontend also waits for any queued council delta batch to drain before finalizing that council entry, and only uses the completion payload to catch up a missing suffix that the live council stream never rendered.
 
+For live assistant rendering:
+
+- live assistant text continues rendering through the normal message formatter while `text_delta` drains
+- if the backend schedules a first-turn auto-name follow-up run, the frontend performs a few delayed chat-list refreshes after `done` so the sidebar picks up the final title without keeping the main response run open
+- the frontend receives the final title as normal chat-list data; any title reveal polish remains frontend-owned and does not require backend token streaming for the title itself
+
 For live council rendering:
 
 - the backend sends `magi_role_text_delta` as visible role text, not raw partial JSON
@@ -221,7 +227,9 @@ When the user switches away from a running chat:
 4. `App.tsx` is intentionally thin, but it still orchestrates several hooks and remains the place where cross-surface wiring is easiest to audit.
 5. Chat and debug streaming now share one reconnect/backfill seam, but their UI state stays intentionally separate.
 6. The debug drawer is intentionally operator-focused rather than a polished end-user surface.
-7. The current UI is usable, but still product-iteration code rather than a finished design system.
+7. Composer input stays editable while a run is active, but sending remains disabled until the active run ends or is cancelled.
+8. Live council streaming remains plain-text while incomplete so partial markdown markers do not flicker during delta rendering.
+9. The current UI is usable, but still product-iteration code rather than a finished design system.
 
 ## Safe Change Guidelines
 

@@ -113,6 +113,15 @@ Owns:
 Important rule:
 
 Memory extraction/resolution/commit still happen after the streamed answer completes, not on partial output.
+First-turn chat auto-naming must not delay the terminal `done` handoff for streamed message runs.
+
+Current streamed naming contract:
+
+- the streamed message run may emit `auto_name_scheduled` before `done`
+- the message run still terminalizes normally and hands off the final persisted messages immediately
+- if naming is needed, the durable run layer queues a second internal `run_kind="auto_name"` follow-up run
+- that follow-up run executes the router's explicit `AUTO_NAME` phase against the persisted opening exchange
+- title generation is therefore post-response, but still router-owned and durably observable rather than hidden worker cleanup
 
 ### Durable Run System
 
@@ -166,6 +175,12 @@ Owns:
 - provider streaming handoff
 - maintaining responder-specific state transitions
 - emitting provider lifecycle events that the router/API can forward over SSE
+
+Important detail:
+
+- the normal responder suppresses raw provider `text_delta` chunks during streaming
+- once the streamed provider call completes, it emits one finalized assistant `text_delta` payload into the shared frontend pacing path
+- this keeps normal chat streaming aligned with the Magi arbiter path and avoids partial-markdown or tool-round artifacts reaching the UI
 
 ### Magi
 

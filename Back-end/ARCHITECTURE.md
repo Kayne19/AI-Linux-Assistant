@@ -70,6 +70,7 @@ Prefer:
 - `EXTRACT_MEMORY`
 - `RESOLVE_MEMORY`
 - `COMMIT_MEMORY`
+- `AUTO_NAME`
 
 over:
 
@@ -245,6 +246,32 @@ Owns:
 - session bootstrap
 - history preparation
 - run cancellation checkpoints consumed by router-owned phases
+- structured success/failure outcomes consumed by workers without parsing assistant text
+
+Current router turn phases remain explicit and inspectable:
+
+- `START`
+- `LOAD_MEMORY`
+- `SUMMARIZE_CONVERSATION_HISTORY`
+- `CLASSIFY`
+- `DECIDE_RAG`
+- `REWRITE_QUERY`
+- `RETRIEVE_CONTEXT`
+- `GENERATE_RESPONSE`
+- `SUMMARIZE_RETRIEVED_DOCS`
+- `UPDATE_HISTORY`
+- `DECIDE_MEMORY`
+- `EXTRACT_MEMORY`
+- `RESOLVE_MEMORY`
+- `COMMIT_MEMORY`
+- `AUTO_NAME`
+- `DONE` / `ERROR`
+
+`AUTO_NAME` runs only after the first completed turn in a chat. It stays router-owned, uses the cheap `chat_namer` role settings (default `gpt-5.4-nano`), and persists the generated title through the chat store instead of hiding naming inside persistence or the API layer.
+
+For non-streamed turns, `AUTO_NAME` runs inline after memory work.
+
+For streamed durable runs, the message run emits an explicit `auto_name_scheduled` event and then terminalizes normally. The durable run layer then queues a second internal `auto_name` run, and that follow-up run executes the router's explicit `AUTO_NAME -> DONE` path against the persisted opening exchange. This keeps title generation out of the visible answer stream without moving workflow ownership into the worker.
 
 ### Durable Run Execution
 
@@ -255,6 +282,7 @@ Owns:
 - execution placement outside the web process
 - claiming eligible runs
 - lease heartbeats
+- lease-owned durable writes
 - stale-run recovery/failure handling
 - worker-local runtime reuse boundaries
 
@@ -420,6 +448,7 @@ Owns:
 
 - defaults
 - environment-driven runtime config
+- role-specific worker/model settings including `chat_namer`
 
 ### API / UI Entry Points
 

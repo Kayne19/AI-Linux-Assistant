@@ -11,7 +11,12 @@ from orchestration.model_router import ModelRouter, RouterExecutionError
 from orchestration.run_control import RunCancelledError
 from persistence.postgres_app_store import PostgresAppStore
 from persistence.postgres_memory_store import PostgresMemoryStore
-from persistence.postgres_run_store import PostgresRunStore, RunOwnershipLostError
+from persistence.postgres_run_store import (
+    AUTO_NAME_RUN_KIND,
+    MESSAGE_RUN_KIND,
+    PostgresRunStore,
+    RunOwnershipLostError,
+)
 from retrieval.factory import build_runtime_components
 from retrieval.vectorDB import VectorDB
 from streaming.redis_events import get_shared_client as _get_redis_client
@@ -394,6 +399,7 @@ class ChatRunWorkerService:
                 "tool_events": list(getattr(turn, "tool_events", []) or []),
                 "retrieval_query": getattr(turn, "retrieval_query", "") or "",
                 "retrieved_sources": _extract_sources(getattr(turn, "retrieved_docs", "") or ""),
+                "auto_name_scheduled": bool(getattr(turn, "schedule_auto_name", False)),
             },
         }
         user_message, assistant_message = self.run_store.complete_run_with_messages(
@@ -408,6 +414,43 @@ class ChatRunWorkerService:
         )
         done_payload["user_message"] = _serialize_message(user_message)
         done_payload["assistant_message"] = _serialize_message(assistant_message)
+
+    def _complete_background_run(self, run, claimed_worker_id, turn):
+        self.run_store.complete_run_without_messages(
+            run.id,
+            worker_id=claimed_worker_id,
+            done_payload={
+                "debug": {
+                    "state_trace": list(getattr(turn, "state_trace", []) or []),
+                    "tool_events": list(getattr(turn, "tool_events", []) or []),
+                    "retrieval_query": "",
+                    "retrieved_sources": [],
+                    "generated_chat_title": getattr(turn, "generated_chat_title", "") or "",
+                }
+            },
+        )
+
+    def _queue_auto_name_run(self, run, turn):
+        if not getattr(turn, "schedule_auto_name", False):
+            return None
+        if not run.chat_session_id:
+            return None
+        try:
+            chat_session = self.app_store.get_chat_session(run.chat_session_id)
+            if chat_session is None or (getattr(chat_session, "title", "") or "").strip():
+                return None
+            return self.run_store.create_or_reuse_run(
+                chat_session_id=run.chat_session_id,
+                project_id=run.project_id,
+                user_id=run.user_id,
+                request_content=f"Auto-name follow-up for run {run.id}",
+                magi="off",
+                client_request_id=f"auto-name:{run.id}",
+                max_active_runs_per_user=self.settings.max_active_runs_per_user_default,
+                run_kind=AUTO_NAME_RUN_KIND,
+            )
+        except Exception:
+            return None
 
     def _cancel_run(self, run, claimed_worker_id, message="Run cancelled."):
         self.run_store.mark_cancelled(
@@ -491,7 +534,10 @@ class ChatRunWorkerService:
 
             router.set_event_listener(_event_listener)
 
-            turn = router.run_turn(run.request_content, stream_response=True, magi=run.magi)
+            if (getattr(run, "run_kind", MESSAGE_RUN_KIND) or MESSAGE_RUN_KIND) == AUTO_NAME_RUN_KIND:
+                turn = router.run_auto_name_follow_up()
+            else:
+                turn = router.run_turn(run.request_content, stream_response=True, magi=run.magi)
             if self.run_store.is_cancel_requested(run.id):
                 raise RunCancelledError("Run cancelled.")
             if turn is None:
@@ -499,7 +545,11 @@ class ChatRunWorkerService:
 
             delta_buffer.flush()
             magi_role_delta_buffer.flush()
-            self._complete_run(run, claimed_worker_id, turn)
+            if (getattr(run, "run_kind", MESSAGE_RUN_KIND) or MESSAGE_RUN_KIND) == AUTO_NAME_RUN_KIND:
+                self._complete_background_run(run, claimed_worker_id, turn)
+            else:
+                self._complete_run(run, claimed_worker_id, turn)
+                self._queue_auto_name_run(run, turn)
         except RunOwnershipLostError:
             try:
                 delta_buffer.flush()

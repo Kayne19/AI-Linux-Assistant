@@ -20,6 +20,11 @@ The system is split deliberately:
 - Queueing and workers own execution placement, claiming, lease heartbeats, stale-work recovery, and durable event publication.
 - A worker is where the router runs. It is not a second workflow orchestrator.
 
+Lease rule:
+
+- worker-owned event, checkpoint, and terminal writes are only valid while that worker still owns the active lease
+- once the lease is lost, the old worker must stop writing durable state immediately
+
 ## Core Records
 
 The durable run layer is built around two Postgres-backed records.
@@ -35,7 +40,7 @@ Startup compatibility rule:
 `chat_runs` stores the durable snapshot for a run, including:
 
 - identity and scope: `id`, `chat_session_id`, `project_id`, `user_id`
-- lifecycle: `status`, `started_at`, `finished_at`, `created_at`
+- lifecycle: `status`, `run_kind`, `started_at`, `finished_at`, `created_at`
 - request metadata: `request_content`, `magi`, `client_request_id`
 - convenience snapshot state: `latest_state_code`, `latest_event_seq`, `partial_assistant_text`
 - execution tracking: `worker_id`, `lease_expires_at`, `cancel_requested`
@@ -46,6 +51,8 @@ Important boundaries:
 - `latest_*` fields are convenience snapshot fields for fast reads.
 - `partial_assistant_text` is an optional cache/snapshot only.
 - The snapshot record is not the authoritative replay source.
+- `run_kind="message"` is the normal user-visible responder path.
+- `run_kind="auto_name"` is an internal follow-up run used to execute the router-owned `AUTO_NAME` phase after a streamed first turn completes.
 
 ### `chat_run_events`
 
@@ -67,6 +74,8 @@ Rules:
 - terminal UI state comes from durable run terminalization, not from a still-open request thread
 - live `text_delta` fanout may exist only in Redis and does not need a durable row per token
 - durable partial-text replay uses `text_checkpoint` events with absolute text and a checkpoint window
+- live `magi_role_text_delta` fanout may exist only in Redis and does not need a durable row per token
+- durable in-progress council replay uses `magi_role_text_checkpoint` events with absolute role text and a per-entry checkpoint window
 
 ## Lifecycle
 
@@ -89,6 +98,11 @@ High-level lifecycle:
 6. The worker terminalizes the run exactly once as `completed`, `failed`, or `cancelled`.
 7. On normal completion, final chat messages are persisted once through the normal persistence path.
 
+Internal follow-up rule:
+
+- a streamed first-turn message run may queue one internal `auto_name` follow-up run after the main message run completes
+- that follow-up run does not persist chat messages and exists only to execute the router-owned naming phase durably and observably
+
 ## Concurrency Policy
 
 Concurrency policy belongs in the durable run system, not in ad hoc worker code.
@@ -99,6 +113,12 @@ v1 rules:
 - same-chat second send while an active run exists returns `409`
 - per-user active-run cap is configurable
 - the default cap is `MAX_ACTIVE_RUNS_PER_USER_DEFAULT=3`
+
+Run-kind boundary:
+
+- only `run_kind="message"` counts toward same-chat active-run blocking
+- only `run_kind="message"` counts toward the per-user active-run cap
+- internal `auto_name` follow-up runs remain durable and claimable, but they do not block the user from sending the next chat message
 
 Design intent:
 
@@ -127,6 +147,12 @@ Compatibility requirements:
 
 The idempotency scope is the chat session, not the entire user or project.
 
+Serialization rule:
+
+- create-run decisions are made inside one run-store transaction
+- the store locks the owning user/chat rows before checking idempotency, same-chat activity, and per-user caps
+- commit-time uniqueness conflicts must re-read durable state rather than create a second run
+
 ## Worker Claiming, Leases, And Recovery
 
 Workers do not invent policy. They claim runs that the durable run system has made eligible.
@@ -143,7 +169,7 @@ Expected responsibilities:
 Recovery rules:
 
 - lease expiry means the original worker is no longer trusted to own the run
-- reclaim logic must avoid duplicate completion
+- reclaim logic must avoid duplicate completion and stale-worker durable writes
 - stale work must either be safely resumed or explicitly failed/requeued according to run-store policy
 
 Worker-local reuse boundary:
@@ -165,9 +191,10 @@ Cancellation is cooperative and checkpoint-based.
 
 When a cancel request is accepted:
 
-1. the run is marked `cancel_requested`
-2. the worker observes that flag at the next safe checkpoint
-3. the worker finalizes the run as `cancelled`
+1. the control plane reads the current run status
+2. queued runs are terminalized durably as `cancelled` immediately
+3. running runs are marked `cancel_requested`
+4. the active worker observes that flag at the next safe checkpoint and finalizes as `cancelled`
 
 Safe checkpoints include:
 
@@ -180,6 +207,7 @@ Safe checkpoints include:
 Persistence rule:
 
 - do not partially persist a final assistant message unless the run has already reached normal completion semantics
+- queued-vs-running cancel choice is explicit control-plane logic; the store only exposes atomic transitions
 
 ## API Surface
 

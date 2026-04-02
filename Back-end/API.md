@@ -151,6 +151,7 @@ The run store owns:
 - configurable per-user active-run cap enforcement
 - run snapshots for reconnect and operator/debug inspection
 - startup-time creation of missing durable run tables for older databases
+- internal run kinds such as the router-owned `auto_name` follow-up path
 
 Current implementation:
 
@@ -165,8 +166,13 @@ The backend:
 1. creates or reuses a durable run
 2. streams persisted run events from `chat_run_events`
 3. replays backlog first, then live events
-4. emits terminal `done` / `error` / `cancelled` from durable run state
+4. emits terminal `done` / `error` / `cancelled` from the durable terminal event row when present
 5. keeps `/messages/stream` as a wrapper over that run stream
+
+For partial text:
+
+- assistant live token pacing uses Redis-only `text_delta` plus durable `text_checkpoint`
+- Magi council live token pacing uses Redis-only `magi_role_text_delta` plus durable `magi_role_text_checkpoint`
 
 The frontend is responsible for turning backend event codes into polished human labels.
 
@@ -190,7 +196,8 @@ Current notable fields:
 
 - `ChatMessageResponse.council_entries` carries persisted Magi deliberation entries when present.
 - `AssistantDebugResponse` includes `state_trace`, `tool_events`, `retrieval_query`, and `retrieved_sources`.
-- `ChatSessionResponse.active_run_id` / `active_run_status` expose per-chat background activity.
+- `ChatSessionResponse.active_run_id` / `active_run_status` expose only user-visible active `message` runs, not internal follow-up runs like `auto_name`.
+- `ChatRunResponse.run_kind` distinguishes normal `message` runs from internal follow-up runs such as `auto_name`.
 - `ChatRunResponse.latest_*` fields are snapshot conveniences; `chat_run_events` remains the replay source of truth.
 - Run-event payloads returned by `/runs/{run_id}/events` and `/runs/{run_id}/events/stream` include durable `created_at` timestamps so the frontend can compute timing diagnostics from backend event time.
 - `GET /runs/{run_id}/events` supports `after_seq` plus `limit`, and serialized run events include `created_at` for operator/debug timing inspection.
@@ -203,6 +210,7 @@ Current notable fields:
 4. The blocking endpoint should remain available as a safe fallback unless deliberately removed.
 5. Run creation must be idempotent when the same `client_request_id` is retried for the same chat.
 6. Concurrency policy belongs in the durable run system, not in ad hoc API threads.
+7. Cancel policy selection is explicit in the control plane: queued runs are terminalized immediately, running runs are marked `cancel_requested`.
 
 ## Files To Read First
 

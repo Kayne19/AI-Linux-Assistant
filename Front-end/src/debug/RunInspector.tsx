@@ -154,6 +154,7 @@ export function RunInspector({ runId, onHistoryRefresh }: RunInspectorProps) {
       <div className="debug-inspector-header">
         <div className="debug-inspector-topline">
           <span className={`debug-badge tone-${toneForStatus(run.status)}`}>{run.status}</span>
+          {run.run_kind !== "message" ? <span className="debug-badge subtle">{run.run_kind}</span> : null}
           {run.latest_state_code ? <span className="debug-badge subtle">{run.latest_state_code}</span> : null}
           <code className="debug-run-id">{truncateMiddle(run.id, 10, 6)}</code>
           <CopyButton value={run.id} />
@@ -169,6 +170,7 @@ export function RunInspector({ runId, onHistoryRefresh }: RunInspectorProps) {
           {isActive && leaseRemainingMs !== null ? (
             <div className={`tone-${leaseTone}`}>lease: {leaseRemainingMs > 0 ? `${formatDuration(leaseRemainingMs)} left` : "expired"}</div>
           ) : null}
+          <div>kind: <code>{run.run_kind || "message"}</code></div>
           <div>magi: <code>{run.magi || "off"}</code></div>
           <div>
             client_req_id: <code>{truncateMiddle(run.client_request_id || "—", 8, 4)}</code>

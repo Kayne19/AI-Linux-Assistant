@@ -9,8 +9,10 @@ deterministic. They protect orchestration behavior:
 - settings-to-worker assembly
 """
 
+from types import SimpleNamespace
+
 from orchestration.history_preparer import PreparedHistory
-from orchestration.model_router import ModelRouter, RouterState
+from orchestration.model_router import ModelRouter, RouterExecutionError, RouterState
 from agents.response_agent import ResponseAgent
 from config.settings import AppSettings, RoleModelSettings
 from agents.summarizers import HistorySummarizer
@@ -77,6 +79,15 @@ class SpyResponder:
         return self.response_text
 
 
+class ExplodingResponder:
+    def call_api(self, *args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("boom")
+
+    def stream_api(self, *args, **kwargs):
+        return self.call_api(*args, **kwargs)
+
+
 class FakeMemoryStore:
     def __init__(self, snapshot_text="KNOWN SYSTEM PROFILE:\n- OS: Debian", issues_text="", attempts_text=""):
         self.snapshot_text = snapshot_text
@@ -129,6 +140,16 @@ class FakeWorker:
         return ""
 
 
+class FakeTitleWorker:
+    def __init__(self, response_text="Auto title"):
+        self.response_text = response_text
+        self.calls = []
+
+    def generate_text(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return self.response_text
+
+
 class FakeMemoryExtractor:
     def __init__(self, extracted=None):
         self.extracted = extracted or {
@@ -147,16 +168,26 @@ class FakeMemoryExtractor:
 
 
 class FakeChatStore:
-    def __init__(self, history=None):
+    def __init__(self, history=None, title=""):
         self.history = list(history or [])
         self.appended = []
+        self.title = title
+        self.updated_titles = []
 
     def load_conversation_history(self, chat_session_id):
         return list(self.history)
 
+    def get_chat_session(self, chat_session_id):
+        return SimpleNamespace(id=chat_session_id, title=self.title)
+
     def append_message(self, chat_session_id, role, content, council_entries=None):
         self.appended.append((chat_session_id, role, content))
         self.history.append((role, content))
+
+    def update_chat_session_title(self, chat_session_id, title):
+        self.title = title
+        self.updated_titles.append((chat_session_id, title))
+        return self.get_chat_session(chat_session_id)
 
 
 def test_router_uses_raw_retrieved_docs_before_post_turn_summarization():
@@ -196,6 +227,7 @@ def test_router_uses_raw_retrieved_docs_before_post_turn_summarization():
         RouterState.EXTRACT_MEMORY.name,
         RouterState.RESOLVE_MEMORY.name,
         RouterState.COMMIT_MEMORY.name,
+        RouterState.AUTO_NAME.name,
         RouterState.DONE.name,
     ]
 
@@ -270,6 +302,46 @@ def test_router_prefetch_uses_searchable_labels_only():
 
     assert database.calls == [("docker permission denied", ("docker",))]
     assert router.last_turn.suggested_search_labels == ["docker"]
+
+
+def test_router_run_turn_raises_structured_error_for_worker_path():
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=ExplodingResponder(),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    try:
+        router.run_turn("hello", stream_response=True)
+        assert False, "expected structured router execution error"
+    except RouterExecutionError as exc:
+        assert str(exc) == "boom"
+        assert exc.turn is not None
+        assert exc.turn.error == "boom"
+        assert RouterState.ERROR.name in exc.turn.state_trace
+
+
+def test_router_does_not_treat_literal_router_error_text_as_failure():
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("Router error: this is literal assistant content"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    response = router.ask_question("hello")
+
+    assert response == "Router error: this is literal assistant content"
+    assert router.last_turn.response == "Router error: this is literal assistant content"
 
 
 def test_router_tool_search_strips_control_labels_before_retrieval():
@@ -369,6 +441,7 @@ def test_settings_provider_override_uses_provider_default_model():
             context_summarizer=RoleModelSettings("openai", "context-summary-model"),
             memory_extractor=RoleModelSettings("openai", "memory-model"),
             registry_updater=RoleModelSettings("local", "registry-model"),
+            chat_namer=RoleModelSettings("openai", "chat-namer-model"),
             response_tool_rounds=5,
             classifier_temperature=0.0,
             contextualizer_temperature=0.0,
@@ -557,6 +630,128 @@ def test_decide_memory_runs_for_substantive_turns():
     assert RouterState.COMMIT_MEMORY.name in router.last_turn.state_trace
     assert len(extractor.calls) == 1
     assert len(memory_store.committed_resolutions) == 1
+
+
+def test_router_auto_names_first_turn_after_memory_commit():
+    chat_store = FakeChatStore()
+    title_worker = FakeTitleWorker('  "Docker permissions fix."  ')
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("try adding your user to the docker group"),
+        chat_namer=title_worker,
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+        chat_store=chat_store,
+        chat_session_id="session-123",
+    )
+
+    router.ask_question("docker permission denied")
+
+    assert chat_store.updated_titles == [("session-123", "Docker permissions fix")]
+    assert RouterState.AUTO_NAME.name in router.last_turn.state_trace
+    assert router.last_turn.state_trace[-2:] == [RouterState.AUTO_NAME.name, RouterState.DONE.name]
+    assert title_worker.calls[0]["kwargs"]["max_output_tokens"] == 30
+    assert any(event["type"] == "chat_named" for event in router.last_turn.tool_events)
+
+
+def test_router_auto_names_first_turn_without_memory_store():
+    chat_store = FakeChatStore()
+    title_worker = FakeTitleWorker("First turn title")
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        chat_namer=title_worker,
+        memory_store=None,
+        chat_store=chat_store,
+        chat_session_id="session-123",
+    )
+
+    router.ask_question("hello")
+
+    assert chat_store.updated_titles == [("session-123", "First turn title")]
+    assert RouterState.AUTO_NAME.name in router.last_turn.state_trace
+    assert RouterState.EXTRACT_MEMORY.name not in router.last_turn.state_trace
+
+
+def test_router_auto_name_does_not_overwrite_existing_chat_title():
+    chat_store = FakeChatStore(title="Pinned title")
+    title_worker = FakeTitleWorker("Should not be used")
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        chat_namer=title_worker,
+        memory_store=None,
+        chat_store=chat_store,
+        chat_session_id="session-123",
+    )
+
+    router.ask_question("hello")
+
+    assert chat_store.updated_titles == []
+    assert title_worker.calls == []
+
+
+def test_router_streaming_first_turn_schedules_auto_name_follow_up():
+    chat_store = FakeChatStore()
+    title_worker = FakeTitleWorker("Deferred title")
+    responder = SpyResponder("streamed answer")
+    responder.stream_api = responder.call_api
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=responder,
+        chat_namer=title_worker,
+        memory_store=None,
+        chat_store=chat_store,
+        chat_session_id="session-123",
+    )
+
+    turn = router.run_turn("hello", stream_response=True)
+
+    assert turn.schedule_auto_name is True
+    assert RouterState.AUTO_NAME.name not in turn.state_trace
+    assert chat_store.updated_titles == []
+    assert title_worker.calls == []
+    assert any(event["type"] == "auto_name_scheduled" for event in turn.tool_events)
+
+
+def test_router_auto_name_follow_up_uses_persisted_first_exchange():
+    chat_store = FakeChatStore(history=[("user", "hello"), ("model", "streamed answer")])
+    title_worker = FakeTitleWorker("Follow-up title")
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("unused"),
+        chat_namer=title_worker,
+        memory_store=None,
+        chat_store=chat_store,
+        chat_session_id="session-123",
+    )
+
+    turn = router.run_auto_name_follow_up()
+
+    assert turn.generated_chat_title == "Follow-up title"
+    assert chat_store.updated_titles == [("session-123", "Follow-up title")]
+    assert turn.state_trace == [RouterState.AUTO_NAME.name, RouterState.DONE.name]
+    assert any(event["type"] == "chat_named" for event in turn.tool_events)
 
 
 # ---------------------------------------------------------------------------

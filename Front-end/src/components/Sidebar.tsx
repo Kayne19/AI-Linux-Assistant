@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChatSession, Project, User } from "../types";
 import { formatChatTimestamp } from "../utils";
 
@@ -56,6 +56,63 @@ export function Sidebar({
   onCloseMobileSidebar,
 }: SidebarProps) {
   const dragStateRef = useRef<{ active: boolean; width: number }>({ active: false, width: sidebarWidth });
+  const previousTitlesRef = useRef<Record<string, string>>({});
+  const titleAnimationTimersRef = useRef<Record<string, number>>({});
+  const [animatedTitles, setAnimatedTitles] = useState<Record<string, string>>({});
+
+  useEffect(
+    () => () => {
+      Object.values(titleAnimationTimersRef.current).forEach((timerId) => {
+        window.clearInterval(timerId);
+      });
+      titleAnimationTimersRef.current = {};
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const currentTitles: Record<string, string> = {};
+    Object.values(chatListsByProject).forEach((items) => {
+      items.forEach((chat) => {
+        currentTitles[chat.id] = (chat.title || "").trim();
+      });
+    });
+    activeProjectChats.forEach((chat) => {
+      currentTitles[chat.id] = (chat.title || "").trim();
+    });
+
+    Object.entries(currentTitles).forEach(([chatId, nextTitle]) => {
+      const previousTitle = (previousTitlesRef.current[chatId] || "").trim();
+      if (previousTitle || !nextTitle || animatedTitles[chatId] === nextTitle) {
+        return;
+      }
+
+      window.clearInterval(titleAnimationTimersRef.current[chatId]);
+      let visibleChars = 0;
+      setAnimatedTitles((current) => ({ ...current, [chatId]: "" }));
+      titleAnimationTimersRef.current[chatId] = window.setInterval(() => {
+        visibleChars += 1;
+        const nextSlice = nextTitle.slice(0, visibleChars);
+        setAnimatedTitles((current) => ({ ...current, [chatId]: nextSlice }));
+        if (visibleChars >= nextTitle.length) {
+          window.clearInterval(titleAnimationTimersRef.current[chatId]);
+          delete titleAnimationTimersRef.current[chatId];
+          window.setTimeout(() => {
+            setAnimatedTitles((current) => {
+              if (current[chatId] !== nextTitle) {
+                return current;
+              }
+              const next = { ...current };
+              delete next[chatId];
+              return next;
+            });
+          }, 250);
+        }
+      }, 18);
+    });
+
+    previousTitlesRef.current = currentTitles;
+  }, [activeProjectChats, animatedTitles, chatListsByProject]);
 
   useEffect(() => {
     dragStateRef.current.width = sidebarWidth;
@@ -194,19 +251,25 @@ export function Sidebar({
                               <div className="nested-chat-list">
                                 {projectChats.map((chat) => (
                                   <div key={chat.id} className={`nested-chat-row ${chat.id === selectedChatId ? "active" : ""}`}>
+                                    {(() => {
+                                      const visibleTitle = animatedTitles[chat.id] || chat.title || "Untitled chat";
+                                      const fullTitle = chat.title || "Untitled chat";
+                                      return (
                                     <button
                                       className={`nested-chat-item ${chat.id === selectedChatId ? "active" : ""}`}
-                                      title={chat.title || "Untitled chat"}
+                                      title={fullTitle}
                                       onClick={() => {
                                         onSelectChat(chat.id);
                                         onCloseMobileSidebar();
                                       }}
                                     >
                                       <span className="nested-chat-copy">
-                                        <strong>{chat.title || "Untitled chat"}</strong>
+                                        <strong>{visibleTitle}</strong>
                                         <small>{formatChatTimestamp(chat.updated_at || chat.created_at)}</small>
                                       </span>
                                     </button>
+                                      );
+                                    })()}
                                     <button
                                       type="button"
                                       className="chat-edit-trigger"

@@ -36,6 +36,7 @@ function RunCard({
     >
       <div className="debug-run-card-top">
         <span className={`debug-badge tone-${toneForStatus(run.status)}`}>{run.status}</span>
+        {run.run_kind !== "message" ? <span className="debug-badge subtle">{run.run_kind}</span> : null}
         {run.latest_state_code ? <span className="debug-badge subtle">{run.latest_state_code}</span> : null}
       </div>
       <strong className="debug-run-card-title">{truncateMiddle(run.id, 6, 4)}</strong>

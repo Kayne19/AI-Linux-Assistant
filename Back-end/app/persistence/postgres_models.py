@@ -121,6 +121,7 @@ class ChatRun(Base):
     project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False, index=True)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    run_kind: Mapped[str] = mapped_column(String(32), default="message", nullable=False, index=True)
     request_content: Mapped[str] = mapped_column(Text, default="", nullable=False)
     magi: Mapped[str] = mapped_column(String(16), default="off", nullable=False)
     client_request_id: Mapped[str] = mapped_column(String(120), nullable=False)

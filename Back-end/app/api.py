@@ -100,6 +100,7 @@ class ChatRunResponse(BaseModel):
     project_id: str
     user_id: str
     status: str
+    run_kind: str
     request_content: str
     magi: str
     client_request_id: str
@@ -213,6 +214,7 @@ def _serialize_run(run):
         project_id=run.project_id,
         user_id=run.user_id,
         status=run.status,
+        run_kind=getattr(run, "run_kind", "message") or "message",
         request_content=run.request_content or "",
         magi=run.magi or "off",
         client_request_id=run.client_request_id or "",

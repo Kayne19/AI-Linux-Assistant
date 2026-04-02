@@ -136,6 +136,14 @@ export function useStreamingRun({
     setRunUiForChat(chatId, (current) => (current ? { ...current, streamStatus: nextStreamStatus } : current));
   }
 
+  function scheduleAutoNameRefreshes(projectId: string) {
+    [800, 1800, 3200].forEach((delayMs) => {
+      window.setTimeout(() => {
+        void reloadChatsRef.current(projectId).catch(() => undefined);
+      }, delayMs);
+    });
+  }
+
   async function finalizeDone(chatId: string, payload: PendingDonePayload["payload"], projectIdAtCompletion: string) {
     setMessagesForChat(chatId, (current) => [
       ...current.filter((message) => message.id >= 0),
@@ -147,6 +155,9 @@ export function useStreamingRun({
     delete pendingDonePayloadsRef.current[chatId];
     if (projectIdAtCompletion) {
       await reloadChatsRef.current(projectIdAtCompletion);
+      if (payload.debug?.auto_name_scheduled) {
+        scheduleAutoNameRefreshes(projectIdAtCompletion);
+      }
     }
   }
 

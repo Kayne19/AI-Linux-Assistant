@@ -35,8 +35,15 @@ class RouterState(Enum):
     EXTRACT_MEMORY = auto()
     RESOLVE_MEMORY = auto()
     COMMIT_MEMORY = auto()
+    AUTO_NAME = auto()
     DONE = auto()
     ERROR = auto()
+
+
+class RouterExecutionError(RuntimeError):
+    def __init__(self, message, turn=None):
+        super().__init__(message)
+        self.turn = turn
 
 
 @dataclass
@@ -58,6 +65,8 @@ class TurnContext:
     error: str | None = None
     persisted_user_message: object | None = None
     persisted_assistant_message: object | None = None
+    schedule_auto_name: bool = False
+    generated_chat_title: str = ""
 
 
 class ModelRouter:
@@ -76,6 +85,7 @@ class ModelRouter:
         history_summarizer=None,
         context_summarizer=None,
         responder=None,
+        chat_namer=None,
         response_tool_rounds=None,
         memory_store=None,
         memory_extractor=None,
@@ -113,6 +123,7 @@ class ModelRouter:
         self.history_summarizer = self._build_history_summarizer(history_summarizer)
         self.context_summarizer = self._build_context_summarizer(context_summarizer)
         self.responder = self._build_responder(responder)
+        self.chat_namer = self._build_worker(chat_namer, self.settings.chat_namer)
         self.magi_responder = None
         self.magi_lite_responder = None
         self._magi_active = "off"
@@ -131,6 +142,7 @@ class ModelRouter:
             RouterState.EXTRACT_MEMORY: self._extract_memory,
             RouterState.RESOLVE_MEMORY: self._resolve_memory,
             RouterState.COMMIT_MEMORY: self._commit_memory,
+            RouterState.AUTO_NAME: self._auto_name,
         }
 
     def _load_conversation_history(self, chat_store, chat_session_id):
@@ -138,21 +150,53 @@ class ModelRouter:
             return []
         return list(chat_store.load_conversation_history(chat_session_id))
 
+    def _is_first_turn(self):
+        """True when UPDATE_HISTORY has just appended the first user+assistant pair."""
+        return len(self.conversation_history) == 2
+
+    def _chat_session_has_title(self):
+        if self.chat_store is None or not self.chat_session_id:
+            return False
+        get_chat_session = getattr(self.chat_store, "get_chat_session", None)
+        if get_chat_session is None:
+            return False
+        try:
+            chat_session = get_chat_session(self.chat_session_id)
+        except Exception:
+            return False
+        return bool((getattr(chat_session, "title", "") or "").strip())
+
+    def _next_post_turn_state(self, turn):
+        if not self._is_first_turn():
+            return RouterState.DONE
+        if self._stream_response_enabled:
+            turn.schedule_auto_name = True
+            self._emit_event("auto_name_scheduled", {"mode": "follow_up"})
+            return RouterState.DONE
+        return RouterState.AUTO_NAME
+
     def ask_question(self, user_question, magi="off"):
-        return self._run_turn(user_question, stream_response=False, magi=magi)
+        try:
+            turn = self.run_turn(user_question, stream_response=False, magi=magi)
+        except RouterExecutionError as exc:
+            return f"Router error: {exc}"
+        return turn.response
 
     def ask_question_stream(self, user_question, magi="off"):
-        return self._run_turn(user_question, stream_response=True, magi=magi)
+        try:
+            turn = self.run_turn(user_question, stream_response=True, magi=magi)
+        except RouterExecutionError as exc:
+            return f"Router error: {exc}"
+        return turn.response
 
-    def _run_turn(self, user_question, stream_response=False, magi=False):
+    def _execute_turn(self, turn, initial_state, *, stream_response=False, magi="off", manage_memory_turn=True):
         self._magi_active = magi
-        turn = TurnContext(user_question=user_question)
         self.current_turn = turn
         self._stream_response_enabled = stream_response
-        state = RouterState.START
+        state = initial_state
         self._set_state(state, turn)
 
-        if self.memory_store is not None:
+        if manage_memory_turn and self.memory_store is not None:
             self.memory_store.begin_turn()
         try:
             while state not in {RouterState.DONE, RouterState.ERROR}:
@@ -170,16 +214,37 @@ class ModelRouter:
                     state = RouterState.ERROR
                     self._set_state(state, turn)
         finally:
-            if self.memory_store is not None:
+            if manage_memory_turn and self.memory_store is not None:
                 self.memory_store.end_turn()
 
         self.last_turn = turn
         self.current_turn = None
         self._stream_response_enabled = False
         if state == RouterState.ERROR:
-            return f"Router error: {turn.error}"
+            raise RouterExecutionError(turn.error or "Router error", turn=turn)
 
-        return turn.response
+        return turn
+
+    def run_turn(self, user_question, stream_response=False, magi=False):
+        turn = TurnContext(user_question=user_question)
+        return self._execute_turn(
+            turn,
+            RouterState.START,
+            stream_response=stream_response,
+            magi=magi,
+            manage_memory_turn=True,
+        )
+
+    def run_auto_name_follow_up(self):
+        self.conversation_history = self._load_conversation_history(self.chat_store, self.chat_session_id)
+        turn = TurnContext(user_question="")
+        return self._execute_turn(
+            turn,
+            RouterState.AUTO_NAME,
+            stream_response=False,
+            magi="off",
+            manage_memory_turn=False,
+        )
 
     def set_state_listener(self, listener):
         self.state_listener = listener
@@ -205,6 +270,24 @@ class ModelRouter:
             self.current_turn.tool_events.append({"type": event_type, "payload": payload})
         if self.event_listener is not None:
             self.event_listener(event_type, payload)
+
+    def _auto_name_source_pair(self, turn):
+        user_text = (turn.user_question or "").strip()
+        assistant_text = (turn.response or "").strip()
+        if user_text and assistant_text:
+            return user_text, assistant_text
+
+        first_user = ""
+        first_assistant = ""
+        for role, content in self.conversation_history:
+            normalized_role = (role or "").strip().lower()
+            if not first_user and normalized_role == "user":
+                first_user = content or ""
+                continue
+            if first_user and normalized_role in {"assistant", "model"}:
+                first_assistant = content or ""
+                break
+        return first_user.strip(), first_assistant.strip()
 
     def _summarize_extracted_memory(self, extracted, max_items=3):
         extracted = extracted or {}
@@ -741,7 +824,7 @@ class ModelRouter:
     def _decide_memory(self, turn):
         if self.memory_store is None or self.memory_extractor is None:
             self._emit_event("memory_skipped", {"reason": "missing_store_or_extractor"})
-            return RouterState.DONE
+            return self._next_post_turn_state(turn)
         return RouterState.EXTRACT_MEMORY
 
     def _extract_memory(self, turn):
@@ -791,7 +874,7 @@ class ModelRouter:
 
     def _commit_memory(self, turn):
         if self.memory_store is None or turn.memory_resolution is None:
-            return RouterState.DONE
+            return self._next_post_turn_state(turn)
 
         try:
             self.memory_store.commit_resolution(
@@ -802,6 +885,48 @@ class ModelRouter:
             self._emit_event("memory_committed", turn.memory_resolution.details())
         except Exception as exc:
             self._emit_event("memory_error", {"phase": "commit", "error": str(exc)})
+        return self._next_post_turn_state(turn)
+
+    def _auto_name(self, turn):
+        if not (self.chat_store and self.chat_session_id):
+            self._emit_event("chat_name_skipped", {"reason": "missing_chat_context"})
+            return RouterState.DONE
+        if not hasattr(self.chat_store, "update_chat_session_title"):
+            self._emit_event("chat_name_skipped", {"reason": "missing_title_store"})
+            return RouterState.DONE
+        if self._chat_session_has_title():
+            self._emit_event("chat_name_skipped", {"reason": "already_titled"})
+            return RouterState.DONE
+
+        user_text, assistant_text = self._auto_name_source_pair(turn)
+        if not user_text or not assistant_text:
+            self._emit_event("chat_name_skipped", {"reason": "missing_opening_exchange"})
+            return RouterState.DONE
+
+        try:
+            self._check_cancel("before_auto_name")
+            raw_title = self.chat_namer.generate_text(
+                (
+                    "You generate short chat titles from the opening exchange. "
+                    "Return only a concise 3 to 6 word title with no quotes or trailing punctuation."
+                ),
+                f"User: {user_text[:400]}\nAssistant: {assistant_text[:400]}",
+                temperature=0.3,
+                max_output_tokens=30,
+                cancel_check=self.cancel_check,
+            )
+            self._check_cancel("after_auto_name")
+            title = (raw_title or "").strip().strip('"').strip("'").strip()[:80].rstrip(".,;:!?")
+            if title:
+                turn.generated_chat_title = title
+                self.chat_store.update_chat_session_title(self.chat_session_id, title)
+                self._emit_event("chat_named", {"title": title})
+            else:
+                self._emit_event("chat_name_skipped", {"reason": "blank_title"})
+        except RunCancelledError:
+            raise
+        except Exception as exc:
+            self._emit_event("chat_name_error", {"error": str(exc)})
         return RouterState.DONE
 
     def update_history(self, role, content, council_entries=None):
