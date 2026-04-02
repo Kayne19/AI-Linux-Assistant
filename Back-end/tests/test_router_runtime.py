@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from orchestration.history_preparer import PreparedHistory
 from orchestration.model_router import ModelRouter, RouterExecutionError, RouterState
 from agents.response_agent import ResponseAgent
+from agents.response_agent import ResponseState
 from config.settings import AppSettings, RoleModelSettings
 from agents.summarizers import HistorySummarizer
 
@@ -752,6 +753,33 @@ def test_router_auto_name_follow_up_uses_persisted_first_exchange():
     assert chat_store.updated_titles == [("session-123", "Follow-up title")]
     assert turn.state_trace == [RouterState.AUTO_NAME.name, RouterState.DONE.name]
     assert any(event["type"] == "chat_named" for event in turn.tool_events)
+
+
+def test_router_responder_state_events_include_phase_and_details():
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=None,
+    )
+    router.current_turn = turn = router.run_turn("hello", stream_response=False)
+    router.current_turn = turn
+
+    router._handle_responder_state(ResponseState.PROCESS_TOOL_CALLS, {"round": 1, "count": 2})
+
+    assert turn.state_trace[-1] == "RESPONDER_PROCESS_TOOL_CALLS"
+    assert turn.tool_events[-1] == {
+        "type": "responder_state",
+        "payload": {
+            "phase": "responder",
+            "state": "PROCESS_TOOL_CALLS",
+            "details": {"round": 1, "count": 2},
+            "trace_marker": "RESPONDER_PROCESS_TOOL_CALLS",
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

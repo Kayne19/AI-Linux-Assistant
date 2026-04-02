@@ -7,6 +7,10 @@
   z-index: 24;
 }
 
+.debug-drawer-backdrop:hover {
+  background: rgba(3, 4, 8, 0.5);
+}
+
 .debug-panel {
   position: fixed;
   top: 0;
@@ -35,6 +39,23 @@
   font-size: 16px;
 }
 
+.debug-panel-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border-mid);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.debug-panel-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(169, 158, 245, 0.32);
+}
+
 .debug-panel-empty,
 .debug-empty-state {
   padding: 18px;
@@ -52,6 +73,7 @@
 
 .debug-panel-column {
   min-height: 0;
+  min-width: 0;
 }
 
 .debug-panel-history {
@@ -105,15 +127,21 @@
 .debug-run-card {
   width: 100%;
   display: flex;
+  align-items: flex-start;
   flex-direction: column;
   gap: 10px;
   padding: 12px;
   text-align: left;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.018);
+  border-radius: 10px;
 }
 
-.debug-run-card:hover,
+.debug-run-card:hover {
+  border-color: var(--border-mid);
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .debug-run-card.selected {
   border-color: rgba(169, 158, 245, 0.36);
   background: rgba(123, 104, 238, 0.1);
@@ -161,6 +189,7 @@
 .debug-run-inspector {
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 18px;
   display: flex;
   flex-direction: column;
@@ -224,10 +253,24 @@
   font-size: 12px;
 }
 
+.debug-header-grid > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.debug-header-grid code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .debug-request-block {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.016);
   padding: 12px;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .debug-request-label {
@@ -336,8 +379,9 @@
 
 .debug-event-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
+  align-items: start;
   padding: 10px 12px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.018);
@@ -360,19 +404,66 @@
 }
 
 .debug-event-body {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 5px;
 }
 
+.debug-state-disclosure {
+  align-self: flex-start;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
 .debug-event-body strong {
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.debug-event-summary {
+  display: block;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.debug-event-duration {
+  white-space: nowrap;
+  justify-self: end;
+}
+
+.debug-substate-list {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.debug-substate-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(169, 158, 245, 0.22);
 }
 
 .debug-raw-event {
   margin: 0;
   padding: 12px;
   overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.02);
   color: var(--text);

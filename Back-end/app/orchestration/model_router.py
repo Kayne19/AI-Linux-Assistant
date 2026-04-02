@@ -318,12 +318,28 @@ class ModelRouter:
     def _handle_responder_state(self, state, payload):
         marker = f"RESPONDER_{state.name}"
         self._append_trace_marker(marker)
-        self._emit_event("responder_state", {"state": state.name, "payload": payload})
+        self._emit_event(
+            "responder_state",
+            {
+                "phase": "responder",
+                "state": state.name,
+                "details": payload or {},
+                "trace_marker": marker,
+            },
+        )
 
     def _handle_magi_state(self, state, payload):
         marker = f"MAGI_{state.name}"
         self._append_trace_marker(marker)
-        self._emit_event("magi_state", {"state": state.name, "payload": payload})
+        self._emit_event(
+            "magi_state",
+            {
+                "phase": "magi",
+                "state": state.name,
+                "details": payload or {},
+                "trace_marker": marker,
+            },
+        )
 
     def _instantiate_worker(self, provider, model, reasoning_effort=None):
         worker_class = self.WORKER_TYPES.get(provider.lower())

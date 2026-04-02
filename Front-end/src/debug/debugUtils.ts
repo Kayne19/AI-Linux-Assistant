@@ -7,22 +7,39 @@ export const STREAMING_CODES = new Set([
   "magi_role_text_delta",
   "magi_role_text_checkpoint",
 ]);
+export const SUBSYSTEM_STATE_CODES = new Set(["responder_state", "magi_state"]);
 export const DEBUG_TABS = ["Timeline", "States", "Retrieval", "Memory", "Streaming", "Raw"] as const;
 
 export type DebugTab = (typeof DEBUG_TABS)[number];
 
 export const TAB_FILTERS: Record<DebugTab, (event: RunEvent) => boolean> = {
   Timeline: () => true,
-  States: (event) => event.type === "state",
+  States: (event) => event.type === "state" || (event.type === "event" && SUBSYSTEM_STATE_CODES.has(event.code)),
   Retrieval: (event) => (event.type === "state" || event.type === "event") && event.code.startsWith("retrieval_"),
   Memory: (event) => (event.type === "state" || event.type === "event") && event.code.includes("memory"),
   Streaming: (event) => event.type === "event" && STREAMING_CODES.has(event.code),
   Raw: () => true,
 };
 
-type StateRow = {
+export type NestedStateRow = {
+  kind: "nested";
+  key: string;
   event: RunEvent;
   durationMs: number | null;
+  phase: string;
+  stateCode: string;
+  details: Record<string, unknown>;
+};
+
+export type StateRow = {
+  kind: "router" | "subsystem";
+  key: string;
+  event: RunEvent;
+  durationMs: number | null;
+  nestedRows: NestedStateRow[];
+  phase?: string;
+  stateCode?: string;
+  details?: Record<string, unknown>;
 };
 
 type RunTimings = {
@@ -39,6 +56,63 @@ function parseTimeMs(value?: string | null): number | null {
   }
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseSubsystemStatePayload(event: RunEvent) {
+  if (event.type !== "event" || !SUBSYSTEM_STATE_CODES.has(event.code) || !isObjectRecord(event.payload)) {
+    return null;
+  }
+  const payload = event.payload;
+  const phase = typeof payload.phase === "string"
+    ? payload.phase
+    : (event.code === "responder_state" ? "responder" : "magi");
+  const stateCode = typeof payload.state === "string" ? payload.state : "";
+  const details = isObjectRecord(payload.details)
+    ? payload.details
+    : (isObjectRecord(payload.payload) ? payload.payload : {});
+  return {
+    phase,
+    stateCode,
+    details,
+  };
+}
+
+function summarizeDetails(details: Record<string, unknown>): string {
+  const summaryParts: string[] = [];
+  const round = details.round;
+  if (typeof round === "number") {
+    summaryParts.push(`round ${round}`);
+  }
+  const count = details.count;
+  if (typeof count === "number") {
+    summaryParts.push(`${count} item${count === 1 ? "" : "s"}`);
+  }
+  const toolRounds = details.tool_rounds;
+  if (typeof toolRounds === "number") {
+    summaryParts.push(`${toolRounds} tool round${toolRounds === 1 ? "" : "s"}`);
+  }
+  const names = details.names;
+  if (Array.isArray(names) && names.length > 0) {
+    summaryParts.push(names.join(", "));
+  }
+
+  if (summaryParts.length > 0) {
+    return summaryParts.join(" • ");
+  }
+
+  const entries = Object.entries(details)
+    .filter(([key]) => !["round", "count", "tool_rounds", "names"].includes(key))
+    .slice(0, 4);
+  if (entries.length === 0) {
+    return "";
+  }
+  return entries
+    .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
+    .join(" • ");
 }
 
 export function isActiveRunStatus(status: string): boolean {
@@ -94,15 +168,70 @@ export function computeTimings(run: ChatRun, events: RunEvent[], nowMs: number =
 }
 
 export function getStateRows(events: RunEvent[]): StateRow[] {
-  const stateEvents = events.filter((event) => event.type === "state");
-  return stateEvents.map((event, index) => {
-    const currentMs = parseTimeMs(event.created_at);
-    const nextMs = parseTimeMs(stateEvents[index + 1]?.created_at);
-    return {
+  const filteredEvents = events.filter(TAB_FILTERS.States);
+  const rows: StateRow[] = [];
+  let currentRouterRow: StateRow | null = null;
+
+  for (const event of filteredEvents) {
+    if (event.type === "state") {
+      const row: StateRow = {
+        kind: "router",
+        key: `state:${event.seq}`,
+        event,
+        durationMs: null,
+        nestedRows: [],
+      };
+      rows.push(row);
+      currentRouterRow = row;
+      continue;
+    }
+
+    const parsed = parseSubsystemStatePayload(event);
+    if (!parsed) {
+      continue;
+    }
+    const nestedRow: NestedStateRow = {
+      kind: "nested",
+      key: `substate:${event.seq}`,
       event,
-      durationMs: currentMs !== null && nextMs !== null ? Math.max(0, nextMs - currentMs) : null,
+      durationMs: null,
+      phase: parsed.phase,
+      stateCode: parsed.stateCode || "UNKNOWN",
+      details: parsed.details,
     };
-  });
+    if (currentRouterRow) {
+      currentRouterRow.nestedRows.push(nestedRow);
+      continue;
+    }
+    rows.push({
+      kind: "subsystem",
+      key: `subsystem:${event.seq}`,
+      event,
+      durationMs: null,
+      nestedRows: [],
+      phase: parsed.phase,
+      stateCode: parsed.stateCode || "UNKNOWN",
+      details: parsed.details,
+    });
+  }
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const currentMs = parseTimeMs(row.event.created_at);
+    const nextMs = parseTimeMs(rows[index + 1]?.event.created_at);
+    row.durationMs = currentMs !== null && nextMs !== null ? Math.max(0, nextMs - currentMs) : null;
+
+    const parentEndMs = nextMs;
+    for (let nestedIndex = 0; nestedIndex < row.nestedRows.length; nestedIndex += 1) {
+      const nestedRow = row.nestedRows[nestedIndex];
+      const nestedMs = parseTimeMs(nestedRow.event.created_at);
+      const nextNestedMs = parseTimeMs(row.nestedRows[nestedIndex + 1]?.event.created_at);
+      const targetMs = nextNestedMs ?? parentEndMs;
+      nestedRow.durationMs = nestedMs !== null && targetMs !== null ? Math.max(0, targetMs - nestedMs) : null;
+    }
+  }
+
+  return rows;
 }
 
 export function formatDuration(ms: number | null | undefined): string {
@@ -188,6 +317,11 @@ export function getLeaseTone(ms: number | null | undefined): "ok" | "warn" | "ba
 }
 
 export function eventTitle(event: RunEvent): string {
+  const subsystemState = parseSubsystemStatePayload(event);
+  if (subsystemState) {
+    const prefix = subsystemState.phase === "magi" ? "Magi" : "Responder";
+    return `${prefix}.${subsystemState.stateCode || "UNKNOWN"}`;
+  }
   if (event.type === "state") {
     return event.code;
   }
@@ -197,10 +331,14 @@ export function eventTitle(event: RunEvent): string {
   if (event.type === "done") {
     return "done";
   }
-  return event.code || event.type;
+  return "";
 }
 
 export function eventSummary(event: RunEvent): string {
+  const subsystemState = parseSubsystemStatePayload(event);
+  if (subsystemState) {
+    return summarizeDetails(subsystemState.details) || subsystemState.stateCode || "UNKNOWN";
+  }
   if (event.type === "error" || event.type === "cancelled") {
     return event.message || "No message";
   }
@@ -214,7 +352,20 @@ export function eventSummary(event: RunEvent): string {
   if (event.payload) {
     return JSON.stringify(event.payload).slice(0, 220);
   }
-  return event.code || event.type;
+  return "";
+}
+
+export function summarizeNestedStateRows(rows: NestedStateRow[]): string {
+  if (rows.length === 0) {
+    return "";
+  }
+  const phaseCounts = rows.reduce<Record<string, number>>((counts, row) => {
+    counts[row.phase] = (counts[row.phase] || 0) + 1;
+    return counts;
+  }, {});
+  return Object.entries(phaseCounts)
+    .map(([phase, count]) => `${phase} ${count}`)
+    .join(" • ");
 }
 
 export function hasErrorBanner(run: ChatRun): boolean {

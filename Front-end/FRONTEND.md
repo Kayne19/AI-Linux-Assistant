@@ -139,6 +139,7 @@ Owns the dev/admin debug drawer:
 - timing calculations
 - live SSE attach/reconnect for active runs
 - client-side event tab filtering
+- grouped execution detail for responder and Magi subsystem state traces beneath top-level router states
 
 ## Application Model
 
