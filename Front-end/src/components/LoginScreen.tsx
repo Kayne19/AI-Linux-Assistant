@@ -2,27 +2,33 @@ import { useState } from "react";
 import type { AsyncState } from "../types";
 
 type LoginScreenProps = {
-  onSignIn: (email: string, password: string) => void | Promise<void>;
+  onSignIn: () => void | Promise<void>;
+  onSignUp: () => void | Promise<void>;
   status: AsyncState;
   error: string;
 };
 
-export function LoginScreen({ onSignIn, status, error }: LoginScreenProps) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [localError, setLocalError] = useState("");
+export function LoginScreen({ onSignIn, onSignUp, status, error }: LoginScreenProps) {
+  const [pending, setPending] = useState(false);
+  const busy = pending || status === "loading";
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setLocalError("");
+  async function handleSignIn() {
+    setPending(true);
     try {
-      await onSignIn(email, password);
-    } catch (err) {
-      setLocalError(err instanceof Error ? err.message : "Sign in failed.");
+      await onSignIn();
+    } finally {
+      setPending(false);
     }
   }
 
-  const displayError = localError || error;
+  async function handleSignUp() {
+    setPending(true);
+    try {
+      await onSignUp();
+    } finally {
+      setPending(false);
+    }
+  }
 
   return (
     <main className="auth-page">
@@ -36,44 +42,52 @@ export function LoginScreen({ onSignIn, status, error }: LoginScreenProps) {
             </svg>
             <span className="auth-wordmark">AI Linux Assistant</span>
           </div>
-          <p className="auth-tagline">Stateful troubleshooting anchored to projects, not disposable chats.</p>
+
+          <div className="auth-hero">
+            <h2 className="auth-hero-headline">Your Linux troubleshooting workspace.</h2>
+            <p className="auth-tagline">
+              Persistent, project-scoped AI assistance that remembers context and builds on prior work.
+            </p>
+            <ul className="auth-feature-list">
+              <li>Projects with session-persistent memory</li>
+              <li>Multi-agent council deliberation</li>
+              <li>Context that carries across conversations</li>
+            </ul>
+          </div>
         </aside>
 
         <section className="auth-panel">
           <div className="auth-copy">
-            <h1>Sign in to enter your workspace.</h1>
-            <p>Projects, chats, and memory are scoped server-side.</p>
+            <h1>Sign in to your workspace</h1>
+            <p>Your projects, chats, and context are ready when you are.</p>
           </div>
 
-          <form className="auth-form" onSubmit={handleSubmit}>
-            {displayError ? <p className="error-banner auth-error">{displayError}</p> : null}
-            <div className="auth-field">
-              <label htmlFor="auth-email">Email</label>
-              <input
-                id="auth-email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoFocus
-                autoComplete="email"
-                required
-              />
-            </div>
-            <div className="auth-field">
-              <label htmlFor="auth-password">Password</label>
-              <input
-                id="auth-password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </div>
-            <button type="submit" className="auth-btn" disabled={status === "loading"}>
-              {status === "loading" ? "Signing in..." : "Sign in"}
+          <div className="auth-form">
+            {error ? <p className="error-banner auth-error">{error}</p> : null}
+            <button
+              type="button"
+              className="auth-btn"
+              onClick={() => void handleSignIn()}
+              disabled={busy}
+            >
+              {busy ? (
+                <span className="auth-btn-inner">
+                  <span className="auth-spinner" aria-hidden="true" />
+                  Redirecting…
+                </span>
+              ) : (
+                "Sign in"
+              )}
             </button>
-          </form>
+            <button
+              type="button"
+              className="auth-link-btn"
+              onClick={() => void handleSignUp()}
+              disabled={busy}
+            >
+              New here? Create an account
+            </button>
+          </div>
         </section>
       </div>
     </main>

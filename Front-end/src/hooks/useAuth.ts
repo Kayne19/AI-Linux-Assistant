@@ -1,5 +1,5 @@
 import { useAuth0 } from "@auth0/auth0-react";
-import { startTransition, useEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import { api } from "../api";
 import { clearApiAuth, configureApiAuth } from "../apiAuth";
 import { readAuth0Config } from "../authConfig";
@@ -8,24 +8,22 @@ import type { AppBootstrapResponse, User } from "../types";
 const auth0Config = readAuth0Config();
 
 export function useAuth() {
-  const { logout: auth0Logout } = useAuth0();
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const accessTokenRef = useRef<string | null>(null);
+  const { isLoading, isAuthenticated, loginWithRedirect, logout: auth0Logout, getAccessTokenSilently } = useAuth0();
   const [bootstrap, setBootstrap] = useState<AppBootstrapResponse | null>(null);
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
   const [bootstrapError, setBootstrapError] = useState("");
   const [forcedSignedOut, setForcedSignedOut] = useState(false);
 
   useEffect(() => {
-    accessTokenRef.current = accessToken;
-  }, [accessToken]);
-
-  useEffect(() => {
     configureApiAuth({
-      getAccessToken: async () => accessTokenRef.current ?? "",
+      getAccessToken: async () =>
+        getAccessTokenSilently({
+          authorizationParams: {
+            audience: auth0Config.config?.audience || "",
+          },
+        }),
       onUnauthorized: () => {
         setForcedSignedOut(true);
-        setAccessToken(null);
         setBootstrap(null);
         setBootstrapError("Your session is no longer valid. Sign in again.");
       },
@@ -33,10 +31,13 @@ export function useAuth() {
     return () => {
       clearApiAuth();
     };
-  }, []);
+  }, [getAccessTokenSilently]);
 
   useEffect(() => {
-    if (!accessToken || forcedSignedOut) {
+    if (isLoading) {
+      return;
+    }
+    if (!isAuthenticated || forcedSignedOut) {
       setBootstrap(null);
       setBootstrapLoading(false);
       return;
@@ -66,44 +67,23 @@ export function useAuth() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, forcedSignedOut]);
+  }, [forcedSignedOut, isAuthenticated, isLoading]);
 
-  async function signIn(email: string, password: string) {
-    const config = auth0Config.config;
-    if (!config) {
-      setBootstrapError(auth0Config.error || "Auth0 not configured.");
-      return;
-    }
-
+  async function signIn() {
     setForcedSignedOut(false);
     setBootstrapError("");
+    await loginWithRedirect({ authorizationParams: { screen_hint: "login" } });
+  }
 
-    const res = await fetch(`https://${config.domain}/oauth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        grant_type: "password",
-        username: email,
-        password,
-        audience: config.audience,
-        client_id: config.clientId,
-        scope: "openid profile email",
-      }),
-    });
-
-    const data = await res.json() as { access_token?: string; error_description?: string; error?: string };
-
-    if (!res.ok) {
-      throw new Error(data.error_description || data.error || "Invalid credentials.");
-    }
-
-    setAccessToken(data.access_token ?? null);
+  async function signUp() {
+    setForcedSignedOut(false);
+    setBootstrapError("");
+    await loginWithRedirect({ authorizationParams: { screen_hint: "signup" } });
   }
 
   function logout() {
     clearApiAuth();
     setForcedSignedOut(false);
-    setAccessToken(null);
     setBootstrap(null);
     setBootstrapError("");
     auth0Logout({
@@ -118,10 +98,11 @@ export function useAuth() {
   return {
     user,
     bootstrap,
-    loading: bootstrapLoading,
+    loading: isLoading || (isAuthenticated && !forcedSignedOut && bootstrapLoading),
     error: bootstrapError,
     isSignedIn: Boolean(user) && !forcedSignedOut,
     signIn,
+    signUp,
     logout,
   };
 }

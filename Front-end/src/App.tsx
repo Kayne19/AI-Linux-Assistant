@@ -379,6 +379,7 @@ export default function App() {
         status={auth.loading ? "loading" : "idle"}
         error={auth.error || error}
         onSignIn={auth.signIn}
+        onSignUp={auth.signUp}
       />
     );
   }
