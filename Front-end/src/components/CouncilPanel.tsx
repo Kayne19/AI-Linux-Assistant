@@ -30,8 +30,6 @@ export function CouncilPanel({
 }: CouncilPanelProps) {
   const paused = runStatus === "paused";
   const pauseRequested = runStatus === "pause_requested";
-  const canPause = canPauseRun && !paused && !pauseRequested && !viewingPast;
-  const canResume = paused && !viewingPast;
 
   return (
     <section className="council-panel">
@@ -95,32 +93,14 @@ export function CouncilPanel({
             )}
           </div>
         ))}
+        {paused && !viewingPast ? (
+          <div className="council-paused-indicator">
+            <span className="status-dot status-dot-paused" aria-hidden="true" />
+            <span>Council paused — press Enter in the composer to resume</span>
+          </div>
+        ) : null}
         <div ref={councilEndRef} />
       </div>
-      {!viewingPast ? (
-        <div className="council-panel-footer">
-          {canPause ? (
-            <p className="council-kbd-hint">Tab to pause · Esc to cancel</p>
-          ) : null}
-
-          {canResume ? (
-            <div className="council-panel-footer-paused">
-              <p className="council-intervention-note">Paused — add context or just press Enter in the composer below to resume.</p>
-              <div className="council-intervention-actions single-row">
-                <button type="button" className="council-action-btn primary" onClick={onResumeRun}>
-                  Resume now
-                </button>
-              </div>
-            </div>
-          ) : pauseRequested ? (
-            <div className="council-intervention-actions single-row">
-              <div className="council-intervention-note">
-                Pause requested. Waiting for the run to reach a safe checkpoint.
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
     </section>
   );
 }

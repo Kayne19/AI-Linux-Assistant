@@ -273,11 +273,8 @@ export default function App() {
 
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (composerLocked) {
-      return;
-    }
 
-    // Paused council intervention path
+    // Must come before composerLocked — selectedChatBusy is still true when a run is paused
     if (selectedChatRunStatus === "paused") {
       const content = messages.messageInput.trim();
       messages.setMessageInput("");
@@ -286,6 +283,10 @@ export default function App() {
       } else {
         await handleResumeCouncilRun();
       }
+      return;
+    }
+
+    if (composerLocked) {
       return;
     }
 

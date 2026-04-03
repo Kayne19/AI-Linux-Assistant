@@ -596,21 +596,18 @@ textarea:focus {
 
 .nested-chat-row {
   position: relative;
+  display: flex;
+  align-items: center;
 }
 
 .nested-chat-item {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
   padding: 8px 10px;
-  transition: padding-right 0.12s ease;
-}
-
-.nested-chat-row:hover .nested-chat-item,
-.nested-chat-row:focus-within .nested-chat-item {
-  padding-right: 42px;
 }
 
 .nested-chat-item:hover {
@@ -645,11 +642,10 @@ textarea:focus {
 }
 
 .chat-edit-trigger {
-  position: absolute;
-  top: 50%;
-  right: 7px;
-  transform: translateY(-50%);
-  width: 26px;
+  position: static;
+  transform: none;
+  flex-shrink: 0;
+  width: 0;
   height: 26px;
   padding: 0;
   border: none;
@@ -658,9 +654,10 @@ textarea:focus {
   color: var(--text3);
   display: grid;
   place-items: center;
+  overflow: hidden;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
+  transition: width 0.12s ease, opacity 0.12s ease, background 0.14s ease, color 0.14s ease;
 }
 
 .project-edit-trigger {
@@ -684,6 +681,7 @@ textarea:focus {
 
 .nested-chat-row:hover .chat-edit-trigger,
 .nested-chat-row:focus-within .chat-edit-trigger {
+  width: 30px;
   opacity: 1;
   pointer-events: auto;
 }
@@ -1414,15 +1412,8 @@ textarea:focus {
   }
 
   .message-copy-btn {
-    right: 4px;
-    top: 4px;
     opacity: 1;
     pointer-events: auto;
-  }
-
-  .message.user .message-copy-btn {
-    left: auto;
-    right: 4px;
   }
 }
 
@@ -1556,7 +1547,7 @@ textarea:focus {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 12px 14px 140px;
+  padding: 12px 14px 20px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1836,7 +1827,7 @@ textarea:focus {
 .message-copy-btn {
   position: absolute;
   top: 6px;
-  right: -32px;
+  right: 6px;
   width: 26px;
   height: 26px;
   display: inline-flex;
@@ -1851,11 +1842,6 @@ textarea:focus {
   pointer-events: none;
   transition: opacity 0.15s, background 0.15s, color 0.15s;
   padding: 0;
-}
-
-.message.user .message-copy-btn {
-  right: auto;
-  left: -32px;
 }
 
 .message:hover .message-copy-btn {
@@ -1897,6 +1883,24 @@ textarea:focus {
 .council-copy-all-btn:hover {
   background: var(--surface2);
   color: var(--text);
+}
+
+/* Council paused inline indicator */
+
+.council-paused-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text3);
+  letter-spacing: 0.02em;
+  padding: 8px 2px 4px;
+}
+
+.status-dot-paused {
+  background: #4ade80;
+  box-shadow: 0 0 0 4px rgba(74, 222, 128, 0.1);
+  animation: none;
 }
 
 /* Council reopen pill */

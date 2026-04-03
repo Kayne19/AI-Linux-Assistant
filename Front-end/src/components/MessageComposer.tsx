@@ -80,14 +80,14 @@ export function MessageComposer({
             onChange={(event) => onMessageChange(event.target.value)}
             onKeyDown={handleComposerKeyDown}
             placeholder={placeholder}
-            disabled={!selectedChatId || (selectedChatBusy && !isPaused)}
+            disabled={selectedChatBusy && !isPaused}
           />
           <div className="composer-actions">
             <button
               type="submit"
               className="composer-send"
               aria-label="Send message"
-              disabled={!selectedChatId || (selectedChatBusy && !isPaused)}
+              disabled={(!messageInput.trim() && !isPaused) || (selectedChatBusy && !isPaused)}
             >
               <svg viewBox="0 0 20 20" aria-hidden="true" className="send-icon">
                 <path d="M3 10L16 4L11 17L9.5 11.5L3 10Z" fill="currentColor" stroke="none" />

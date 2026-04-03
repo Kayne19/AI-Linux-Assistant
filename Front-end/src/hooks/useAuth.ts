@@ -8,7 +8,7 @@ import type { AppBootstrapResponse, User } from "../types";
 const auth0Config = readAuth0Config();
 
 export function useAuth() {
-  const { isLoading, isAuthenticated, loginWithRedirect, logout: auth0Logout, getAccessTokenSilently } = useAuth0();
+  const { isLoading, isAuthenticated, loginWithPopup, logout: auth0Logout, getAccessTokenSilently } = useAuth0();
   const [bootstrap, setBootstrap] = useState<AppBootstrapResponse | null>(null);
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
   const [bootstrapError, setBootstrapError] = useState("");
@@ -76,7 +76,14 @@ export function useAuth() {
   async function signIn() {
     setForcedSignedOut(false);
     setBootstrapError("");
-    await loginWithRedirect();
+    try {
+      await loginWithPopup({ authorizationParams: { screen_hint: "login" } });
+    } catch (err) {
+      if (err instanceof Error && err.message.toLowerCase().includes("popup closed")) {
+        return;
+      }
+      throw err;
+    }
   }
 
   function logout() {
