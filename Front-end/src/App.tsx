@@ -415,6 +415,7 @@ export default function App() {
             closeSidebarOnMobile();
           }}
           onEditChat={chats.openEditChatDialog}
+          onDeleteChat={(chatId) => void chats.deleteChatById(chatId)}
           onCloseMobileSidebar={closeSidebarOnMobile}
           onLogout={auth.logout}
         />

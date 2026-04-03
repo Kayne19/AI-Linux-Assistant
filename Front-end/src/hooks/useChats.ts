@@ -181,6 +181,28 @@ export function useChats({
     }
   }
 
+  async function deleteChatById(chatId: string) {
+    if (!selectedProjectId) {
+      return false;
+    }
+    onStatusChange("loading");
+    onError("");
+    try {
+      await api.deleteChat(chatId);
+      if (selectedChatId === chatId) {
+        setSelectedChatId("");
+      }
+      onChatDeleted?.(chatId);
+      await reloadChats(selectedProjectId);
+      onStatusChange("idle");
+      return true;
+    } catch (err) {
+      onError((err as Error).message);
+      onStatusChange("error");
+      return false;
+    }
+  }
+
   return {
     chats,
     setChats,
@@ -199,6 +221,7 @@ export function useChats({
     handleCreateChat,
     handleEditChat,
     handleDeleteChat,
+    deleteChatById,
     updateChatRunStatus,
   };
 }

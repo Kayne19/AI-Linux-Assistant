@@ -1,12 +1,29 @@
+import { useState } from "react";
 import type { AsyncState } from "../types";
 
 type LoginScreenProps = {
-  onSignIn: () => void | Promise<void>;
+  onSignIn: (email: string, password: string) => void | Promise<void>;
   status: AsyncState;
   error: string;
 };
 
 export function LoginScreen({ onSignIn, status, error }: LoginScreenProps) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [localError, setLocalError] = useState("");
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLocalError("");
+    try {
+      await onSignIn(email, password);
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : "Sign in failed.");
+    }
+  }
+
+  const displayError = localError || error;
+
   return (
     <main className="auth-page">
       <div className="auth-layout">
@@ -28,12 +45,35 @@ export function LoginScreen({ onSignIn, status, error }: LoginScreenProps) {
             <p>Projects, chats, and memory are scoped server-side.</p>
           </div>
 
-          <div className="auth-form">
-            {error ? <p className="error-banner auth-error">{error}</p> : null}
-            <button type="button" className="auth-btn" onClick={() => void onSignIn()} disabled={status === "loading"}>
-              {status === "loading" ? "Redirecting..." : "Continue with Auth0"}
+          <form className="auth-form" onSubmit={handleSubmit}>
+            {displayError ? <p className="error-banner auth-error">{displayError}</p> : null}
+            <div className="auth-field">
+              <label htmlFor="auth-email">Email</label>
+              <input
+                id="auth-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoFocus
+                autoComplete="email"
+                required
+              />
+            </div>
+            <div className="auth-field">
+              <label htmlFor="auth-password">Password</label>
+              <input
+                id="auth-password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </div>
+            <button type="submit" className="auth-btn" disabled={status === "loading"}>
+              {status === "loading" ? "Signing in..." : "Sign in"}
             </button>
-          </div>
+          </form>
         </section>
       </div>
     </main>

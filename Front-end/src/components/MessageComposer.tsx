@@ -19,7 +19,7 @@ export function MessageComposer({
   councilMode,
   selectedChatBusy,
   isPaused,
-  selectedChatId,
+  selectedChatId: _selectedChatId,
   messageInput,
   placeholder,
   onMessageChange,
@@ -80,7 +80,7 @@ export function MessageComposer({
             onChange={(event) => onMessageChange(event.target.value)}
             onKeyDown={handleComposerKeyDown}
             placeholder={placeholder}
-            disabled={selectedChatBusy && !isPaused}
+            disabled={false}
           />
           <div className="composer-actions">
             <button

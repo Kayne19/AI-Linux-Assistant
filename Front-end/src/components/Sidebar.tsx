@@ -26,6 +26,7 @@ type SidebarProps = {
   onCreateChat: () => void;
   onSelectChat: (chatId: string) => void;
   onEditChat: (chat: ChatSession) => void;
+  onDeleteChat: (chatId: string) => void;
   onCloseMobileSidebar: () => void;
   onLogout: () => void | Promise<void>;
 };
@@ -54,6 +55,7 @@ export function Sidebar({
   onCreateChat,
   onSelectChat,
   onEditChat,
+  onDeleteChat,
   onCloseMobileSidebar,
   onLogout,
 }: SidebarProps) {
@@ -61,6 +63,7 @@ export function Sidebar({
   const previousTitlesRef = useRef<Record<string, string>>({});
   const titleAnimationTimersRef = useRef<Record<string, number>>({});
   const [animatedTitles, setAnimatedTitles] = useState<Record<string, string>>({});
+  const [openMenuChatId, setOpenMenuChatId] = useState<string | null>(null);
 
   useEffect(
     () => () => {
@@ -127,6 +130,15 @@ export function Sidebar({
     },
     [],
   );
+
+  useEffect(() => {
+    if (!openMenuChatId) return;
+    function handleOutsideClick() {
+      setOpenMenuChatId(null);
+    }
+    document.addEventListener("click", handleOutsideClick);
+    return () => document.removeEventListener("click", handleOutsideClick);
+  }, [openMenuChatId]);
 
   useEffect(() => {
     function onPointerMove(event: PointerEvent) {
@@ -278,20 +290,41 @@ export function Sidebar({
                                     })()}
                                     <button
                                       type="button"
-                                      className="chat-edit-trigger"
-                                      aria-label={`Edit ${chat.title || "chat"}`}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        onEditChat(chat);
+                                      className="chat-menu-trigger"
+                                      aria-label={`Options for ${chat.title || "chat"}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setOpenMenuChatId((cur) => cur === chat.id ? null : chat.id);
                                       }}
                                     >
-                                      <svg viewBox="0 0 20 20" aria-hidden="true" className="chat-edit-icon">
-                                        <path
-                                          d="M13.9 3.1a2.2 2.2 0 0 1 3.1 3.1l-8.8 8.8-3.7.6.6-3.7 8.8-8.8Zm-7.8 9.5-.2 1.1 1.1-.2 7.9-7.9a.8.8 0 1 0-1.1-1.1l-7.7 8.1Z"
-                                          fill="currentColor"
-                                        />
-                                      </svg>
+                                      ···
                                     </button>
+                                    {openMenuChatId === chat.id ? (
+                                      <div
+                                        className="chat-menu-dropdown"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            onEditChat(chat);
+                                            setOpenMenuChatId(null);
+                                          }}
+                                        >
+                                          Rename
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="danger"
+                                          onClick={() => {
+                                            onDeleteChat(chat.id);
+                                            setOpenMenuChatId(null);
+                                          }}
+                                        >
+                                          Delete
+                                        </button>
+                                      </div>
+                                    ) : null}
                                   </div>
                                 ))}
                               </div>

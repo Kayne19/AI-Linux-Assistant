@@ -435,7 +435,7 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
     setViewingCouncilMessageId(message.id);
   }
 
-  function syncLiveCouncilEntries(entries: UICouncilEntry[], selectedChatBusy: boolean) {
+  function syncLiveCouncilEntries(entries: UICouncilEntry[], _selectedChatBusy: boolean) {
     if (viewingCouncilMessageId !== null) {
       return;
     }
