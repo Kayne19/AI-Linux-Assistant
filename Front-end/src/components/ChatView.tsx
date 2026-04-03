@@ -100,29 +100,31 @@ export function ChatView({
                     <div className="message-content">
                       {message.role === "user" ? <p>{message.content}</p> : renderMessageContent(message.content)}
                     </div>
-                    <button
-                      type="button"
-                      className="message-copy-btn"
-                      title="Copy message"
-                      onClick={() => void navigator.clipboard.writeText(message.content)}
-                    >
-                      <svg viewBox="0 0 20 20" aria-hidden="true" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="7" y="3" width="10" height="13" rx="1.5" />
-                        <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H7" />
-                        <path d="M3 6.5v9A1.5 1.5 0 0 0 4.5 17H13" />
-                      </svg>
-                      Copy
-                    </button>
-                    {message.role !== "user" && message.council_entries?.length ? (
+                    <div className="message-actions">
+                      {message.role !== "user" && message.council_entries?.length ? (
+                        <button
+                          type="button"
+                          className={`council-replay-btn${viewingCouncilMessageId === message.id ? " active" : ""}`}
+                          onClick={() => onViewCouncilEntries(message)}
+                          title="View council deliberation for this response"
+                        >
+                          See council discussion
+                        </button>
+                      ) : null}
                       <button
                         type="button"
-                        className={`council-replay-btn${viewingCouncilMessageId === message.id ? " active" : ""}`}
-                        onClick={() => onViewCouncilEntries(message)}
-                        title="View council deliberation for this response"
+                        className="message-copy-btn"
+                        title="Copy message"
+                        onClick={() => void navigator.clipboard.writeText(message.content)}
                       >
-                        See council discussion
+                        <svg viewBox="0 0 20 20" aria-hidden="true" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="7" y="3" width="10" height="13" rx="1.5" />
+                          <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H7" />
+                          <path d="M3 6.5v9A1.5 1.5 0 0 0 4.5 17H13" />
+                        </svg>
+                        Copy
                       </button>
-                    ) : null}
+                    </div>
                   </>
                 )}
               </article>

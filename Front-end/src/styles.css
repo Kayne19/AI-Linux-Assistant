@@ -1544,7 +1544,7 @@ textarea:focus {
   }
 
   @media (hover: none) {
-    .message-copy-btn {
+    .message-actions {
       opacity: 1;
       pointer-events: auto;
     }
@@ -1705,9 +1705,7 @@ textarea:focus {
 }
 
 .council-entry.council-entry-intervention {
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  border-color: var(--border-mid);
-  border-left: 2px solid var(--surface2);
+  border-left: 2px solid var(--user);
 }
 
 @keyframes council-entry-in {
@@ -1757,9 +1755,9 @@ textarea:focus {
 }
 
 .role-badge.role-user {
-  background: rgba(16, 185, 129, 0.14);
-  color: #6ee7b7;
-  border: 1px solid rgba(16, 185, 129, 0.24);
+  background: rgba(26, 22, 50, 0.85);
+  color: #9d97cc;
+  border: 1px solid rgba(26, 22, 50, 0.95);
 }
 
 .council-entry-phase {
@@ -1770,7 +1768,7 @@ textarea:focus {
 
 .council-entry-input-kind {
   font-size: 10px;
-  color: #6ee7b7;
+  color: #9d97cc;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -1834,7 +1832,6 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-top: 8px;
   padding: 3px 8px;
   border: none;
   border-radius: 4px;
@@ -1843,15 +1840,7 @@ textarea:focus {
   font-size: 11px;
   font-family: var(--sans);
   cursor: pointer;
-  transition: color 0.15s, background 0.15s, opacity 0.15s;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.message.assistant:hover .council-replay-btn,
-.message.assistant:focus-within .council-replay-btn {
-  opacity: 1;
-  pointer-events: auto;
+  transition: color 0.15s, background 0.15s;
 }
 
 .council-replay-btn:hover {
@@ -1952,7 +1941,32 @@ textarea:focus {
   cursor: not-allowed;
 }
 
-/* Message copy button */
+/* Message action row */
+
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-end;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.message.assistant .message-actions,
+.message.model .message-actions {
+  align-self: flex-start;
+}
+
+.message:hover .message-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Push copy button to the right edge of the action row */
+.message-actions .message-copy-btn {
+  margin-left: auto;
+}
 
 .message-copy-btn {
   display: inline-flex;
@@ -1966,20 +1980,7 @@ textarea:focus {
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s, color 0.15s, background 0.15s;
-  align-self: flex-end;
-}
-
-.message.assistant .message-copy-btn,
-.message.model .message-copy-btn {
-  align-self: flex-start;
-}
-
-.message:hover .message-copy-btn {
-  opacity: 1;
-  pointer-events: auto;
+  transition: color 0.15s, background 0.15s;
 }
 
 .message-copy-btn:hover {
