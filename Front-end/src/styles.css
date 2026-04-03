@@ -1705,7 +1705,7 @@ textarea:focus {
 }
 
 .council-entry.council-entry-intervention {
-  border-left: 2px solid var(--user);
+  border-left: 2px solid rgba(169, 158, 245, 0.45);
 }
 
 @keyframes council-entry-in {
@@ -1755,9 +1755,9 @@ textarea:focus {
 }
 
 .role-badge.role-user {
-  background: rgba(26, 22, 50, 0.85);
-  color: #9d97cc;
-  border: 1px solid rgba(26, 22, 50, 0.95);
+  background: rgba(169, 158, 245, 0.15);
+  color: #a99ef5;
+  border: 1px solid rgba(169, 158, 245, 0.28);
 }
 
 .council-entry-phase {
@@ -1768,7 +1768,7 @@ textarea:focus {
 
 .council-entry-input-kind {
   font-size: 10px;
-  color: #9d97cc;
+  color: #a99ef5;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
