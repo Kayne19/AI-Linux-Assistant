@@ -50,6 +50,7 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
 
   const councilFeedRef = useRef<HTMLDivElement | null>(null);
   const councilEndRef = useRef<HTMLDivElement | null>(null);
+  const councilStickToBottomRef = useRef(true);
 
   useEffect(() => {
     updateRunUiCouncilEntriesRef.current = updateRunUiCouncilEntries;
@@ -60,6 +61,7 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
   }, [onDrainComplete]);
 
   useEffect(() => {
+    if (!councilStickToBottomRef.current) return;
     councilEndRef.current?.scrollIntoView({
       behavior: councilEntries.some((entry) => !entry.complete) ? "auto" : "smooth",
       block: "end",
@@ -437,7 +439,7 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
     if (viewingCouncilMessageId !== null) {
       return;
     }
-    setCouncilActive(entries.length > 0 || selectedChatBusy);
+    setCouncilActive(entries.length > 0);
   }
 
   function clearForChatSelection() {
@@ -445,6 +447,17 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
     setCouncilEntries([]);
     setViewingCouncilMessageId(null);
     setCouncilInterventionInput("");
+  }
+
+  function updateCouncilStickToBottom() {
+    const el = councilFeedRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    councilStickToBottomRef.current = dist <= 80;
+  }
+
+  function resetCouncilStickToBottom() {
+    councilStickToBottomRef.current = true;
   }
 
   useEffect(
@@ -477,6 +490,9 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
     setViewingCouncilMessageId,
     councilFeedRef,
     councilEndRef,
+    councilStickToBottomRef,
+    updateCouncilStickToBottom,
+    resetCouncilStickToBottom,
     clearPendingCouncilDeltaBatchesForChat,
     handleMagiRoleStart,
     handleMagiRoleTextDelta,

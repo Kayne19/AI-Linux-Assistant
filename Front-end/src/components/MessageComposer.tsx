@@ -5,12 +5,12 @@ type MessageComposerProps = {
   error: string;
   councilMode: "off" | "full" | "lite";
   selectedChatBusy: boolean;
+  isPaused: boolean;
   selectedChatId: string;
   messageInput: string;
   placeholder: string;
   onMessageChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
-  onCancelRun: () => void;
   onCycleCouncilMode: () => void;
 };
 
@@ -18,12 +18,12 @@ export function MessageComposer({
   error,
   councilMode,
   selectedChatBusy,
+  isPaused,
   selectedChatId,
   messageInput,
   placeholder,
   onMessageChange,
   onSubmit,
-  onCancelRun,
   onCycleCouncilMode,
 }: MessageComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -32,7 +32,7 @@ export function MessageComposer({
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
       return;
     }
-    if (selectedChatBusy) {
+    if (selectedChatBusy && !isPaused) {
       event.preventDefault();
       return;
     }
@@ -73,11 +73,6 @@ export function MessageComposer({
               </svg>
               {councilMode === "lite" ? "Council Lite" : "Council"}
             </button>
-            {selectedChatBusy ? (
-              <button type="button" className="cancel-run-btn" onClick={onCancelRun}>
-                Cancel
-              </button>
-            ) : null}
           </div>
           <textarea
             ref={textareaRef}
@@ -85,14 +80,14 @@ export function MessageComposer({
             onChange={(event) => onMessageChange(event.target.value)}
             onKeyDown={handleComposerKeyDown}
             placeholder={placeholder}
-            disabled={!selectedChatId || selectedChatBusy}
+            disabled={!selectedChatId || (selectedChatBusy && !isPaused)}
           />
           <div className="composer-actions">
             <button
               type="submit"
               className="composer-send"
               aria-label="Send message"
-              disabled={!selectedChatId || !messageInput.trim() || selectedChatBusy}
+              disabled={!selectedChatId || (selectedChatBusy && !isPaused)}
             >
               <svg viewBox="0 0 20 20" aria-hidden="true" className="send-icon">
                 <path d="M3 10L16 4L11 17L9.5 11.5L3 10Z" fill="currentColor" stroke="none" />

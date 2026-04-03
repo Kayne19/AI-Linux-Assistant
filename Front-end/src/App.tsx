@@ -92,7 +92,7 @@ export default function App() {
   });
   const selectedChatRunStatus = chats.selectedChat?.active_run_status || "";
   const composerLocked =
-    streaming.selectedChatBusy || selectedChatRunStatus === "pause_requested" || selectedChatRunStatus === "paused";
+    streaming.selectedChatBusy || selectedChatRunStatus === "pause_requested";
   const scroll = useScrollManager({
     selectedChatId: chats.selectedChatId,
     messages: messages.messages,
@@ -176,11 +176,12 @@ export default function App() {
       : (streaming.selectedRunUi?.councilEntries || []);
 
   useEffect(() => {
+    if (!council.councilStickToBottomRef.current) return;
     council.councilEndRef.current?.scrollIntoView({
       behavior: displayedCouncilEntries.some((entry) => !entry.complete) ? "auto" : "smooth",
       block: "end",
     });
-  }, [council.councilEndRef, displayedCouncilEntries]);
+  }, [council.councilEndRef, council.councilStickToBottomRef, displayedCouncilEntries]);
 
   const liveStatusKey = getStreamStatusKey(streaming.streamStatus);
   const liveStatusAliases = getStreamStatusAliases(streaming.streamStatus);
@@ -200,6 +201,30 @@ export default function App() {
       window.clearInterval(intervalId);
     };
   }, [liveStatusAliases, liveStatusKey, streaming.selectedChatBusy]);
+
+  useEffect(() => {
+    function handleGlobalKeyDown(event: KeyboardEvent) {
+      const target = event.target as Element;
+      const inInput =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target as HTMLElement).isContentEditable;
+
+      if (event.key === "Tab" && !inInput && canPauseCouncilRun && council.councilActive) {
+        event.preventDefault();
+        void handlePauseCouncilRun();
+        return;
+      }
+
+      if (event.key === "Escape" && !inInput && streaming.selectedChatBusy) {
+        event.preventDefault();
+        void streaming.handleCancelActiveRun();
+      }
+    }
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [canPauseCouncilRun, council.councilActive, streaming.selectedChatBusy]);
 
   function closeSidebarOnMobile() {
     if (typeof window !== "undefined" && window.innerWidth <= 960) {
@@ -248,8 +273,35 @@ export default function App() {
 
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!chats.selectedChatId || !messages.messageInput.trim() || composerLocked) {
+    if (composerLocked) {
       return;
+    }
+
+    // Paused council intervention path
+    if (selectedChatRunStatus === "paused") {
+      const content = messages.messageInput.trim();
+      messages.setMessageInput("");
+      if (content) {
+        await handleResumeCouncilRunWithInput(content, "fact");
+      } else {
+        await handleResumeCouncilRun();
+      }
+      return;
+    }
+
+    if (!messages.messageInput.trim()) {
+      return;
+    }
+    if (!projects.selectedProjectId) {
+      setError("Create a project first.");
+      return;
+    }
+
+    let activeChatId = chats.selectedChatId;
+    if (!activeChatId) {
+      const newChat = await chats.handleCreateChat("");
+      if (!newChat) return;
+      activeChatId = newChat.id;
     }
 
     setError("");
@@ -263,6 +315,7 @@ export default function App() {
         council.setCouncilPanelCollapsed(false);
         council.setCouncilEntries([]);
         council.setViewingCouncilMessageId(null);
+        council.resetCouncilStickToBottom();
       }
 
       scroll.resetStickToBottom();
@@ -270,12 +323,12 @@ export default function App() {
         scroll.scrollMessagesToBottom("smooth");
       });
 
-      const run = await api.createRun(chats.selectedChatId, content, {
+      const run = await api.createRun(activeChatId, content, {
         magi: council.councilMode,
         clientRequestId,
       });
-      chats.updateChatRunStatus(chats.selectedChatId, run.id, run.status);
-      await streaming.attachRunStream(chats.selectedChatId, run);
+      chats.updateChatRunStatus(activeChatId, run.id, run.status);
+      await streaming.attachRunStream(activeChatId, run);
     } catch (err) {
       messages.setMessageInput(content);
       setError((err as Error).message);
@@ -309,10 +362,8 @@ export default function App() {
   let composerPlaceholder = "Reply...";
   if (!projects.selectedProject) {
     composerPlaceholder = "Create a project first.";
-  } else if (!chats.selectedChatId) {
-    composerPlaceholder = "Create a chat inside this project.";
   } else if (selectedChatRunStatus === "paused") {
-    composerPlaceholder = "Council is paused. Resume it from the panel.";
+    composerPlaceholder = "Add context and press Enter to resume, or just press Enter to resume without input.";
   } else if (selectedChatRunStatus === "pause_requested") {
     composerPlaceholder = "Pausing the council...";
   } else if (messages.messages.length === 0) {
@@ -379,6 +430,15 @@ export default function App() {
           </button>
 
           <div className="workspace-shell">
+            {council.councilActive && council.councilPanelCollapsed && streaming.selectedChatBusy ? (
+              <button
+                type="button"
+                className="council-reopen-pill"
+                onClick={() => council.setCouncilPanelCollapsed(false)}
+              >
+                Council deliberating <span className="status-dot" aria-hidden="true" />
+              </button>
+            ) : null}
             <section className={`chat-stage${council.councilActive && !council.councilPanelCollapsed ? " council-open" : ""}`}>
               <CouncilPanel
                 entries={displayedCouncilEntries}
@@ -386,13 +446,9 @@ export default function App() {
                 runStatus={selectedChatRunStatus}
                 selectedChatBusy={streaming.selectedChatBusy}
                 canPauseRun={canPauseCouncilRun}
-                interventionInput={council.councilInterventionInput}
-                onInterventionChange={council.setCouncilInterventionInput}
                 onClose={() => council.setCouncilPanelCollapsed(true)}
-                onPauseRun={handlePauseCouncilRun}
                 onResumeRun={handleResumeCouncilRun}
-                onResumeRunWithInput={handleResumeCouncilRunWithInput}
-                onCancelRun={streaming.handleCancelActiveRun}
+                onCouncilScroll={council.updateCouncilStickToBottom}
                 councilFeedRef={council.councilFeedRef}
                 councilEndRef={council.councilEndRef}
               />
@@ -422,12 +478,12 @@ export default function App() {
             error={error}
             councilMode={council.councilMode}
             selectedChatBusy={composerLocked}
+            isPaused={selectedChatRunStatus === "paused"}
             selectedChatId={chats.selectedChatId}
             messageInput={messages.messageInput}
             placeholder={composerPlaceholder}
             onMessageChange={messages.setMessageInput}
             onSubmit={handleSendMessage}
-            onCancelRun={streaming.handleCancelActiveRun}
             onCycleCouncilMode={council.cycleCouncilMode}
           />
         </main>

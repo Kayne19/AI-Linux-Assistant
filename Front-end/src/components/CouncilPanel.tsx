@@ -9,16 +9,9 @@ type CouncilPanelProps = {
   runStatus: string;
   selectedChatBusy: boolean;
   canPauseRun: boolean;
-  interventionInput: string;
-  onInterventionChange: (value: string) => void;
   onClose: () => void;
-  onPauseRun: () => void | Promise<void>;
   onResumeRun: () => void | Promise<void>;
-  onResumeRunWithInput: (
-    inputText: string,
-    inputKind?: "fact" | "correction" | "constraint" | "goal_clarification",
-  ) => void | Promise<void>;
-  onCancelRun: () => void | Promise<void>;
+  onCouncilScroll: () => void;
   councilFeedRef: RefObject<HTMLDivElement>;
   councilEndRef: RefObject<HTMLDivElement>;
 };
@@ -29,13 +22,9 @@ export function CouncilPanel({
   runStatus,
   selectedChatBusy,
   canPauseRun,
-  interventionInput,
-  onInterventionChange,
   onClose,
-  onPauseRun,
   onResumeRun,
-  onResumeRunWithInput,
-  onCancelRun,
+  onCouncilScroll,
   councilFeedRef,
   councilEndRef,
 }: CouncilPanelProps) {
@@ -43,18 +32,28 @@ export function CouncilPanel({
   const pauseRequested = runStatus === "pause_requested";
   const canPause = canPauseRun && !paused && !pauseRequested && !viewingPast;
   const canResume = paused && !viewingPast;
-  const trimmedInput = interventionInput.trim();
 
   return (
     <section className="council-panel">
       <div className="council-panel-header">
-        <span className="eyebrow">Council</span>
-        <span className="council-panel-label">{viewingPast ? "Past deliberation" : "Agents deliberating"}</span>
-        {!viewingPast ? (
-          <span className={`council-run-status${paused ? " paused" : pauseRequested ? " pause-requested" : ""}`}>
-            {paused ? "Paused" : pauseRequested ? "Pausing" : selectedChatBusy ? "Live" : "Idle"}
-          </span>
-        ) : null}
+        <span className={`council-run-status${paused ? " paused" : pauseRequested ? " pause-requested" : ""}`}>
+          {viewingPast ? "Past deliberation" : paused ? "Paused" : pauseRequested ? "Pausing" : selectedChatBusy ? "Live" : "Idle"}
+        </span>
+        <button
+          type="button"
+          className="council-copy-all-btn"
+          title="Copy all council entries"
+          onClick={() => {
+            const text = entries.map((e) => `[${e.role}] ${e.text}`).join("\n\n");
+            void navigator.clipboard.writeText(text);
+          }}
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="7" y="3" width="10" height="13" rx="1.5" />
+            <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H7" />
+            <path d="M3 6.5v9A1.5 1.5 0 0 0 4.5 17H13" />
+          </svg>
+        </button>
         <button
           type="button"
           className="council-panel-close"
@@ -66,7 +65,7 @@ export function CouncilPanel({
           </svg>
         </button>
       </div>
-      <div className="council-feed" ref={councilFeedRef}>
+      <div className="council-feed" ref={councilFeedRef} onScroll={onCouncilScroll}>
         {entries.map((entry) => (
           <div
             key={entry.entryId}
@@ -101,45 +100,15 @@ export function CouncilPanel({
       {!viewingPast ? (
         <div className="council-panel-footer">
           {canPause ? (
-            <div className="council-intervention-actions single-row">
-              <button type="button" className="council-action-btn primary" onClick={onPauseRun}>
-                Pause
-              </button>
-              <button type="button" className="council-action-btn" onClick={onCancelRun}>
-                Cancel
-              </button>
-            </div>
+            <p className="council-kbd-hint">Tab to pause · Esc to cancel</p>
           ) : null}
 
           {canResume ? (
-            <div className="council-intervention-composer">
-              <textarea
-                value={interventionInput}
-                onChange={(event) => onInterventionChange(event.target.value)}
-                placeholder="Add a fact, correction, constraint, or goal clarification before resuming."
-                rows={3}
-              />
-              <div className="council-intervention-note">
-                This input is rendered inside the council transcript, not as a chat message.
-              </div>
-              <div className="council-intervention-actions">
-                <button
-                  type="button"
-                  className="council-action-btn primary"
-                  onClick={onResumeRun}
-                >
-                  Resume
-                </button>
-                <button
-                  type="button"
-                  className="council-action-btn primary subtle"
-                  onClick={() => onResumeRunWithInput(trimmedInput, "fact")}
-                  disabled={!trimmedInput}
-                >
-                  Resume with input
-                </button>
-                <button type="button" className="council-action-btn" onClick={onCancelRun}>
-                  Cancel
+            <div className="council-panel-footer-paused">
+              <p className="council-intervention-note">Paused — add context or just press Enter in the composer below to resume.</p>
+              <div className="council-intervention-actions single-row">
+                <button type="button" className="council-action-btn primary" onClick={onResumeRun}>
+                  Resume now
                 </button>
               </div>
             </div>
@@ -148,9 +117,6 @@ export function CouncilPanel({
               <div className="council-intervention-note">
                 Pause requested. Waiting for the run to reach a safe checkpoint.
               </div>
-              <button type="button" className="council-action-btn" onClick={onCancelRun}>
-                Cancel
-              </button>
             </div>
           ) : null}
         </div>
