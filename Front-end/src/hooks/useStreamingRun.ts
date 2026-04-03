@@ -55,6 +55,18 @@ type CheckpointSeed = {
   text: string;
 };
 
+const MAGI_PAUSEABLE_STATES = new Set([
+  "OPENING_ARGUMENTS",
+  "ROLE_EAGER",
+  "ROLE_SKEPTIC",
+  "ROLE_HISTORIAN",
+  "DISCUSSION_GATE",
+  "DISCUSSION",
+  "DISCUSSION_EAGER",
+  "DISCUSSION_SKEPTIC",
+  "DISCUSSION_HISTORIAN",
+]);
+
 export function useStreamingRun({
   chats,
   selectedChatId,
@@ -137,9 +149,14 @@ export function useStreamingRun({
     setRunUiForChat(chatId, (current) => (current ? { ...current, streamStatus: nextStreamStatus } : current));
   }
 
+  function setRunUiPauseAvailability(chatId: string, canPauseRun: boolean) {
+    setRunUiForChat(chatId, (current) => (current ? { ...current, canPauseRun } : current));
+  }
+
   function handlePausedRun(chatId: string, run: ChatRun, message: string) {
     streamingActiveRef.current[chatId] = false;
     updateChatRunStatusRef.current(chatId, run.id, "paused");
+    setRunUiPauseAvailability(chatId, false);
     updateRunUiStreamStatus(chatId, {
       source: "event",
       code: "paused",
@@ -297,6 +314,7 @@ export function useStreamingRun({
       streamStatus: run.latest_state_code
         ? { source: "state", code: run.latest_state_code }
         : { source: "state", code: "START" },
+      canPauseRun: current?.canPauseRun || false,
       streamingAssistantId: optimisticIds.assistantId,
       optimisticUserId: optimisticIds.userId,
       optimisticAssistantId: optimisticIds.assistantId,
@@ -351,6 +369,27 @@ export function useStreamingRun({
             ),
           onState: (code) => updateRunUiStreamStatus(chatId, { source: "state", code }),
           onEvent: (code, payload) => {
+            if (code === "magi_state") {
+              const stateName = String(payload?.state || "");
+              if (stateName) {
+                setRunUiPauseAvailability(chatId, MAGI_PAUSEABLE_STATES.has(stateName));
+              }
+            } else if (code === "magi_phase") {
+              const phaseName = String(payload?.phase || "");
+              if (phaseName) {
+                setRunUiPauseAvailability(chatId, phaseName === "opening_arguments" || phaseName === "discussion");
+              }
+            } else if (code === "magi_role_start" || code === "magi_role_complete") {
+              const phaseName = String(payload?.phase || "");
+              if (phaseName) {
+                setRunUiPauseAvailability(chatId, phaseName === "opening_arguments" || phaseName === "discussion");
+              }
+            } else if (code === "magi_discussion_round" || code === "magi_intervention_added") {
+              setRunUiPauseAvailability(chatId, true);
+            } else if (code === "magi_pause_requested" || code === "magi_synthesis_complete") {
+              setRunUiPauseAvailability(chatId, false);
+            }
+
             if (
               code !== "text_delta"
               && code !== "text_checkpoint"
@@ -392,6 +431,7 @@ export function useStreamingRun({
           onDone: async (payload) => {
             streamingActiveRef.current[chatId] = false;
             delete lastCheckpointRef.current[chatId];
+            setRunUiPauseAvailability(chatId, false);
 
             if (textDelta.hasPendingDelta(chatId) || council.hasPendingCouncilWork(chatId)) {
               pendingDonePayloadsRef.current[chatId] = {
@@ -406,6 +446,7 @@ export function useStreamingRun({
           onCancelled: (message) => {
             streamingActiveRef.current[chatId] = false;
             delete lastCheckpointRef.current[chatId];
+            setRunUiPauseAvailability(chatId, false);
             textDelta.clearPendingTextDeltaBatch(chatId);
             setMessagesForChat(chatId, (current) => current.filter((messageItem) => messageItem.id >= 0));
             clearRunUi(chatId);
@@ -415,6 +456,7 @@ export function useStreamingRun({
           onError: (message) => {
             streamingActiveRef.current[chatId] = false;
             delete lastCheckpointRef.current[chatId];
+            setRunUiPauseAvailability(chatId, false);
             textDelta.clearPendingTextDeltaBatch(chatId);
             setMessagesForChat(chatId, (current) => current.filter((messageItem) => messageItem.id >= 0));
             clearRunUi(chatId);
@@ -503,6 +545,7 @@ export function useStreamingRun({
           runUiByChat[chat.id]?.runId,
           chat.active_run_id,
           Boolean(streamControllersRef.current[chat.id]),
+          runUiByChat[chat.id]?.streamStatus?.code || null,
         ),
       )
       .map((chat) => chat.id);

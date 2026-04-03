@@ -5,8 +5,8 @@ Files:
 - `router_deep_eval_scenarios.json`: multi-turn deep-eval scenarios
 - `last_router_eval_results.json`: last saved output from the eval runner
 - `last_router_deep_eval_results.json`: last saved output from the deep eval runner
-- `scripts/evaluate_router.py`: the runner
-- `scripts/evaluate_router_deep.py`: the deep scenario runner
+- `../scripts/eval/evaluate_router.py`: the runner
+- `../scripts/eval/evaluate_router_deep.py`: the deep scenario runner
 
 What the runner measures:
 - router errors vs successful completion
@@ -44,13 +44,13 @@ Typical usage:
 
 ```bash
 cd Back-end
-python scripts/evaluate_router.py
+python scripts/eval/evaluate_router.py
 ```
 
 Compare models:
 
 ```bash
-python scripts/evaluate_router.py \
+python scripts/eval/evaluate_router.py \
   --classifier-provider openai \
   --classifier-model gpt-4.1-mini \
   --responder-provider local \
@@ -60,13 +60,13 @@ python scripts/evaluate_router.py \
 Run the deeper scenario battery:
 
 ```bash
-python scripts/evaluate_router_deep.py
+python scripts/eval/evaluate_router_deep.py
 ```
 
 If you want to force retrieval devices during evals:
 
 ```bash
-python scripts/evaluate_router.py \
+python scripts/eval/evaluate_router.py \
   --vectordb-embed-device cpu \
   --vectordb-rerank-device cpu
 ```

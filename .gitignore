@@ -30,6 +30,12 @@ Back-end/tui_logs/
 Back-end/data/ingested/
 Back-end/data/old/
 
+# Planning and agent instructions (local only)
+plans/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+
 # Frontend dependencies
 Front-end/node_modules/
 Front-end/tsconfig.app.tsbuildinfo

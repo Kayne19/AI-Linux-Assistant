@@ -57,6 +57,11 @@ class ResponseAgent:
         if self.event_listener is not None:
             self.event_listener(event_type, payload)
 
+    def _handle_stream_worker_event(self, event_type, payload):
+        if event_type == "text_delta":
+            return
+        self._handle_worker_event(event_type, payload)
+
     def call_api(
         self,
         user_query,
@@ -144,13 +149,15 @@ class ResponseAgent:
                     tool_handler=self.tool_handler,
                     max_tool_rounds=self.max_tool_rounds,
                     enable_web_search=self.enable_native_web_search,
-                    event_listener=self._handle_worker_event,
+                    event_listener=self._handle_stream_worker_event,
                     cache_config={
                         "enabled": True,
                         "scope": "chat_responder",
                     },
                 )
                 invoke_cancel_check(self.cancel_check, "after_model_call")
+                if response and self.event_listener is not None:
+                    self.event_listener("text_delta", {"delta": response})
             else:
                 response = self.call_api(
                     user_query,

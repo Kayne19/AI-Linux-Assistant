@@ -645,6 +645,129 @@ def test_magi_can_pause_after_discussion_round_and_resume_with_user_intervention
     assert any(event_type == "magi_discussion_round" and payload.get("round") == 1 for event_type, payload in events)
 
 
+def test_magi_can_queue_pause_during_openings_and_resume_before_first_discussion_role():
+    system, events, _, workers = _build_magi(
+        eager_text=[
+            _make_eager_response(provisional_branch="branch-a"),
+            _make_eager_response(position="Round 1 eager delta", provisional_branch="branch-a", new_information=True),
+            _make_eager_closing_response(provisional_branch="branch-a"),
+        ],
+        skeptic_text=[
+            _make_skeptic_response(target_branch="branch-a"),
+            _make_skeptic_response(position="Round 1 skeptic delta", target_branch="branch-a", new_information=True),
+            _make_skeptic_closing_response(target_branch="branch-a"),
+        ],
+        historian_text=[
+            _make_historian_response(
+                evaluated_branch="branch-a",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                most_important_gap="Need one more fact.",
+            ),
+            _make_historian_response(
+                position="Round 1 grounding delta",
+                evaluated_branch="branch-a",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                new_information=True,
+            ),
+            _make_historian_closing_response(evaluated_branch="branch-a"),
+        ],
+        arbiter_text=_make_arbiter_response(final_answer="final answer"),
+        max_discussion_rounds=1,
+        pause_check=lambda checkpoint: checkpoint == "before_magi_role:eager:discussion:1",
+    )
+
+    try:
+        system.stream_api("question", "docs")
+        assert False, "expected pause before first discussion role"
+    except RunPausedError as exc:
+        pause_state = dict(exc.pause_state)
+
+    assert pause_state["resume_checkpoint"] == {
+        "round": 1,
+        "after_role_count": 0,
+        "next_round": 1,
+        "next_role_index": 0,
+    }
+    discussion_role_starts = [
+        payload for event_type, payload in events
+        if event_type == "magi_role_start" and payload.get("phase") == "discussion"
+    ]
+    assert discussion_role_starts == []
+
+    pause_state["interventions"] = [
+        {
+            "entry_kind": "user_intervention",
+            "role": "user",
+            "phase": "discussion",
+            "round": 1,
+            "after_role_count": 0,
+            "input_kind": "fact",
+            "text": "The server is Debian 12.",
+        }
+    ]
+    system.pause_check = None
+
+    response = system.resume_api("ignored", "", pause_state=pause_state, stream=False)
+
+    assert response == "final answer"
+    eager_discussion_call = workers["eager_worker"].calls[1]
+    assert "USER INTERVENTION SINCE PAUSE" in eager_discussion_call["user_message"]
+    assert "The server is Debian 12." in eager_discussion_call["user_message"]
+    intervention_index = next(
+        index for index, entry in enumerate(system.last_council_entries)
+        if entry.get("entry_kind") == "user_intervention"
+    )
+    first_discussion_index = next(
+        index for index, entry in enumerate(system.last_council_entries)
+        if entry.get("phase") == "discussion" and entry.get("entry_kind") == "role"
+    )
+    assert intervention_index < first_discussion_index
+
+
+def test_magi_pause_does_not_mark_error_state():
+    system, _, states, _ = _build_magi(
+        eager_text=[
+            _make_eager_response(provisional_branch="branch-a"),
+            _make_eager_response(position="Round 1 eager delta", provisional_branch="branch-a", new_information=True),
+            _make_eager_closing_response(provisional_branch="branch-a"),
+        ],
+        skeptic_text=[
+            _make_skeptic_response(target_branch="branch-a"),
+            _make_skeptic_response(position="Round 1 skeptic delta", target_branch="branch-a", new_information=True),
+            _make_skeptic_closing_response(target_branch="branch-a"),
+        ],
+        historian_text=[
+            _make_historian_response(
+                evaluated_branch="branch-a",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                most_important_gap="Need one more fact.",
+            ),
+            _make_historian_response(
+                position="Round 1 grounding delta",
+                evaluated_branch="branch-a",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                new_information=True,
+            ),
+            _make_historian_closing_response(evaluated_branch="branch-a"),
+        ],
+        arbiter_text=_make_arbiter_response(final_answer="final answer"),
+        max_discussion_rounds=1,
+        pause_check=lambda checkpoint: checkpoint == "before_magi_role:eager:discussion:1",
+    )
+
+    try:
+        system.stream_api("question", "docs")
+        assert False, "expected pause before first discussion role"
+    except RunPausedError:
+        pass
+
+    assert MagiState.ERROR not in [state for state, _payload in states]
+
+
 def test_magi_all_roles_receive_tools():
     tools = [{"name": "search_rag_database", "description": "test", "parameters": {}}]
 

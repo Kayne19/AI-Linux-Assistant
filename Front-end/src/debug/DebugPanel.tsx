@@ -40,8 +40,11 @@ export function DebugPanel({ chatId, onClose }: DebugPanelProps) {
             <p className="eyebrow">Debug</p>
             <h2>Run inspector</h2>
           </div>
-          <button type="button" className="ghost-button compact" onClick={onClose}>
-            Close
+          <button type="button" className="debug-panel-close" aria-label="Close debug panel" onClick={onClose}>
+            <svg viewBox="0 0 20 20" aria-hidden="true" width="14" height="14">
+              <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            <span>Close</span>
           </button>
         </div>
 

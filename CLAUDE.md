@@ -96,7 +96,8 @@ If code changes affect one of those surfaces, updating the relevant markdown is 
 ## Commits
 
 - For substantial completed changes or multi-step implemented plans, make a git commit unless the user explicitly says not to.
-- For those larger implementation commits, use this format:
+- Generate one short, human-readable commit title for the whole commit, such as a one-to-three word summary.
+- Write that title once at the top of the commit message, then follow it with these sections:
   - `Added: ...`
   - `Removed: ...`
   - `Fixed: ...`

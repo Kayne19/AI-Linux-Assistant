@@ -20,7 +20,12 @@ ACTIVE_RUN_STATUSES = {"queued", "running", "cancel_requested", "pause_requested
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 MESSAGE_RUN_KIND = "message"
 AUTO_NAME_RUN_KIND = "auto_name"
-DISCUSSION_PAUSEABLE_MAGI_STATES = {
+PAUSE_REQUESTABLE_MAGI_STATES = {
+    "OPENING_ARGUMENTS",
+    "ROLE_EAGER",
+    "ROLE_SKEPTIC",
+    "ROLE_HISTORIAN",
+    "DISCUSSION_GATE",
     "DISCUSSION",
     "DISCUSSION_EAGER",
     "DISCUSSION_SKEPTIC",
@@ -258,6 +263,10 @@ class PostgresRunStore:
         with self._session() as session:
             return session.scalar(select(ChatRun).where(ChatRun.id == run_id))
 
+    def get_run_for_user(self, run_id, user_id):
+        with self._session() as session:
+            return session.scalar(select(ChatRun).where(ChatRun.id == run_id, ChatRun.user_id == user_id))
+
     def get_active_run_for_chat(self, chat_session_id):
         with self._session() as session:
             return session.scalar(
@@ -270,18 +279,34 @@ class PostgresRunStore:
                 .limit(1)
             )
 
-    def get_active_runs_for_chat_ids(self, chat_session_ids):
+    def get_active_run_for_chat_for_user(self, chat_session_id, user_id):
+        with self._session() as session:
+            return session.scalar(
+                select(ChatRun)
+                .where(
+                    ChatRun.chat_session_id == chat_session_id,
+                    ChatRun.user_id == user_id,
+                    *self._active_run_predicates(),
+                )
+                .order_by(ChatRun.created_at.desc())
+                .limit(1)
+            )
+
+    def get_active_runs_for_chat_ids(self, chat_session_ids, *, user_id=None):
         chat_session_ids = [str(chat_id) for chat_id in chat_session_ids or [] if chat_id]
         if not chat_session_ids:
             return {}
         with self._session() as session:
+            filters = [
+                ChatRun.chat_session_id.in_(chat_session_ids),
+                *self._active_run_predicates(),
+            ]
+            if user_id is not None:
+                filters.append(ChatRun.user_id == user_id)
             rows = list(
                 session.scalars(
                     select(ChatRun)
-                    .where(
-                        ChatRun.chat_session_id.in_(chat_session_ids),
-                        *self._active_run_predicates(),
-                    )
+                    .where(*filters)
                     .order_by(ChatRun.created_at.desc())
                 )
             )
@@ -300,6 +325,31 @@ class PostgresRunStore:
             if normalized_status:
                 filters.append(ChatRun.status == normalized_status)
 
+            total = session.scalar(
+                select(func.count())
+                .select_from(ChatRun)
+                .where(*filters)
+            ) or 0
+            runs = list(
+                session.scalars(
+                    select(ChatRun)
+                    .where(*filters)
+                    .order_by(ChatRun.created_at.desc(), ChatRun.id.desc())
+                    .offset(offset)
+                    .limit(page_size)
+                )
+            )
+        return runs, int(total)
+
+    def list_runs_for_chat_for_user(self, chat_session_id, user_id, page=1, page_size=20, status=None):
+        page = max(1, int(page))
+        page_size = max(1, int(page_size))
+        offset = (page - 1) * page_size
+        with self._session() as session:
+            filters = [ChatRun.chat_session_id == chat_session_id, ChatRun.user_id == user_id]
+            normalized_status = (status or "").strip()
+            if normalized_status:
+                filters.append(ChatRun.status == normalized_status)
             total = session.scalar(
                 select(func.count())
                 .select_from(ChatRun)

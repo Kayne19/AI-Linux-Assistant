@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   getResumeAfterSeq,
+  mergeChatsPreservingActiveRunSnapshots,
   shouldReconcileDetachedRunUi,
 } from "../.test-dist/src/runResume.js";
 
@@ -21,4 +22,26 @@ test("keeps live run UI intact while the controller is still attached or the run
   assert.equal(shouldReconcileDetachedRunUi("run-1", "run-1", false), false);
   assert.equal(shouldReconcileDetachedRunUi("run-1", null, true), false);
   assert.equal(shouldReconcileDetachedRunUi("", null, false), false);
+});
+
+test("keeps paused run UI intact when a stale poll temporarily drops the active run id", () => {
+  assert.equal(shouldReconcileDetachedRunUi("run-1", null, false, "paused"), false);
+  assert.equal(shouldReconcileDetachedRunUi("run-1", null, false, "pause_requested"), false);
+  assert.equal(shouldReconcileDetachedRunUi("run-1", "run-2", false, "paused"), true);
+});
+
+test("preserves a local paused run snapshot when refreshed chats omit the active run temporarily", () => {
+  const currentChats = [
+    { id: "chat-1", active_run_id: "run-1", active_run_status: "paused", title: "Chat 1" },
+    { id: "chat-2", active_run_id: null, active_run_status: null, title: "Chat 2" },
+  ];
+  const nextChats = [
+    { id: "chat-1", active_run_id: null, active_run_status: null, title: "Chat 1" },
+    { id: "chat-2", active_run_id: null, active_run_status: null, title: "Chat 2" },
+  ];
+
+  assert.deepEqual(mergeChatsPreservingActiveRunSnapshots(currentChats, nextChats), [
+    { id: "chat-1", active_run_id: "run-1", active_run_status: "paused", title: "Chat 1" },
+    { id: "chat-2", active_run_id: null, active_run_status: null, title: "Chat 2" },
+  ]);
 });

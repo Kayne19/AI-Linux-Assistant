@@ -9,7 +9,7 @@ from providers.openAI_caller import OpenAIWorker
 from agents.response_agent import ResponseAgent
 from orchestration.history_preparer import PreparedHistory
 from orchestration.routing_registry import get_allowed_labels, get_searchable_labels, get_skip_rag_labels
-from orchestration.run_control import RunCancelledError, invoke_cancel_check
+from orchestration.run_control import RunCancelledError, RunPausedError, invoke_cancel_check
 from config.settings import SETTINGS
 from agents.summarizers import ContextSummarizer, HistorySummarizer
 from retrieval.vectorDB import VectorDB
@@ -96,7 +96,9 @@ class ModelRouter:
         cancel_check=None,
         pause_check=None,
         persist_turn_messages=True,
+        project_description="",
     ):
+        self.project_description = project_description
         self.chat_store = chat_store
         self.chat_session_id = chat_session_id
         self.conversation_history = self._load_conversation_history(chat_store, chat_session_id)
@@ -211,7 +213,7 @@ class ModelRouter:
                     self._check_cancel(f"after_state:{state.name}")
                     self._set_state(state, turn)
 
-                except RunCancelledError:
+                except (RunCancelledError, RunPausedError):
                     raise
                 except Exception as exc:
                     turn.error = str(exc)
@@ -771,6 +773,10 @@ class ModelRouter:
                     "has_memory": bool(turn.memory_snapshot_text.strip()),
                 },
             )
+        desc = (self.project_description or "").strip()
+        if desc:
+            prefix = f"PROJECT DESCRIPTION:\n{desc}\n\n"
+            turn.memory_snapshot_text = prefix + (turn.memory_snapshot_text or "")
         return RouterState.SUMMARIZE_CONVERSATION_HISTORY
 
     # Caveat: this state may intentionally no-op when the conversation is small

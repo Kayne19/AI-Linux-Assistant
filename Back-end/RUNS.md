@@ -103,7 +103,7 @@ High-level lifecycle:
 Paused MAGI lifecycle:
 
 1. A running `message` run in `magi="lite"` or `magi="full"` may receive `POST /runs/{run_id}/pause`.
-2. The run is marked `pause_requested` immediately, but the worker continues until the next MAGI discussion-safe checkpoint.
+2. The run is marked `pause_requested` immediately, but the worker continues until the next MAGI pause-safe checkpoint.
 3. At that checkpoint the worker writes a resumable `pause_state_json`, emits a durable `paused` row, clears the lease, and stops without persisting final chat messages.
 4. `POST /runs/{run_id}/resume` appends optional user intervention, keeps the same `run_id`, and requeues that paused run for the worker.
 5. The router resumes the same Magi deliberation from the durable snapshot, then continues to normal completion and single-pass final persistence.
@@ -227,7 +227,8 @@ Pause is also cooperative and checkpoint-based.
 Rules:
 
 - only `run_kind="message"` with `magi="lite"` or `magi="full"` can pause
-- pause is only honored inside MAGI discussion checkpoints, not during openings, closing arguments, or arbiter synthesis
+- pause may be requested during opening arguments or discussion, but it is only honored at MAGI discussion checkpoints
+- a pause requested during opening arguments stays queued until the first discussion checkpoint, so resume input can land before the first discussion role speaks
 - pause does not create a second run or a second user message
 - user intervention submitted during pause is stored as run-scoped MAGI data/events, not as a normal chat-thread message
 - a paused run remains the active run for that chat until resumed or cancelled

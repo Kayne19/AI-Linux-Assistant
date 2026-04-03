@@ -134,6 +134,12 @@ It should remain runtime-only.
 
 It should not regain indexing responsibilities.
 
+Runtime config rule:
+
+- the facade must build its store/metadata/search components from one coherent runtime config
+- compatibility helpers must read the same configured path/table metadata that runtime retrieval uses
+- compatibility overrides are runtime composition only, not ingestion/indexing behavior
+
 ## Runtime Flow
 
 At runtime, the flow is:

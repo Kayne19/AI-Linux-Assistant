@@ -1018,6 +1018,7 @@ textarea:focus {
   padding: 0;
   background: transparent;
   border-top: none;
+  pointer-events: none;
 }
 
 .composer-shell {
@@ -1028,6 +1029,7 @@ textarea:focus {
   border-radius: 16px;
   background: transparent;
   box-shadow: none;
+  pointer-events: auto;
 }
 
 .composer-error-text {
@@ -1419,6 +1421,7 @@ textarea:focus {
 
 .council-feed {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px 14px 140px;
   display: flex;
@@ -1607,6 +1610,8 @@ textarea:focus {
 }
 
 .council-panel-footer {
+  position: relative;
+  z-index: 1;
   flex-shrink: 0;
   padding: 12px 14px 16px;
   border-top: 1px solid var(--surface2);

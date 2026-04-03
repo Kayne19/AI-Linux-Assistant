@@ -522,6 +522,25 @@ class MagiSystem:
             for role_index, (role_name, role_agent, state) in enumerate(role_states):
                 if role_index < role_start_index:
                     continue
+                self._maybe_pause(
+                    f"before_magi_role:{role_name}:discussion:{round_num}",
+                    lambda round_num=round_num, role_index=role_index: self._serialize_pause_state(
+                        user_query=user_query,
+                        retrieved_docs=retrieved_docs,
+                        summarized_conversation_history=summarized_conversation_history,
+                        memory_snapshot_text=memory_snapshot_text,
+                        opening_positions=opening_positions,
+                        discussion_rounds=discussion_rounds,
+                        gate=gate,
+                        resume_checkpoint={
+                            "round": round_num,
+                            "after_role_count": len(round_positions),
+                            "next_round": round_num,
+                            "next_role_index": role_index,
+                        },
+                        interventions=interventions,
+                    ),
+                )
                 self._check_cancel(f"before_magi_role:{role_name}:discussion:{round_num}")
                 self._set_state(state, {"round": round_num})
                 self._emit_event("magi_role_start", {"role": role_name, "phase": "discussion", "round": round_num})
@@ -821,6 +840,8 @@ class MagiSystem:
                 stream=False,
                 pause_state=None,
             )
+        except RunPausedError:
+            raise
         except Exception:
             self._set_state(MagiState.ERROR)
             raise
@@ -835,6 +856,8 @@ class MagiSystem:
                 stream=True,
                 pause_state=None,
             )
+        except RunPausedError:
+            raise
         except Exception:
             self._set_state(MagiState.ERROR)
             raise
@@ -849,6 +872,8 @@ class MagiSystem:
                 stream=stream,
                 pause_state=pause_state,
             )
+        except RunPausedError:
+            raise
         except Exception:
             self._set_state(MagiState.ERROR)
             raise

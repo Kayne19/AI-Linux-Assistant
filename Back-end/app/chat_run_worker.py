@@ -334,6 +334,8 @@ class ChatRunWorkerService:
         self._shared_retrieval_components = build_runtime_components()
 
     def _build_router(self, run):
+        project = self.app_store.get_project(run.project_id) if run.project_id else None
+        project_description = (project.description or "").strip() if project else ""
         return ModelRouter(
             database=VectorDB(runtime_components=self._shared_retrieval_components),
             memory_store=PostgresMemoryStore(project_id=run.project_id),
@@ -342,6 +344,7 @@ class ChatRunWorkerService:
             cancel_check=lambda checkpoint: self.run_store.is_cancel_requested(run.id),
             pause_check=lambda checkpoint: self.run_store.is_pause_requested(run.id),
             persist_turn_messages=False,
+            project_description=project_description,
         )
 
     def _heartbeat_and_flush_loop(
@@ -473,7 +476,12 @@ class ChatRunWorkerService:
         if run.status == "cancel_requested":
             self._cancel_run(run, claimed_worker_id)
             return
-        if run.status == "running" and int(getattr(run, "latest_event_seq", 0) or 0) > 0:
+        resuming_paused_magi = bool(getattr(run, "pause_state_json", None)) and (run.magi or "off") in {"full", "lite"}
+        if (
+            run.status == "running"
+            and int(getattr(run, "latest_event_seq", 0) or 0) > 0
+            and not resuming_paused_magi
+        ):
             self._fail_run(run, claimed_worker_id, "Run lease expired before completion.")
             return
 

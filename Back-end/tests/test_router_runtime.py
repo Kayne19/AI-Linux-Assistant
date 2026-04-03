@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from orchestration.history_preparer import PreparedHistory
 from orchestration.model_router import ModelRouter, RouterExecutionError, RouterState
+from orchestration.run_control import RunPausedError
 from agents.response_agent import ResponseAgent
 from agents.response_agent import ResponseState
 from config.settings import AppSettings, RoleModelSettings
@@ -84,6 +85,15 @@ class ExplodingResponder:
     def call_api(self, *args, **kwargs):
         del args, kwargs
         raise RuntimeError("boom")
+
+    def stream_api(self, *args, **kwargs):
+        return self.call_api(*args, **kwargs)
+
+
+class PausingResponder:
+    def call_api(self, *args, **kwargs):
+        del args, kwargs
+        raise RunPausedError("Run paused.", pause_state={"checkpoint": "discussion"})
 
     def stream_api(self, *args, **kwargs):
         return self.call_api(*args, **kwargs)
@@ -325,6 +335,25 @@ def test_router_run_turn_raises_structured_error_for_worker_path():
         assert exc.turn is not None
         assert exc.turn.error == "boom"
         assert RouterState.ERROR.name in exc.turn.state_trace
+
+
+def test_router_run_turn_propagates_pause_without_converting_it_to_router_error():
+    router = ModelRouter(
+        database=FakeDatabase(""),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=PausingResponder(),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    try:
+        router.run_turn("hello", stream_response=True)
+        assert False, "expected pause to propagate"
+    except RunPausedError as exc:
+        assert exc.pause_state == {"checkpoint": "discussion"}
 
 
 def test_router_does_not_treat_literal_router_error_text_as_failure():

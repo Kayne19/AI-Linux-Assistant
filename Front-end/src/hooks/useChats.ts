@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { mergeChatsPreservingActiveRunSnapshots } from "../runResume";
 import type { AsyncState, ChatSession } from "../types";
 
 type UseChatsOptions = {
@@ -39,9 +40,14 @@ export function useChats({
     const nextChats = await api.listChats(projectId);
     setChatListsByProject((current) => ({
       ...current,
-      [projectId]: nextChats,
+      [projectId]: mergeChatsPreservingActiveRunSnapshots(current[projectId] || [], nextChats),
     }));
-    setChats(nextChats);
+    setChats((current) =>
+      mergeChatsPreservingActiveRunSnapshots(
+        current,
+        nextChats,
+      ),
+    );
     setSelectedChatId((current) =>
       nextChats.some((chat) => chat.id === current) ? current : nextChats[0]?.id || "",
     );
