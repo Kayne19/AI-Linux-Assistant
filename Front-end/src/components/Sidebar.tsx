@@ -27,6 +27,7 @@ type SidebarProps = {
   onSelectChat: (chatId: string) => void;
   onEditChat: (chat: ChatSession) => void;
   onCloseMobileSidebar: () => void;
+  onLogout: () => void | Promise<void>;
 };
 
 export function Sidebar({
@@ -54,6 +55,7 @@ export function Sidebar({
   onSelectChat,
   onEditChat,
   onCloseMobileSidebar,
+  onLogout,
 }: SidebarProps) {
   const dragStateRef = useRef<{ active: boolean; width: number }>({ active: false, width: sidebarWidth });
   const previousTitlesRef = useRef<Record<string, string>>({});
@@ -174,11 +176,15 @@ export function Sidebar({
 
             <div className="sidebar-content">
               <section className="rail-section user-section">
-                <div className="user-chip" title={user.username}>
+                <div className="user-chip" title={user.display_name || user.username || user.email}>
                   <div className="user-meta">
                     <span className="eyebrow">Signed in</span>
-                    <strong className="user-name">{user.username}</strong>
+                    <strong className="user-name">{user.display_name || user.username || user.email}</strong>
+                    {user.email ? <small>{user.email}</small> : null}
                   </div>
+                  <button type="button" className="subtle-action" onClick={() => void onLogout()}>
+                    Sign out
+                  </button>
                 </div>
               </section>
 

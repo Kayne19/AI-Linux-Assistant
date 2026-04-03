@@ -61,6 +61,20 @@ They claim eligible runs, execute the router FSM, heartbeat leases, and publish 
 
 The router still owns the workflow of the turn that is running inside that worker.
 
+### 1b. Backend Identity Owns Web Scope
+
+Web identity is backend-verified.
+
+That means:
+
+- the React app authenticates with Auth0
+- the frontend sends Auth0 bearer access tokens for API and streaming requests
+- FastAPI validates RS256 access tokens against JWKS, issuer, audience, expiry, and signature
+- the backend maps Auth0 `sub` to a local `users` row
+- local DB `role` remains the authorization source for admin/debug privileges
+
+The frontend never supplies `user_id` as authority for project/chat/run ownership.
+
 Paused MAGI rule:
 
 - pause/resume is durable run control, not a second chat turn
@@ -223,6 +237,19 @@ This prevents:
 - hidden data leakage between devices/stacks
 - technically correct but project-incompatible recommendations caused by ignoring remembered environment context
 
+Web auth rule:
+
+- the browser authenticates with Auth0
+- FastAPI validates Auth0 access tokens and maps them to local users
+- ownership is enforced in backend stores and route lookups, not by client-supplied `user_id`
+- local `role` remains the authorization source for admin/debug capability
+
+The same rule now applies to web auth:
+
+- project/chat/message/run lookups are owner-scoped on the backend
+- existence-only ID checks are not sufficient for web routes
+- synced profile fields such as `email`, `display_name`, and `avatar_url` are not authorization identifiers
+
 ### 9. The Backend Should Answer Product Questions Cleanly
 
 A strong backend should make product debugging straightforward.
@@ -343,7 +370,7 @@ Role models are configured through `AppSettings`; `full` and `lite` use differen
 
 **FSM:** `MagiState` is explicit and traceable. The router appends `MAGI_`-prefixed trace markers via `_handle_magi_state`. Current states include `OPENING_ARGUMENTS`, `ROLE_EAGER`, `ROLE_SKEPTIC`, `ROLE_HISTORIAN`, `DISCUSSION_GATE`, `DISCUSSION`, `DISCUSSION_EAGER`, `DISCUSSION_SKEPTIC`, `DISCUSSION_HISTORIAN`, `CLOSING_ARGUMENTS`, `CLOSING_EAGER`, `CLOSING_SKEPTIC`, `CLOSING_HISTORIAN`, `ARBITER`, `COMPLETE`, `ERROR`.
 
-**Streaming:** Each role emits lifecycle events (`magi_phase`, `magi_role_start`, `magi_role_complete`) and live text deltas (`magi_role_text_delta`) so the frontend can render the council in real time. The Magi system also emits explicit gating / round-summary / synthesis events (`magi_discussion_gate`, `magi_discussion_round`, `magi_synthesis_complete`). Discussion events now expose the router-owned `discussion_mode` / `unresolved_issue`, discussion role completions can expose `no_delta_reason`, and the Arbiter's final response still streams through the normal text-delta channel.
+**Streaming:** Each role emits lifecycle events (`magi_phase`, `magi_role_start`, `magi_role_complete`) and live text deltas (`magi_role_text_delta`) so the frontend can render the council in real time. The Magi system also emits explicit gating / round-summary / synthesis events (`magi_discussion_gate`, `magi_discussion_round`, `magi_synthesis_complete`). Discussion events now expose the router-owned `discussion_mode` / `unresolved_issue`, discussion role completions can expose `no_delta_reason`, and the Arbiter's final response still streams through the normal text-delta channel. A pause request may be queued during opening arguments, but it is only consumed at a discussion checkpoint, including before the first discussion role in round 1.
 
 **Router integration:** The `MagiSystem` is lazily constructed on first Magi turn and cached. It plugs into `_generate_response` as an alternative to `self.responder` — no new router states needed.
 

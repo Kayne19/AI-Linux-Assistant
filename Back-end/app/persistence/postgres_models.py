@@ -53,9 +53,20 @@ def _uuid():
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("auth_provider", "auth_subject", name="uq_users_auth_provider_subject"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    username: Mapped[str] = mapped_column(String(120), unique=True, index=True, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(120), unique=True, index=True, nullable=True)
+    auth_provider: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    auth_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    avatar_url: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    role: Mapped[str] = mapped_column(String(20), default="user", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False

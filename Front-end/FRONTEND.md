@@ -6,7 +6,7 @@ This document explains the current frontend structure and its ownership boundari
 
 The frontend is a React + TypeScript client for:
 
-- login
+- Auth0 sign-in/bootstrap
 - project selection/creation/edit/delete
 - chat selection/creation/edit/delete
 - message history display
@@ -38,7 +38,7 @@ It should stay thin and should not absorb subsystem logic again.
 Owns stateful frontend behavior, split by responsibility:
 
 - `useAuth.ts`
-  - bootstrap/login state
+  - Auth0 session state, authenticated app bootstrap, and logout / hard-401 teardown
 - `useProjects.ts`
   - project CRUD, selection, dialogs, form state
 - `useChats.ts`
@@ -67,6 +67,7 @@ Owns presentational UI surfaces:
 - `MessageComposer.tsx`
 - `CouncilPanel.tsx`
   - live pause / resume / resume-with-input controls for active MAGI runs
+  - pause is exposed during opening arguments and discussion, but queued opening-argument pauses are only consumed once discussion reaches a safe checkpoint
 - `dialogs/`
   - project/chat dialog shells
 
@@ -104,9 +105,23 @@ Owns API access:
 - run snapshot/cancel requests
 - run-event streaming and replay attach
 - SSE parsing
-- startup bootstrap calls
+- authenticated app bootstrap calls
+
+Auth helpers:
+
+- `src/apiAuth.ts`
+  - access-token header attachment
+  - centralized hard-401 handling
+- `src/authConfig.ts`
+  - Auth0 env parsing for the React/Auth0 provider bootstrap
 
 The frontend does not call the router directly. It only talks to FastAPI.
+
+Important auth rule:
+
+- all normal web API and streaming calls use Auth0 access tokens in the `Authorization` header
+- the frontend keeps the existing `fetch`/`ReadableStream` stream path so headers work in the browser
+- bearer tokens are not placed in query params or localStorage
 
 ### `src/runStreamSession.ts`
 

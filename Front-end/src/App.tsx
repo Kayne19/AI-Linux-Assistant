@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
+import { CSSProperties, FormEvent, startTransition, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { ChatView } from "./components/ChatView";
 import { CouncilPanel } from "./components/CouncilPanel";
@@ -21,10 +21,6 @@ import { getStreamStatusAliases, getStreamStatusKey, getStreamStatusLabel } from
 import type { AsyncState, ChatSession, Project, StreamStatusEvent, UICouncilEntry } from "./types";
 
 export default function App() {
-  const isDebugMode =
-    import.meta.env.DEV ||
-    (typeof window !== "undefined" && window.localStorage.getItem("ala_debug") === "1");
-
   const [status, setStatus] = useState<AsyncState>("idle");
   const [error, setError] = useState("");
   const [statusAliasIndex, setStatusAliasIndex] = useState(0);
@@ -44,8 +40,8 @@ export default function App() {
   );
 
   const auth = useAuth();
+  const isDebugMode = auth.user?.role === "admin";
   const projects = useProjects({
-    userId: auth.user?.id || "",
     onStatusChange: setStatus,
     onError: setError,
     onProjectsReloaded: (nextProjects) => projectsReloadedRef.current(nextProjects),
@@ -117,6 +113,45 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (auth.user) {
+      return;
+    }
+    startTransition(() => {
+      projects.setProjects([]);
+      projects.setSelectedProjectId("");
+      projects.setExpandedProjectId("");
+      chats.setChats([]);
+      chats.setChatListsByProject({});
+      chats.setSelectedChatId("");
+      messages.resetAll();
+      streaming.resetAll();
+      setError(auth.error || "");
+      setStatus("idle");
+    });
+  }, [auth.error, auth.user]);
+
+  useEffect(() => {
+    const bootstrap = auth.bootstrap;
+    if (!bootstrap) {
+      return;
+    }
+    startTransition(() => {
+      projects.setProjects(bootstrap.projects);
+      chats.setChatListsByProject(bootstrap.chats_by_project);
+      projects.setSelectedProjectId((current) =>
+        bootstrap.projects.some((project) => project.id === current)
+          ? current
+          : bootstrap.projects[0]?.id || "",
+      );
+      chats.setSelectedChatId("");
+      messages.resetAll();
+      streaming.resetAll();
+      setError(auth.error || "");
+      setStatus("idle");
+    });
+  }, [auth.bootstrap, auth.error]);
+
+  useEffect(() => {
     council.clearForChatSelection();
   }, [chats.selectedChatId]);
 
@@ -149,26 +184,7 @@ export default function App() {
 
   const liveStatusKey = getStreamStatusKey(streaming.streamStatus);
   const liveStatusAliases = getStreamStatusAliases(streaming.streamStatus);
-  const canPauseCouncilRun = (() => {
-    if (selectedChatRunStatus !== "running") {
-      return false;
-    }
-    const statusEvent = streaming.streamStatus;
-    if (!statusEvent || statusEvent.source !== "event") {
-      return false;
-    }
-    const payload = statusEvent.payload || {};
-    if (statusEvent.code === "magi_state") {
-      return String(payload.state || "").startsWith("DISCUSSION");
-    }
-    if (statusEvent.code === "magi_phase") {
-      return String(payload.phase || "") === "discussion";
-    }
-    if (statusEvent.code === "magi_role_start" || statusEvent.code === "magi_role_complete") {
-      return String(payload.phase || "") === "discussion";
-    }
-    return statusEvent.code === "magi_discussion_round";
-  })();
+  const canPauseCouncilRun = selectedChatRunStatus === "running" && Boolean(streaming.selectedRunUi?.canPauseRun);
 
   useEffect(() => {
     setStatusAliasIndex(0);
@@ -202,27 +218,6 @@ export default function App() {
     projects.setSelectedProjectId(projectId);
     projects.setExpandedProjectId(projectId);
     closeSidebarOnMobile();
-  }
-
-  async function handleLogin(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setStatus("loading");
-    setError("");
-
-    try {
-      const result = await auth.login(auth.usernameInput);
-      auth.setUser(result.user);
-      projects.setProjects(result.projects);
-      chats.setChatListsByProject(result.chats_by_project);
-      projects.setSelectedProjectId(result.projects[0]?.id || "");
-      chats.setSelectedChatId("");
-      messages.resetAll();
-      streaming.resetAll();
-      setStatus("idle");
-    } catch (err) {
-      setError((err as Error).message);
-      setStatus("error");
-    }
   }
 
   async function handleCreateChat() {
@@ -329,11 +324,9 @@ export default function App() {
   if (!auth.user) {
     return (
       <LoginScreen
-        usernameInput={auth.usernameInput}
-        onUsernameChange={auth.setUsernameInput}
-        onSubmit={handleLogin}
-        status={status}
-        error={error}
+        status={auth.loading ? "loading" : "idle"}
+        error={auth.error || error}
+        onSignIn={auth.signIn}
       />
     );
   }
@@ -371,6 +364,7 @@ export default function App() {
           }}
           onEditChat={chats.openEditChatDialog}
           onCloseMobileSidebar={closeSidebarOnMobile}
+          onLogout={auth.logout}
         />
 
         <main className="main-panel">

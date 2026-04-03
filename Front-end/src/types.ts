@@ -1,6 +1,11 @@
 export type User = {
   id: string;
-  username: string;
+  username?: string | null;
+  display_name: string;
+  email: string;
+  email_verified: boolean;
+  avatar_url: string;
+  role: 'user' | 'admin';
 };
 
 export type AsyncState = "idle" | "loading" | "error";
@@ -51,6 +56,7 @@ export type ChatRunUIState = {
   clientRequestId: string;
   pendingContent: string;
   streamStatus: StreamStatusEvent | null;
+  canPauseRun: boolean;
   streamingAssistantId: number | null;
   optimisticUserId: number;
   optimisticAssistantId: number;
@@ -192,7 +198,7 @@ export type RunPausedEvent = {
 
 export type RunEvent = RunStateEvent | RunGenericEvent | RunDoneEvent | RunErrorEvent | RunCancelledEvent | RunPausedEvent;
 
-export type BootstrapResponse = {
+export type AppBootstrapResponse = {
   user: User;
   projects: Project[];
   chats_by_project: Record<string, ChatSession[]>;

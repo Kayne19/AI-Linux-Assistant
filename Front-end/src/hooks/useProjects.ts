@@ -3,14 +3,12 @@ import { api } from "../api";
 import type { AsyncState, Project } from "../types";
 
 type UseProjectsOptions = {
-  userId: string;
   onStatusChange: (status: AsyncState) => void;
   onError: (message: string) => void;
   onProjectsReloaded?: (projects: Project[]) => void;
 };
 
 export function useProjects({
-  userId,
   onStatusChange,
   onError,
   onProjectsReloaded,
@@ -44,15 +42,8 @@ export function useProjects({
     });
   }, [projects, selectedProjectId]);
 
-  async function reloadProjects(targetUserId = userId) {
-    if (!targetUserId) {
-      setProjects([]);
-      setSelectedProjectId("");
-      onProjectsReloaded?.([]);
-      return [];
-    }
-
-    const nextProjects = await api.listProjects(targetUserId);
+  async function reloadProjects() {
+    const nextProjects = await api.listProjects();
     setProjects(nextProjects);
     setSelectedProjectId((current) =>
       nextProjects.some((project) => project.id === current) ? current : nextProjects[0]?.id || "",
@@ -84,20 +75,15 @@ export function useProjects({
 
   async function handleCreateProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!userId) {
-      return null;
-    }
-
     onStatusChange("loading");
     onError("");
 
     try {
       const project = await api.createProject({
-        user_id: userId,
         name: projectNameInput,
         description: projectDescriptionInput,
       });
-      await reloadProjects(userId);
+      await reloadProjects();
       setSelectedProjectId(project.id);
       setProjectNameInput("");
       setProjectDescriptionInput("");
@@ -113,7 +99,7 @@ export function useProjects({
 
   async function handleEditProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!editingProjectId || !userId) {
+    if (!editingProjectId) {
       return null;
     }
 
@@ -130,7 +116,7 @@ export function useProjects({
       );
       setSelectedProjectId(updatedProject.id);
       closeEditProjectDialog();
-      await reloadProjects(userId);
+      await reloadProjects();
       onStatusChange("idle");
       return updatedProject;
     } catch (err) {
@@ -141,7 +127,7 @@ export function useProjects({
   }
 
   async function handleDeleteProject() {
-    if (!editingProjectId || !userId) {
+    if (!editingProjectId) {
       return false;
     }
 
@@ -154,7 +140,7 @@ export function useProjects({
         setSelectedProjectId("");
       }
       closeEditProjectDialog();
-      await reloadProjects(userId);
+      await reloadProjects();
       onStatusChange("idle");
       return true;
     } catch (err) {

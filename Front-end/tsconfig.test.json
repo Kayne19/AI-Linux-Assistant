@@ -11,5 +11,5 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["src/councilStreamLifecycle.ts", "src/runResume.ts"]
+  "include": ["src/apiAuth.ts", "src/authConfig.ts", "src/councilStreamLifecycle.ts", "src/runResume.ts"]
 }

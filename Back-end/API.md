@@ -38,17 +38,20 @@ Simple liveness check.
 
 ### Auth
 
-- `POST /auth/login`
-- `POST /auth/bootstrap`
+- `GET /auth/me`
+- `GET /app/bootstrap`
 
-Current auth is username-only.
+Current web auth is Auth0-backed.
 
-- `POST /auth/login` creates or reuses a user record.
-- `POST /auth/bootstrap` creates or reuses the user and returns the initial project/chat tree used by the web app.
+- the React app sends `Authorization: Bearer <access_token>`
+- FastAPI validates Auth0 access tokens only, using RS256 JWT verification against JWKS, issuer, audience, expiry, and signature
+- `GET /auth/me` returns the authenticated local user row
+- `GET /app/bootstrap` returns the authenticated user plus the initial owned project/chat tree used by the web app
+- legacy `POST /auth/login` and `POST /auth/bootstrap` remain dev-only behind `ENABLE_LEGACY_BOOTSTRAP_AUTH`
 
 ### Projects
 
-- `GET /users/{user_id}/projects`
+- `GET /projects`
 - `POST /projects`
 - `GET /projects/{project_id}`
 - `PATCH /projects/{project_id}`
@@ -96,6 +99,11 @@ Resume request body:
 - `input_text: str = ""`
 - `input_kind: "fact" | "correction" | "constraint" | "goal_clarification" = "fact"`
 
+Pause semantics:
+
+- `POST /runs/{run_id}/pause` is accepted for active MAGI message runs during opening arguments or discussion
+- if pause is requested during opening arguments, the request stays queued and is honored at the first discussion checkpoint so resumed input can appear before the first discussion role speaks
+
 `GET /chats/{chat_session_id}/runs` is the chat-scoped run history endpoint used by the dev/admin debug drawer.
 
 Current query params:
@@ -126,6 +134,12 @@ The app store owns:
 Current implementation:
 
 - [app/persistence/postgres_app_store.py](app/persistence/postgres_app_store.py)
+
+Auth-owned user rules:
+
+- local users are keyed by `(auth_provider, auth_subject)` for web auth
+- Auth0 profile fields like `email`, `display_name`, and `avatar_url` are synced profile data, not authorization identifiers
+- local `role` remains the authorization source for admin/debug capabilities
 
 ### Memory Store
 
@@ -183,12 +197,17 @@ For partial text:
 
 The frontend is responsible for turning backend event codes into polished human labels.
 
+Auth rule for streaming:
+
+- the browser stream path stays `fetch`/`ReadableStream`, not native `EventSource`
+- bearer tokens are sent in the `Authorization` header, never in query params
+
 ## Data Models
 
 Current top-level API models include:
 
 - `UserResponse`
-- `BootstrapResponse`
+- `AppBootstrapResponse`
 - `ProjectResponse`
 - `ChatSessionResponse`
 - `ChatRunResponse`
@@ -202,6 +221,7 @@ These are defined in [app/api.py](app/api.py).
 Current notable fields:
 
 - `ChatMessageResponse.council_entries` carries persisted Magi deliberation entries when present.
+- `UserResponse` now includes `display_name`, `email`, `email_verified`, `avatar_url`, optional legacy `username`, and local `role`.
 - persisted council entries may now include `entry_kind="user_intervention"` plus `input_kind` for paused-run user intervention rows
 - `AssistantDebugResponse` includes `state_trace`, `tool_events`, `retrieval_query`, and `retrieved_sources`.
 - `ChatSessionResponse.active_run_id` / `active_run_status` expose only user-visible active `message` runs, not internal follow-up runs like `auto_name`.
@@ -214,13 +234,14 @@ Current notable fields:
 ## Important Rules
 
 1. The API should stay thin.
-2. Session/project scoping should be enforced in the backend, not inferred by the frontend.
+2. Session/project/run scoping should be enforced in the backend, not inferred by the frontend.
 3. Streaming should not bypass persistence or memory rules.
 4. The blocking endpoint should remain available as a safe fallback unless deliberately removed.
 5. Run creation must be idempotent when the same `client_request_id` is retried for the same chat.
 6. Concurrency policy belongs in the durable run system, not in ad hoc API threads.
 7. Cancel policy selection is explicit in the control plane: queued runs are terminalized immediately, running runs are marked `cancel_requested`.
 8. Paused MAGI intervention is run-scoped control data, not a normal chat-thread user message.
+9. No client-supplied `user_id` is trusted on web routes; ownership checks are owner-scoped in the stores.
 
 ## Files To Read First
 

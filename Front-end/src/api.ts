@@ -1,5 +1,6 @@
+import { ApiError, getAuthorizationHeader, handleUnauthorizedStatus } from "./apiAuth";
 import type {
-  BootstrapResponse,
+  AppBootstrapResponse,
   ChatMessage,
   ChatRunListResponse,
   ChatRun,
@@ -12,18 +13,25 @@ import type {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "http://localhost:8000";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type RequestOptions = {
+  auth?: boolean;
+};
+
+async function request<T>(path: string, init?: RequestInit, options: RequestOptions = {}): Promise<T> {
+  const authHeaders = await getAuthorizationHeader(options.auth !== false);
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders,
       ...(init?.headers || {}),
     },
     ...init,
   });
 
   if (!response.ok) {
+    await handleUnauthorizedStatus(response.status);
     const text = await response.text();
-    throw new Error(text || `Request failed with status ${response.status}`);
+    throw new ApiError(response.status, text || `Request failed with status ${response.status}`);
   }
 
   return response.json() as Promise<T>;
@@ -92,7 +100,7 @@ export function dispatchRunEvent(event: BackendStreamEvent, handlers: StreamHand
   }
   if (event.type === "error") {
     handlers.onError?.(event.message);
-    throw new Error(event.message);
+    throw new ApiError(500, event.message);
   }
   return null;
 }
@@ -153,17 +161,20 @@ async function readEventStream(
   handlers: StreamHandlers = {},
   signal?: AbortSignal,
 ): Promise<SendMessageResponse | null> {
+  const authHeaders = await getAuthorizationHeader(true);
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "GET",
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders,
     },
     signal,
   });
 
   if (!response.ok) {
+    await handleUnauthorizedStatus(response.status);
     const text = await response.text();
-    throw new Error(text || `Request failed with status ${response.status}`);
+    throw new ApiError(response.status, text || `Request failed with status ${response.status}`);
   }
 
   if (!response.body) {
@@ -174,19 +185,11 @@ async function readEventStream(
 }
 
 export const api = {
-  health: () => request<{ ok: boolean }>("/health"),
-  login: (username: string) =>
-    request<User>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username }),
-    }),
-  bootstrap: (username: string) =>
-    request<BootstrapResponse>("/auth/bootstrap", {
-      method: "POST",
-      body: JSON.stringify({ username }),
-    }),
-  listProjects: (userId: string) => request<Project[]>(`/users/${userId}/projects`),
-  createProject: (payload: { user_id: string; name: string; description?: string }) =>
+  health: () => request<{ ok: boolean }>("/health", undefined, { auth: false }),
+  getCurrentUser: () => request<User>("/auth/me"),
+  appBootstrap: () => request<AppBootstrapResponse>("/app/bootstrap"),
+  listProjects: () => request<Project[]>("/projects"),
+  createProject: (payload: { name: string; description?: string }) =>
     request<Project>("/projects", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -266,8 +269,11 @@ export const api = {
         input_kind: payload.inputKind || "",
       }),
     }),
-  streamRun: (runId: string, handlers: StreamHandlers = {}, options: { afterSeq?: number; signal?: AbortSignal } = {}) =>
-    readEventStream(`/runs/${runId}/events/stream?after_seq=${Math.max(0, options.afterSeq || 0)}`, handlers, options.signal),
+  streamRun: (
+    runId: string,
+    handlers: StreamHandlers = {},
+    options: { afterSeq?: number; signal?: AbortSignal } = {},
+  ) => readEventStream(`/runs/${runId}/events/stream?after_seq=${Math.max(0, options.afterSeq || 0)}`, handlers, options.signal),
   streamMessage: async (
     chatId: string,
     content: string,
@@ -276,18 +282,21 @@ export const api = {
     clientRequestId?: string,
     signal?: AbortSignal,
   ) => {
+    const authHeaders = await getAuthorizationHeader(true);
     const response = await fetch(`${API_BASE_URL}/chats/${chatId}/messages/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...authHeaders,
       },
       body: JSON.stringify({ content, magi, client_request_id: clientRequestId || "" }),
       signal,
     });
 
     if (!response.ok) {
+      await handleUnauthorizedStatus(response.status);
       const text = await response.text();
-      throw new Error(text || `Request failed with status ${response.status}`);
+      throw new ApiError(response.status, text || `Request failed with status ${response.status}`);
     }
 
     if (!response.body) {

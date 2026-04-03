@@ -47,6 +47,12 @@ Defined in:
 
 - [app/api.py](app/api.py)
 
+Browser auth rule:
+
+- web streaming attaches with `fetch`, not native `EventSource`
+- the browser sends `Authorization: Bearer <access_token>` on stream requests
+- CORS explicitly allows the configured frontend origin plus the `Authorization` header
+
 ## Event Types
 
 The stream currently sends JSON payloads shaped like:

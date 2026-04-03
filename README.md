@@ -36,6 +36,11 @@ That starts:
 - four chat worker processes by default in dev (`CHAT_RUN_WORKER_PROCESS_COUNT`, defaults to `4`)
 - Vite frontend on port `5173`
 
+Web auth requires Auth0 configuration for the browser app:
+
+- backend: `AUTH0_DOMAIN`, `AUTH0_ISSUER`, `AUTH0_AUDIENCE`, `FRONTEND_ORIGIN`
+- frontend: `VITE_AUTH0_DOMAIN`, `VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE`, optional `VITE_AUTH0_REDIRECT_URI`, and `VITE_API_BASE_URL`
+
 ## Backend Orientation
 
 Start with these docs:
@@ -73,7 +78,9 @@ Project scope matters:
 - Providers own transport only.
 - Persistence layers stay persistence-only.
 - Ingestion is an operator workflow, separate from normal chat runtime.
-- Login/bootstrap is username-only today and the web UI uses `POST /auth/bootstrap` on startup.
+- Web auth now uses Auth0 Universal Login plus backend-validated bearer access tokens.
+- The React app bootstraps through `GET /app/bootstrap`.
+- CLI/TUI remains a separate local operator path and still uses local username selection.
 - Chat requests can run in normal mode or Magi council mode (`off`, `lite`, `full`).
 - Web chat execution now uses durable Postgres-backed chat runs processed by a separate worker.
 

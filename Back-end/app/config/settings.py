@@ -28,6 +28,9 @@ class AppSettings:
     ingest_enricher: RoleModelSettings = field(
         default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-nano", "")
     )
+    chat_namer: RoleModelSettings = field(
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-nano", "")
+    )
     response_tool_rounds: int = 8
     classifier_temperature: float = 0.0
     contextualizer_temperature: float = 0.0
@@ -36,26 +39,26 @@ class AppSettings:
     history_summarize_turn_threshold: int = 16
     history_summarize_char_threshold: int = 3600
     magi_eager: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4", "low")
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4", "medium")
     )
     magi_skeptic: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4", "medium")
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4", "high")
     )
     magi_historian: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("anthropic", "claude-sonnet-4-6", "high")
+        default_factory=lambda: RoleModelSettings("anthropic", "claude-sonnet-4-6", "medium")
     )
     magi_arbiter: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4", "medium")
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4", "high")
     )
     magi_max_discussion_rounds: int = 3
     magi_lite_eager: RoleModelSettings = field(
         default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "low")
     )
     magi_lite_skeptic: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "low")
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "medium")
     )
     magi_lite_historian: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "low")
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "medium")
     )
     magi_lite_arbiter: RoleModelSettings = field(
         default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-mini", "low")
@@ -67,6 +70,13 @@ class AppSettings:
     chat_run_worker_poll_ms: int = 50
     chat_run_worker_concurrency: int = 3
     redis_url: str | None = None
+    auth0_enabled: bool = True
+    auth0_domain: str = ""
+    auth0_issuer: str = ""
+    auth0_audience: str = ""
+    auth0_jwks_ttl_seconds: int = 300
+    frontend_origins: tuple[str, ...] = ("http://localhost:5173",)
+    enable_legacy_bootstrap_auth: bool = False
 
 
 def _get_env(name, default):
@@ -91,6 +101,26 @@ def _get_float_env(name, default):
         return float(raw_value)
     except ValueError:
         return default
+
+
+def _get_bool_env(name, default=False):
+    raw_value = (_get_env(name, "true" if default else "false") or "").strip().lower()
+    if raw_value in {"1", "true", "yes", "on"}:
+        return True
+    if raw_value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _get_csv_env(*names):
+    for name in names:
+        raw_value = os.getenv(name)
+        if raw_value is None:
+            continue
+        items = tuple(part.strip() for part in raw_value.split(",") if part.strip())
+        if items:
+            return items
+    return ()
 
 
 def load_settings():
@@ -142,6 +172,11 @@ def load_settings():
             model=_get_env("INGEST_ENRICHER_MODEL", "gpt-5.4-nano"),
             reasoning_effort=_get_env("INGEST_ENRICHER_REASONING_EFFORT", ""),
         ),
+        chat_namer=RoleModelSettings(
+            provider=_get_env("CHAT_NAMER_PROVIDER", "openai"),
+            model=_get_env("CHAT_NAMER_MODEL", "gpt-5.4-nano"),
+            reasoning_effort=_get_env("CHAT_NAMER_REASONING_EFFORT", ""),
+        ),
         response_tool_rounds=_get_int_env("RESPONSE_TOOL_ROUNDS", 8),
         classifier_temperature=_get_float_env("CLASSIFIER_TEMPERATURE", 0.0),
         contextualizer_temperature=_get_float_env("CONTEXTUALIZER_TEMPERATURE", 0.0),
@@ -152,22 +187,22 @@ def load_settings():
         magi_eager=RoleModelSettings(
             provider=_get_env("MAGI_EAGER_PROVIDER", "openai"),
             model=_get_env("MAGI_EAGER_MODEL", "gpt-5.4"),
-            reasoning_effort=_get_env("MAGI_EAGER_REASONING_EFFORT", "low"),
+            reasoning_effort=_get_env("MAGI_EAGER_REASONING_EFFORT", "medium"),
         ),
         magi_skeptic=RoleModelSettings(
             provider=_get_env("MAGI_SKEPTIC_PROVIDER", "openai"),
             model=_get_env("MAGI_SKEPTIC_MODEL", "gpt-5.4"),
-            reasoning_effort=_get_env("MAGI_SKEPTIC_REASONING_EFFORT", "medium"),
+            reasoning_effort=_get_env("MAGI_SKEPTIC_REASONING_EFFORT", "high"),
         ),
         magi_historian=RoleModelSettings(
             provider=_get_env("MAGI_HISTORIAN_PROVIDER", "openai"),
             model=_get_env("MAGI_HISTORIAN_MODEL", "gpt-5.4"),
-            reasoning_effort=_get_env("MAGI_HISTORIAN_REASONING_EFFORT", "high"),
+            reasoning_effort=_get_env("MAGI_HISTORIAN_REASONING_EFFORT", "medium"),
         ),
         magi_arbiter=RoleModelSettings(
             provider=_get_env("MAGI_ARBITER_PROVIDER", "openai"),
             model=_get_env("MAGI_ARBITER_MODEL", "gpt-5.4"),
-            reasoning_effort=_get_env("MAGI_ARBITER_REASONING_EFFORT", "medium"),
+            reasoning_effort=_get_env("MAGI_ARBITER_REASONING_EFFORT", "high"),
         ),
         magi_max_discussion_rounds=_get_int_env("MAGI_MAX_DISCUSSION_ROUNDS", 3),
         magi_lite_eager=RoleModelSettings(
@@ -178,12 +213,12 @@ def load_settings():
         magi_lite_skeptic=RoleModelSettings(
             provider=_get_env("MAGI_LITE_SKEPTIC_PROVIDER", "openai"),
             model=_get_env("MAGI_LITE_SKEPTIC_MODEL", "gpt-5.4-mini"),
-            reasoning_effort=_get_env("MAGI_LITE_SKEPTIC_REASONING_EFFORT", "low"),
+            reasoning_effort=_get_env("MAGI_LITE_SKEPTIC_REASONING_EFFORT", "medium"),
         ),
         magi_lite_historian=RoleModelSettings(
             provider=_get_env("MAGI_LITE_HISTORIAN_PROVIDER", "openai"),
             model=_get_env("MAGI_LITE_HISTORIAN_MODEL", "gpt-5.4-mini"),
-            reasoning_effort=_get_env("MAGI_LITE_HISTORIAN_REASONING_EFFORT", "low"),
+            reasoning_effort=_get_env("MAGI_LITE_HISTORIAN_REASONING_EFFORT", "medium"),
         ),
         magi_lite_arbiter=RoleModelSettings(
             provider=_get_env("MAGI_LITE_ARBITER_PROVIDER", "openai"),
@@ -197,6 +232,13 @@ def load_settings():
         chat_run_worker_poll_ms=_get_int_env("CHAT_RUN_WORKER_POLL_MS", 50),
         chat_run_worker_concurrency=_get_int_env("CHAT_RUN_WORKER_CONCURRENCY", 3),
         redis_url=_get_env("REDIS_URL", None) or None,
+        auth0_enabled=_get_bool_env("AUTH0_ENABLED", True),
+        auth0_domain=_get_env("AUTH0_DOMAIN", ""),
+        auth0_issuer=_get_env("AUTH0_ISSUER", ""),
+        auth0_audience=_get_env("AUTH0_AUDIENCE", ""),
+        auth0_jwks_ttl_seconds=_get_int_env("AUTH0_JWKS_TTL_SECONDS", 300),
+        frontend_origins=_get_csv_env("FRONTEND_ORIGINS", "FRONTEND_ORIGIN") or ("http://localhost:5173",),
+        enable_legacy_bootstrap_auth=_get_bool_env("ENABLE_LEGACY_BOOTSTRAP_AUTH", False),
     )
 
 
