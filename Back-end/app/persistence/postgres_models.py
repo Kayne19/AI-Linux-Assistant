@@ -6,6 +6,7 @@ try:
     from sqlalchemy import (
         JSON,
         Boolean,
+        CheckConstraint,
         DateTime,
         Float,
         ForeignKey,
@@ -26,6 +27,10 @@ except ImportError:  # pragma: no cover - optional until SQLAlchemy is installed
 
     def ForeignKey(*args, **kwargs):  # type: ignore[override]
         return None
+
+    class CheckConstraint:  # type: ignore[override]
+        def __init__(self, *args, **kwargs):
+            pass
 
     class UniqueConstraint:  # type: ignore[override]
         def __init__(self, *args, **kwargs):
@@ -307,3 +312,79 @@ class ProjectState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False
     )
+
+
+class AppSettingsModel(Base):
+    """Singleton table (always exactly one row, id=1) for runtime model configuration.
+
+    NULL column = use the default from settings.py / .env.
+    Empty string reasoning_effort = explicitly no reasoning effort.
+    """
+
+    __tablename__ = "app_settings"
+    __table_args__ = (CheckConstraint("id = 1", name="app_settings_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+
+    # Core pipeline
+    classifier_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    classifier_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    classifier_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contextualizer_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contextualizer_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contextualizer_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    responder_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    responder_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    responder_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Magi full
+    magi_eager_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_eager_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_eager_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_skeptic_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_skeptic_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_skeptic_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_historian_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_historian_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_historian_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_arbiter_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_arbiter_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_arbiter_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Magi lite
+    magi_lite_eager_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_eager_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_eager_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_skeptic_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_skeptic_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_skeptic_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_historian_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_historian_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_historian_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_arbiter_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_arbiter_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magi_lite_arbiter_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Utility (advanced)
+    history_summarizer_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    history_summarizer_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    history_summarizer_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_summarizer_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_summarizer_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_summarizer_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    memory_extractor_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    memory_extractor_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    memory_extractor_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    registry_updater_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    registry_updater_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    registry_updater_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ingest_enricher_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ingest_enricher_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ingest_enricher_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chat_namer_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chat_namer_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chat_namer_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Metadata
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(Text, nullable=True)  # Auth0 sub of the admin
