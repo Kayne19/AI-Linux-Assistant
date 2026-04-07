@@ -6,7 +6,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from config.settings import SETTINGS
+from config.settings import SETTINGS, load_effective_settings
 from orchestration.model_router import ModelRouter, RouterExecutionError
 from orchestration.run_control import RunCancelledError, RunPausedError
 from persistence.postgres_app_store import PostgresAppStore
@@ -345,6 +345,7 @@ class ChatRunWorkerService:
             pause_check=lambda checkpoint: self.run_store.is_pause_requested(run.id),
             persist_turn_messages=False,
             project_description=project_description,
+            settings=load_effective_settings(),
         )
 
     def _heartbeat_and_flush_loop(
