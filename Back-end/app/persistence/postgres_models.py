@@ -95,13 +95,13 @@ class Project(Base):
 
     user = relationship("User", back_populates="projects")
     chat_sessions = relationship("ChatSession", back_populates="project", cascade="all, delete-orphan")
-    facts = relationship("ProjectFact", cascade="all, delete-orphan", passive_deletes=True)
-    issues = relationship("ProjectIssue", cascade="all, delete-orphan", passive_deletes=True)
-    attempts = relationship("ProjectAttempt", cascade="all, delete-orphan", passive_deletes=True)
-    constraints = relationship("ProjectConstraint", cascade="all, delete-orphan", passive_deletes=True)
-    preferences = relationship("ProjectPreference", cascade="all, delete-orphan", passive_deletes=True)
-    memory_candidates = relationship("ProjectMemoryCandidate", cascade="all, delete-orphan", passive_deletes=True)
-    project_state = relationship("ProjectState", cascade="all, delete-orphan", passive_deletes=True)
+    facts = relationship("ProjectFact", cascade="all, delete-orphan")
+    issues = relationship("ProjectIssue", cascade="all, delete-orphan")
+    attempts = relationship("ProjectAttempt", cascade="all, delete-orphan")
+    constraints = relationship("ProjectConstraint", cascade="all, delete-orphan")
+    preferences = relationship("ProjectPreference", cascade="all, delete-orphan")
+    memory_candidates = relationship("ProjectMemoryCandidate", cascade="all, delete-orphan")
+    project_state = relationship("ProjectState", cascade="all, delete-orphan")
 
 
 class ChatSession(Base):
