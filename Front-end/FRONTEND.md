@@ -122,6 +122,7 @@ Important auth rule:
 - all normal web API and streaming calls use Auth0 access tokens in the `Authorization` header
 - the frontend keeps the existing `fetch`/`ReadableStream` stream path so headers work in the browser
 - bearer tokens are not placed in query params or localStorage
+- the Auth0 React bootstrap must run from `https://...` or `http://localhost...`; if the app is opened from an insecure LAN origin, the frontend renders a configuration error screen instead of mounting `Auth0Provider` and crashing
 
 ### `src/runStreamSession.ts`
 

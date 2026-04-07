@@ -9,6 +9,10 @@ test("readAuth0Config returns a usable Auth0 config when all required env vars a
     VITE_AUTH0_CLIENT_ID: "client-id",
     VITE_AUTH0_AUDIENCE: "https://api.example.com",
     VITE_AUTH0_REDIRECT_URI: "http://localhost:5173",
+  }, {
+    origin: "http://localhost:5173",
+    protocol: "http:",
+    hostname: "localhost",
   });
 
   assert.equal(result.error, "");
@@ -30,4 +34,20 @@ test("readAuth0Config reports missing required variables", () => {
   assert.equal(result.config, null);
   assert.match(result.error, /VITE_AUTH0_DOMAIN/);
   assert.match(result.error, /VITE_AUTH0_AUDIENCE/);
+});
+
+test("readAuth0Config rejects insecure non-localhost origins before Auth0Provider mounts", () => {
+  const result = readAuth0Config({
+    VITE_AUTH0_DOMAIN: "tenant.example.com",
+    VITE_AUTH0_CLIENT_ID: "client-id",
+    VITE_AUTH0_AUDIENCE: "https://api.example.com",
+  }, {
+    origin: "http://192.168.1.161:5173",
+    protocol: "http:",
+    hostname: "192.168.1.161",
+  });
+
+  assert.equal(result.config, null);
+  assert.match(result.error, /requires HTTPS or localhost/);
+  assert.match(result.error, /192\.168\.1\.161:5173/);
 });

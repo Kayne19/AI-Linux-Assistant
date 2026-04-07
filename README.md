@@ -41,17 +41,25 @@ Web auth requires Auth0 configuration for the browser app:
 - backend: `AUTH0_DOMAIN`, `AUTH0_ISSUER`, `AUTH0_AUDIENCE`, `FRONTEND_ORIGIN`
 - frontend: `VITE_AUTH0_DOMAIN`, `VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE`, optional `VITE_AUTH0_REDIRECT_URI`, and `VITE_API_BASE_URL`
 
+Auth0 SPA note for local development:
+
+- open the frontend from `http://localhost:5173` or serve it over `https://...`
+- opening the Vite dev server from a LAN IP like `http://192.168.x.x:5173` will fail because the Auth0 SPA SDK requires a secure origin or localhost
+
 ## Backend Orientation
 
 Start with these docs:
 
-- [Back-end/ARCHITECTURE.md](Back-end/ARCHITECTURE.md)
-- [Back-end/RUNS.md](Back-end/RUNS.md)
-- [Back-end/MEMORY.md](Back-end/MEMORY.md)
-- [Back-end/RETRIEVAL.md](Back-end/RETRIEVAL.md)
-- [Back-end/INGESTION.md](Back-end/INGESTION.md)
-- [Back-end/API.md](Back-end/API.md)
-- [Back-end/STREAMING.md](Back-end/STREAMING.md)
+- [Back-end/app/auth/AUTHENTICATION.md](Back-end/app/auth/AUTHENTICATION.md)
+- [Back-end/app/ARCHITECTURE.md](Back-end/app/ARCHITECTURE.md)
+- [Back-end/app/orchestration/RUNS.md](Back-end/app/orchestration/RUNS.md)
+- [Back-end/app/persistence/MEMORY.md](Back-end/app/persistence/MEMORY.md)
+- [Back-end/app/retrieval/RETRIEVAL.md](Back-end/app/retrieval/RETRIEVAL.md)
+- [Back-end/app/ingestion/INGESTION.md](Back-end/app/ingestion/INGESTION.md)
+- [Back-end/app/API.md](Back-end/app/API.md)
+- [Back-end/app/streaming/STREAMING.md](Back-end/app/streaming/STREAMING.md)
+- [Back-end/app/agents/AGENT_ROLES.md](Back-end/app/agents/AGENT_ROLES.md)
+- [Back-end/app/providers/PROVIDERS.md](Back-end/app/providers/PROVIDERS.md)
 
 ## Frontend Orientation
 
