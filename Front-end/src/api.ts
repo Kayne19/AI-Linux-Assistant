@@ -1,6 +1,8 @@
 import { ApiError, getAuthorizationHeader, handleUnauthorizedStatus } from "./apiAuth";
 import type {
   AppBootstrapResponse,
+  AppSettingsConfig,
+  AppSettingsPatch,
   ChatMessage,
   ChatRunListResponse,
   ChatRun,
@@ -305,4 +307,12 @@ export const api = {
 
     return consumeEventStream(response.body.getReader(), handlers);
   },
+
+  getSettings: (): Promise<AppSettingsConfig> => request<AppSettingsConfig>("/admin/settings"),
+
+  updateSettings: (patch: AppSettingsPatch): Promise<AppSettingsConfig> =>
+    request<AppSettingsConfig>("/admin/settings", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
 };

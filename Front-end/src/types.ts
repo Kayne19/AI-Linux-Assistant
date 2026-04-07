@@ -203,3 +203,46 @@ export type AppBootstrapResponse = {
   projects: Project[];
   chats_by_project: Record<string, ChatSession[]>;
 };
+
+// ---------------------------------------------------------------------------
+// Admin settings types
+// ---------------------------------------------------------------------------
+
+export const COMPONENT_KEYS = [
+  "classifier",
+  "contextualizer",
+  "responder",
+  "magi_eager",
+  "magi_skeptic",
+  "magi_historian",
+  "magi_arbiter",
+  "magi_lite_eager",
+  "magi_lite_skeptic",
+  "magi_lite_historian",
+  "magi_lite_arbiter",
+  "history_summarizer",
+  "context_summarizer",
+  "memory_extractor",
+  "registry_updater",
+  "ingest_enricher",
+  "chat_namer",
+] as const;
+
+export type ComponentKey = (typeof COMPONENT_KEYS)[number];
+
+export type ComponentSettings = {
+  provider: string;
+  model: string;
+  reasoning_effort: string;
+  is_default: boolean;
+};
+
+export type ComponentSettingsPatch = {
+  provider?: string;
+  model?: string;
+  reasoning_effort?: string;
+};
+
+export type AppSettingsConfig = Record<ComponentKey, ComponentSettings>;
+
+export type AppSettingsPatch = Partial<Record<ComponentKey, ComponentSettingsPatch>>;
