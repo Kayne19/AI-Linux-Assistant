@@ -1,10 +1,11 @@
 import json
 import time
 import uuid
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Literal
 
 from auth import Auth0AccessTokenVerifier, AuthConfigurationError, build_current_user_dependency
-from config.settings import load_settings
+from config.settings import load_settings, _apply_db_overrides, _load_settings_row, SETTINGS
 from persistence.postgres_app_store import PostgresAppStore
 from persistence.postgres_run_store import (
     ActiveChatRunExistsError,
@@ -175,6 +176,72 @@ class AppBootstrapResponse(BaseModel):
     user: UserResponse
     projects: list[ProjectResponse]
     chats_by_project: dict[str, list[ChatSessionResponse]]
+
+
+# ---------------------------------------------------------------------------
+# Admin settings models
+# ---------------------------------------------------------------------------
+
+_SETTINGS_COMPONENT_NAMES = [
+    "classifier", "contextualizer", "responder",
+    "magi_eager", "magi_skeptic", "magi_historian", "magi_arbiter",
+    "magi_lite_eager", "magi_lite_skeptic", "magi_lite_historian", "magi_lite_arbiter",
+    "history_summarizer", "context_summarizer", "memory_extractor",
+    "registry_updater", "ingest_enricher", "chat_namer",
+]
+
+
+class ComponentSettingsResponse(BaseModel):
+    provider: str
+    model: str
+    reasoning_effort: str
+    is_default: bool
+
+
+class AppSettingsResponse(BaseModel):
+    classifier: ComponentSettingsResponse
+    contextualizer: ComponentSettingsResponse
+    responder: ComponentSettingsResponse
+    magi_eager: ComponentSettingsResponse
+    magi_skeptic: ComponentSettingsResponse
+    magi_historian: ComponentSettingsResponse
+    magi_arbiter: ComponentSettingsResponse
+    magi_lite_eager: ComponentSettingsResponse
+    magi_lite_skeptic: ComponentSettingsResponse
+    magi_lite_historian: ComponentSettingsResponse
+    magi_lite_arbiter: ComponentSettingsResponse
+    history_summarizer: ComponentSettingsResponse
+    context_summarizer: ComponentSettingsResponse
+    memory_extractor: ComponentSettingsResponse
+    registry_updater: ComponentSettingsResponse
+    ingest_enricher: ComponentSettingsResponse
+    chat_namer: ComponentSettingsResponse
+
+
+class ComponentSettingsPatch(BaseModel):
+    provider: Literal["openai", "anthropic", "local"] | None = None
+    model: str | None = None
+    reasoning_effort: Literal["", "low", "medium", "high"] | None = None
+
+
+class AppSettingsPatch(BaseModel):
+    classifier: ComponentSettingsPatch | None = None
+    contextualizer: ComponentSettingsPatch | None = None
+    responder: ComponentSettingsPatch | None = None
+    magi_eager: ComponentSettingsPatch | None = None
+    magi_skeptic: ComponentSettingsPatch | None = None
+    magi_historian: ComponentSettingsPatch | None = None
+    magi_arbiter: ComponentSettingsPatch | None = None
+    magi_lite_eager: ComponentSettingsPatch | None = None
+    magi_lite_skeptic: ComponentSettingsPatch | None = None
+    magi_lite_historian: ComponentSettingsPatch | None = None
+    magi_lite_arbiter: ComponentSettingsPatch | None = None
+    history_summarizer: ComponentSettingsPatch | None = None
+    context_summarizer: ComponentSettingsPatch | None = None
+    memory_extractor: ComponentSettingsPatch | None = None
+    registry_updater: ComponentSettingsPatch | None = None
+    ingest_enricher: ComponentSettingsPatch | None = None
+    chat_namer: ComponentSettingsPatch | None = None
 
 
 def _iso(value):
@@ -882,6 +949,74 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
     def send_message_stream(chat_session_id: str, request: MessageCreateRequest, current_user=Depends(_require_current_user)):
         run = _create_or_reuse_run(chat_session_id, request, current_user.id)
         return _stream_run(run.id, after_seq=0)
+
+    # ---------------------------------------------------------------------------
+    # Admin settings routes
+    # ---------------------------------------------------------------------------
+
+    def _build_settings_response(db_row) -> AppSettingsResponse:
+        """Build AppSettingsResponse from a DB row (or None) merged with SETTINGS defaults."""
+        effective = _apply_db_overrides(SETTINGS, db_row) if db_row is not None else SETTINGS
+
+        def _comp(name: str) -> ComponentSettingsResponse:
+            role = getattr(effective, name)
+            # is_default is True when none of the three DB columns are set for this component
+            is_default = (
+                db_row is None
+                or (
+                    getattr(db_row, f"{name}_provider", None) is None
+                    and getattr(db_row, f"{name}_model", None) is None
+                    and getattr(db_row, f"{name}_reasoning_effort", None) is None
+                )
+            )
+            return ComponentSettingsResponse(
+                provider=role.provider,
+                model=role.model,
+                reasoning_effort=role.reasoning_effort if role.reasoning_effort is not None else "",
+                is_default=is_default,
+            )
+
+        return AppSettingsResponse(**{name: _comp(name) for name in _SETTINGS_COMPONENT_NAMES})
+
+    @app.get("/admin/settings", response_model=AppSettingsResponse)
+    def get_admin_settings(_admin=Depends(_require_admin)):
+        from persistence.database import get_session_factory
+        from persistence.postgres_models import AppSettingsModel
+
+        session_factory = get_session_factory()
+        with session_factory() as session:
+            row = session.get(AppSettingsModel, 1)
+        return _build_settings_response(row)
+
+    @app.put("/admin/settings", response_model=AppSettingsResponse)
+    def put_admin_settings(patch: AppSettingsPatch, current_user=Depends(_require_admin)):
+        from persistence.database import get_session_factory
+        from persistence.postgres_models import AppSettingsModel
+
+        session_factory = get_session_factory()
+        with session_factory() as session:
+            row = session.get(AppSettingsModel, 1)
+            if row is None:
+                row = AppSettingsModel(id=1)
+                session.add(row)
+
+            for comp_name in _SETTINGS_COMPONENT_NAMES:
+                comp_patch: ComponentSettingsPatch | None = getattr(patch, comp_name, None)
+                if comp_patch is None:
+                    continue
+                if comp_patch.provider is not None:
+                    setattr(row, f"{comp_name}_provider", comp_patch.provider)
+                if comp_patch.model is not None:
+                    setattr(row, f"{comp_name}_model", comp_patch.model)
+                if comp_patch.reasoning_effort is not None:
+                    setattr(row, f"{comp_name}_reasoning_effort", comp_patch.reasoning_effort)
+
+            row.updated_at = datetime.now(timezone.utc)
+            row.updated_by = current_user.id
+            session.commit()
+            session.refresh(row)
+
+        return _build_settings_response(row)
 
     return app
 
