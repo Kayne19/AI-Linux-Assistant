@@ -9,6 +9,7 @@ import { CreateProjectDialog } from "./components/dialogs/CreateProjectDialog";
 import { EditChatDialog } from "./components/dialogs/EditChatDialog";
 import { EditProjectDialog } from "./components/dialogs/EditProjectDialog";
 import { DebugPanel } from "./debug/DebugPanel";
+import { SettingsDialog } from "./components/dialogs/SettingsDialog";
 import { useAuth } from "./hooks/useAuth";
 import { useChats } from "./hooks/useChats";
 import { useCouncilStreaming } from "./hooks/useCouncilStreaming";
@@ -27,6 +28,7 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(244);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
 
   const projectsReloadedRef = useRef<(projects: Project[]) => void>(() => undefined);
   const chatDeletedRef = useRef<(chatId: string) => void>(() => undefined);
@@ -402,6 +404,7 @@ export default function App() {
           creatingChat={chats.creatingChat}
           onCreateProject={projects.openCreateProjectDialog}
           onToggleDebugPanel={() => setDebugPanelOpen((current) => !current)}
+          onOpenSettings={() => setSettingsPanelOpen(true)}
           onCollapseSidebar={() => setSidebarCollapsed(true)}
           onExpandSidebar={() => setSidebarCollapsed(false)}
           onSidebarWidthChange={setSidebarWidth}
@@ -493,6 +496,10 @@ export default function App() {
 
         {debugPanelOpen && isDebugMode ? (
           <DebugPanel chatId={chats.selectedChatId} onClose={() => setDebugPanelOpen(false)} />
+        ) : null}
+
+        {settingsPanelOpen && isDebugMode ? (
+          <SettingsDialog onClose={() => setSettingsPanelOpen(false)} />
         ) : null}
       </div>
 

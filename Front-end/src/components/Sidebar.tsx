@@ -29,6 +29,7 @@ type SidebarProps = {
   onDeleteChat: (chatId: string) => void;
   onCloseMobileSidebar: () => void;
   onLogout: () => void | Promise<void>;
+  onOpenSettings: () => void;
 };
 
 export function Sidebar({
@@ -58,6 +59,7 @@ export function Sidebar({
   onDeleteChat,
   onCloseMobileSidebar,
   onLogout,
+  onOpenSettings,
 }: SidebarProps) {
   const dragStateRef = useRef<{ active: boolean; width: number }>({ active: false, width: sidebarWidth });
   const previousTitlesRef = useRef<Record<string, string>>({});
@@ -349,13 +351,23 @@ export function Sidebar({
             <div className="sidebar-footer">
               <div className="sidebar-footer-actions">
                 {isDebugMode ? (
-                  <button
-                    type="button"
-                    className={`debug-chip${debugPanelOpen ? " active" : ""}`}
-                    onClick={onToggleDebugPanel}
-                  >
-                    [DBG]
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className={`debug-chip${debugPanelOpen ? " active" : ""}`}
+                      onClick={onToggleDebugPanel}
+                    >
+                      [DBG]
+                    </button>
+                    <button
+                      type="button"
+                      className="debug-chip"
+                      onClick={onOpenSettings}
+                      aria-label="Open settings"
+                    >
+                      ⚙
+                    </button>
+                  </>
                 ) : null}
                 <button type="button" className="collapse-button" onClick={onCollapseSidebar} aria-label="Collapse sidebar">
                   « collapse
