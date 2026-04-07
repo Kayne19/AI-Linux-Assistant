@@ -2201,33 +2201,46 @@ textarea:focus {
 }
 
 /* Compact controls inside component rows */
-.settings-component-row select {
+.settings-component-row select,
+.settings-model-field input {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 3px;
   background: var(--surface2);
   color: var(--text);
-  padding: 0.38rem 1.5rem 0.38rem 0.55rem;
+  padding: 0.38rem 0.55rem;
   font: inherit;
   font-size: 12.5px;
+}
+
+.settings-component-row select {
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238a8aa8'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 8px center;
+  padding-right: 1.5rem;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.settings-component-row select:focus {
+.settings-model-field {
+  min-width: 0;
+}
+
+.settings-model-field input {
+  cursor: text;
+}
+
+.settings-component-row select:focus,
+.settings-model-field input:focus {
   outline: none;
   border-color: rgba(123, 104, 238, 0.44);
   box-shadow: 0 0 0 1px rgba(123, 104, 238, 0.16);
 }
 
-.settings-component-row select:hover {
+.settings-component-row select:hover,
+.settings-model-field input:hover {
   border-color: var(--border-mid);
 }
 
@@ -2282,7 +2295,7 @@ textarea:focus {
     font-size: 12px;
   }
 
-  .settings-component-row select:nth-child(3) {
+  .settings-model-field {
     grid-column: 1 / -1;
   }
 }

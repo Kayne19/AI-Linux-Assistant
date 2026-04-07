@@ -4,9 +4,28 @@ import type { AppSettingsConfig, AppSettingsPatch, ComponentKey, ComponentSettin
 import { COMPONENT_KEYS } from "../../types";
 
 const MODEL_OPTIONS: Record<string, string[]> = {
-  openai: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
-  anthropic: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
-  local: ["qwen2.5:7b"],
+  openai: [
+    // GPT-5 series
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    // GPT-4o series
+    "gpt-4o",
+    "gpt-4o-mini",
+    // Reasoning models
+    "o4-mini",
+    "o3",
+    "o3-mini",
+    "o1",
+    "o1-mini",
+    "o1-pro",
+  ],
+  anthropic: [
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+  ],
+  local: ["qwen2.5:7b", "qwen2.5:14b", "qwen2.5:32b", "llama3.2:latest"],
 };
 
 const COMPONENT_LABELS: Record<ComponentKey, string> = {
@@ -64,8 +83,8 @@ type ComponentRowProps = {
 };
 
 function ComponentRow({ compKey, value, onChange }: ComponentRowProps) {
+  const listId = `model-list-${compKey}`;
   const knownModels = MODEL_OPTIONS[value.provider] ?? [];
-  const isUnknownModel = value.model !== "" && !knownModels.includes(value.model);
 
   function handleProviderChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const nextProvider = e.target.value;
@@ -73,7 +92,7 @@ function ComponentRow({ compKey, value, onChange }: ComponentRowProps) {
     onChange(compKey, { provider: nextProvider, model: firstModel, is_default: false });
   }
 
-  function handleModelChange(e: React.ChangeEvent<HTMLSelectElement>) {
+  function handleModelChange(e: React.ChangeEvent<HTMLInputElement>) {
     onChange(compKey, { model: e.target.value, is_default: false });
   }
 
@@ -92,10 +111,18 @@ function ComponentRow({ compKey, value, onChange }: ComponentRowProps) {
         <option value="anthropic">anthropic</option>
         <option value="local">local</option>
       </select>
-      <select value={value.model} onChange={handleModelChange} aria-label={`${COMPONENT_LABELS[compKey]} model`}>
-        {isUnknownModel ? <option value={value.model}>{value.model}</option> : null}
-        {knownModels.map((m) => <option key={m} value={m}>{m}</option>)}
-      </select>
+      <div className="settings-model-field">
+        <input
+          list={listId}
+          value={value.model}
+          onChange={handleModelChange}
+          placeholder="model name"
+          aria-label={`${COMPONENT_LABELS[compKey]} model`}
+        />
+        <datalist id={listId}>
+          {knownModels.map((m) => <option key={m} value={m} />)}
+        </datalist>
+      </div>
       <select value={value.reasoning_effort} onChange={handleEffortChange} aria-label={`${COMPONENT_LABELS[compKey]} reasoning effort`}>
         <option value="">none</option>
         <option value="low">low</option>
