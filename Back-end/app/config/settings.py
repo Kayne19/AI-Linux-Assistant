@@ -244,3 +244,109 @@ def load_settings():
 
 # Composition root for the app. Change defaults here or override with .env.
 SETTINGS = load_settings()
+
+
+def _load_settings_row():
+    """Load the singleton app_settings row from the database.
+
+    Returns the ORM row on success, or None if the row doesn't exist or any
+    error occurs (DB unavailable, import failure, etc.).
+    """
+    import logging
+
+    try:
+        from persistence.database import get_session_factory
+        from persistence.postgres_models import AppSettingsModel
+
+        session_factory = get_session_factory()
+        with session_factory() as session:
+            return session.get(AppSettingsModel, 1)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to load app_settings row from DB.", exc_info=True
+        )
+        return None
+
+
+def _apply_db_overrides(base: AppSettings, row) -> AppSettings:
+    """Merge non-null DB column values over the base AppSettings defaults.
+
+    NULL column  → keep the default from base (env / code default).
+    Non-null column → use the DB value.
+
+    Special case for reasoning_effort: empty string ("") is a valid explicit
+    value meaning "no reasoning effort", so we use is-not-None rather than
+    truthiness to decide whether to override.
+    """
+
+    def _role(base_role: RoleModelSettings, prefix: str) -> RoleModelSettings:
+        provider = getattr(row, f"{prefix}_provider", None) or base_role.provider
+        model = getattr(row, f"{prefix}_model", None) or base_role.model
+        effort_raw = getattr(row, f"{prefix}_reasoning_effort", None)
+        effort = effort_raw if effort_raw is not None else base_role.reasoning_effort
+        return RoleModelSettings(provider=provider, model=model, reasoning_effort=effort)
+
+    return AppSettings(
+        provider_defaults=base.provider_defaults,
+        classifier=_role(base.classifier, "classifier"),
+        contextualizer=_role(base.contextualizer, "contextualizer"),
+        responder=_role(base.responder, "responder"),
+        history_summarizer=_role(base.history_summarizer, "history_summarizer"),
+        context_summarizer=_role(base.context_summarizer, "context_summarizer"),
+        memory_extractor=_role(base.memory_extractor, "memory_extractor"),
+        registry_updater=_role(base.registry_updater, "registry_updater"),
+        ingest_enricher=_role(base.ingest_enricher, "ingest_enricher"),
+        chat_namer=_role(base.chat_namer, "chat_namer"),
+        magi_eager=_role(base.magi_eager, "magi_eager"),
+        magi_skeptic=_role(base.magi_skeptic, "magi_skeptic"),
+        magi_historian=_role(base.magi_historian, "magi_historian"),
+        magi_arbiter=_role(base.magi_arbiter, "magi_arbiter"),
+        magi_lite_eager=_role(base.magi_lite_eager, "magi_lite_eager"),
+        magi_lite_skeptic=_role(base.magi_lite_skeptic, "magi_lite_skeptic"),
+        magi_lite_historian=_role(base.magi_lite_historian, "magi_lite_historian"),
+        magi_lite_arbiter=_role(base.magi_lite_arbiter, "magi_lite_arbiter"),
+        # Non-model fields passed through unchanged
+        response_tool_rounds=base.response_tool_rounds,
+        classifier_temperature=base.classifier_temperature,
+        contextualizer_temperature=base.contextualizer_temperature,
+        history_summarizer_temperature=base.history_summarizer_temperature,
+        history_max_recent_turns=base.history_max_recent_turns,
+        history_summarize_turn_threshold=base.history_summarize_turn_threshold,
+        history_summarize_char_threshold=base.history_summarize_char_threshold,
+        magi_max_discussion_rounds=base.magi_max_discussion_rounds,
+        magi_lite_max_discussion_rounds=base.magi_lite_max_discussion_rounds,
+        max_active_runs_per_user_default=base.max_active_runs_per_user_default,
+        chat_run_lease_seconds=base.chat_run_lease_seconds,
+        chat_run_stream_poll_ms=base.chat_run_stream_poll_ms,
+        chat_run_worker_poll_ms=base.chat_run_worker_poll_ms,
+        chat_run_worker_concurrency=base.chat_run_worker_concurrency,
+        redis_url=base.redis_url,
+        auth0_enabled=base.auth0_enabled,
+        auth0_domain=base.auth0_domain,
+        auth0_issuer=base.auth0_issuer,
+        auth0_audience=base.auth0_audience,
+        auth0_jwks_ttl_seconds=base.auth0_jwks_ttl_seconds,
+        frontend_origins=base.frontend_origins,
+        enable_legacy_bootstrap_auth=base.enable_legacy_bootstrap_auth,
+    )
+
+
+def load_effective_settings() -> AppSettings:
+    """Return the AppSettings merged with any DB overrides.
+
+    Resolution order: DB column value → .env override → settings.py default.
+    Falls back to the global SETTINGS object if the DB is unavailable or the
+    row doesn't exist, so runs are never blocked by a DB error.
+    """
+    import logging
+
+    try:
+        row = _load_settings_row()
+        if row is None:
+            return SETTINGS
+        return _apply_db_overrides(SETTINGS, row)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "load_effective_settings failed; using defaults.", exc_info=True
+        )
+        return SETTINGS
