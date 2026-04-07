@@ -48,3 +48,4 @@ AUDIT.md
 audit_report.md
 Front-end/.test-dist/
 lancedb_data/
+.worktrees/
