@@ -464,7 +464,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
             CORSMiddleware,
             allow_origins=list(settings.frontend_origins),
             allow_credentials=False,
-            allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type"],
         )
 
