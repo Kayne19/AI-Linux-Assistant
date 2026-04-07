@@ -2166,7 +2166,7 @@ textarea:focus {
 
 .settings-component-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1.1fr) 118px minmax(140px, 1.8fr) 90px;
+  grid-template-columns: minmax(120px, 1fr) 110px minmax(160px, 2fr) 88px;
   gap: 5px;
   align-items: center;
   padding: 4px 0;
@@ -2201,45 +2201,33 @@ textarea:focus {
 }
 
 /* Compact controls inside component rows */
-.settings-component-row select,
-.settings-model-field input {
+.settings-component-row select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 3px;
   background: var(--surface2);
   color: var(--text);
-  padding: 0.38rem 0.55rem;
+  padding: 0.38rem 1.5rem 0.38rem 0.55rem;
   font: inherit;
   font-size: 12.5px;
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
-}
-
-.settings-model-field {
-  min-width: 0;
-}
-
-.settings-model-field input {
-  cursor: text;
-}
-
-.settings-component-row select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238a8aa8'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 8px center;
-  padding-right: 24px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.settings-component-row select:focus,
-.settings-model-field input:focus {
+.settings-component-row select:focus {
   outline: none;
   border-color: rgba(123, 104, 238, 0.44);
   box-shadow: 0 0 0 1px rgba(123, 104, 238, 0.16);
 }
 
-.settings-component-row select:hover,
-.settings-model-field input:hover {
+.settings-component-row select:hover {
   border-color: var(--border-mid);
 }
 
@@ -2294,7 +2282,7 @@ textarea:focus {
     font-size: 12px;
   }
 
-  .settings-model-field {
+  .settings-component-row select:nth-child(3) {
     grid-column: 1 / -1;
   }
 }

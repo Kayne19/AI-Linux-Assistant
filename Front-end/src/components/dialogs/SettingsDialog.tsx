@@ -64,14 +64,16 @@ type ComponentRowProps = {
 };
 
 function ComponentRow({ compKey, value, onChange }: ComponentRowProps) {
-  const listId = `model-list-${compKey}`;
   const knownModels = MODEL_OPTIONS[value.provider] ?? [];
+  const isUnknownModel = value.model !== "" && !knownModels.includes(value.model);
 
   function handleProviderChange(e: React.ChangeEvent<HTMLSelectElement>) {
-    onChange(compKey, { provider: e.target.value, model: "", is_default: false });
+    const nextProvider = e.target.value;
+    const firstModel = MODEL_OPTIONS[nextProvider]?.[0] ?? "";
+    onChange(compKey, { provider: nextProvider, model: firstModel, is_default: false });
   }
 
-  function handleModelChange(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleModelChange(e: React.ChangeEvent<HTMLSelectElement>) {
     onChange(compKey, { model: e.target.value, is_default: false });
   }
 
@@ -90,18 +92,10 @@ function ComponentRow({ compKey, value, onChange }: ComponentRowProps) {
         <option value="anthropic">anthropic</option>
         <option value="local">local</option>
       </select>
-      <div className="settings-model-field">
-        <input
-          list={listId}
-          value={value.model}
-          onChange={handleModelChange}
-          placeholder="model"
-          aria-label={`${COMPONENT_LABELS[compKey]} model`}
-        />
-        <datalist id={listId}>
-          {knownModels.map((m) => <option key={m} value={m} />)}
-        </datalist>
-      </div>
+      <select value={value.model} onChange={handleModelChange} aria-label={`${COMPONENT_LABELS[compKey]} model`}>
+        {isUnknownModel ? <option value={value.model}>{value.model}</option> : null}
+        {knownModels.map((m) => <option key={m} value={m}>{m}</option>)}
+      </select>
       <select value={value.reasoning_effort} onChange={handleEffortChange} aria-label={`${COMPONENT_LABELS[compKey]} reasoning effort`}>
         <option value="">none</option>
         <option value="low">low</option>
