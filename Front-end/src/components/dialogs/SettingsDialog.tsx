@@ -17,10 +17,10 @@ const COMPONENT_LABELS: Record<ComponentKey, string> = {
   magi_skeptic: "Skeptic",
   magi_historian: "Historian",
   magi_arbiter: "Arbiter",
-  magi_lite_eager: "Eager (lite)",
-  magi_lite_skeptic: "Skeptic (lite)",
-  magi_lite_historian: "Historian (lite)",
-  magi_lite_arbiter: "Arbiter (lite)",
+  magi_lite_eager: "Eager",
+  magi_lite_skeptic: "Skeptic",
+  magi_lite_historian: "Historian",
+  magi_lite_arbiter: "Arbiter",
   history_summarizer: "History Summarizer",
   context_summarizer: "Context Summarizer",
   memory_extractor: "Memory Extractor",
@@ -30,8 +30,8 @@ const COMPONENT_LABELS: Record<ComponentKey, string> = {
 };
 
 const CORE_PIPELINE_KEYS: ComponentKey[] = ["classifier", "contextualizer", "responder"];
-const MAGI_FULL_KEYS: ComponentKey[] = ["magi_eager", "magi_skeptic", "magi_historian", "magi_arbiter"];
-const MAGI_LITE_KEYS: ComponentKey[] = ["magi_lite_eager", "magi_lite_skeptic", "magi_lite_historian", "magi_lite_arbiter"];
+const COUNCIL_FULL_KEYS: ComponentKey[] = ["magi_eager", "magi_skeptic", "magi_historian", "magi_arbiter"];
+const COUNCIL_LITE_KEYS: ComponentKey[] = ["magi_lite_eager", "magi_lite_skeptic", "magi_lite_historian", "magi_lite_arbiter"];
 const ADVANCED_KEYS: ComponentKey[] = [
   "history_summarizer", "context_summarizer", "memory_extractor",
   "registry_updater", "ingest_enricher", "chat_namer",
@@ -90,16 +90,18 @@ function ComponentRow({ compKey, value, onChange }: ComponentRowProps) {
         <option value="anthropic">anthropic</option>
         <option value="local">local</option>
       </select>
-      <input
-        list={listId}
-        value={value.model}
-        onChange={handleModelChange}
-        placeholder="model"
-        aria-label={`${COMPONENT_LABELS[compKey]} model`}
-      />
-      <datalist id={listId}>
-        {knownModels.map((m) => <option key={m} value={m} />)}
-      </datalist>
+      <div className="settings-model-field">
+        <input
+          list={listId}
+          value={value.model}
+          onChange={handleModelChange}
+          placeholder="model"
+          aria-label={`${COMPONENT_LABELS[compKey]} model`}
+        />
+        <datalist id={listId}>
+          {knownModels.map((m) => <option key={m} value={m} />)}
+        </datalist>
+      </div>
       <select value={value.reasoning_effort} onChange={handleEffortChange} aria-label={`${COMPONENT_LABELS[compKey]} reasoning effort`}>
         <option value="">none</option>
         <option value="low">low</option>
@@ -190,7 +192,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             className={`settings-tab${tab === "core" ? " active" : ""}`}
             onClick={() => setTab("core")}
           >
-            Core &amp; Magi
+            Core &amp; Council
           </button>
           <button
             type="button"
@@ -213,12 +215,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 {renderComponentGroup(CORE_PIPELINE_KEYS)}
               </section>
               <section className="settings-section">
-                <h3 className="settings-section-title">Magi (full)</h3>
-                {renderComponentGroup(MAGI_FULL_KEYS)}
+                <h3 className="settings-section-title">Council</h3>
+                {renderComponentGroup(COUNCIL_FULL_KEYS)}
               </section>
               <section className="settings-section">
-                <h3 className="settings-section-title">Magi lite</h3>
-                {renderComponentGroup(MAGI_LITE_KEYS)}
+                <h3 className="settings-section-title">Council lite</h3>
+                {renderComponentGroup(COUNCIL_LITE_KEYS)}
               </section>
             </>
           ) : (
