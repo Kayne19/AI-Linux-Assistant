@@ -213,12 +213,12 @@ def load_settings():
         magi_lite_skeptic=RoleModelSettings(
             provider=_get_env("MAGI_LITE_SKEPTIC_PROVIDER", "openai"),
             model=_get_env("MAGI_LITE_SKEPTIC_MODEL", "gpt-5.4-mini"),
-            reasoning_effort=_get_env("MAGI_LITE_SKEPTIC_REASONING_EFFORT", "medium"),
+            reasoning_effort=_get_env("MAGI_LITE_SKEPTIC_REASONING_EFFORT", "low"),
         ),
         magi_lite_historian=RoleModelSettings(
             provider=_get_env("MAGI_LITE_HISTORIAN_PROVIDER", "openai"),
             model=_get_env("MAGI_LITE_HISTORIAN_MODEL", "gpt-5.4-mini"),
-            reasoning_effort=_get_env("MAGI_LITE_HISTORIAN_REASONING_EFFORT", "medium"),
+            reasoning_effort=_get_env("MAGI_LITE_HISTORIAN_REASONING_EFFORT", "low"),
         ),
         magi_lite_arbiter=RoleModelSettings(
             provider=_get_env("MAGI_LITE_ARBITER_PROVIDER", "openai"),
