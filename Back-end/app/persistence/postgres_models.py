@@ -151,8 +151,8 @@ class ChatRun(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    final_user_message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("chat_messages.id"))
-    final_assistant_message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("chat_messages.id"))
+    final_user_message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("chat_messages.id", ondelete="SET NULL"))
+    final_assistant_message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("chat_messages.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False

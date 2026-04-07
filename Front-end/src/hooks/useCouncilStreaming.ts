@@ -435,11 +435,16 @@ export function useCouncilStreaming({ updateRunUiCouncilEntries, onDrainComplete
     setViewingCouncilMessageId(message.id);
   }
 
-  function syncLiveCouncilEntries(entries: UICouncilEntry[], _selectedChatBusy: boolean) {
+  function syncLiveCouncilEntries(entries: UICouncilEntry[], selectedChatBusy: boolean) {
     if (viewingCouncilMessageId !== null) {
       return;
     }
-    setCouncilActive(entries.length > 0);
+    if (entries.length > 0) {
+      setCouncilActive(true);
+    } else if (!selectedChatBusy) {
+      setCouncilActive(false);
+    }
+    // When busy with no entries yet (run just started), don't close the panel
   }
 
   function clearForChatSelection() {
