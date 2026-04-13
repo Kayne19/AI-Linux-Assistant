@@ -50,7 +50,7 @@ Owns retrieval configuration:
 - metadata suffix
 - embedder provider/model
 - reranker provider/model
-- retrieval knobs like fetch size, final top-k, neighbor expansion
+- retrieval knobs like fetch size, anchor count (`final_top_k`), neighbor expansion, and bundle caps
 
 This is the single source of truth for retrieval runtime configuration.
 
@@ -59,9 +59,9 @@ Current runtime resolution rule:
 - embedder/reranker provider-model settings still come from retrieval env/config
 - retrieval numeric runtime knobs now resolve through effective app settings, so admin DB overrides can tune:
   - `initial_fetch`
-  - `final_top_k`
+  - `final_top_k` (public name retained; runtime meaning is max anchor count)
   - `neighbor_pages`
-  - `max_expanded`
+  - `max_expanded` (applied at bundle boundaries)
   - `source_profile_sample`
 - if the DB schema is older than the running code, retrieval falls back to env/code defaults until migrations are applied
 
@@ -120,9 +120,10 @@ Owns runtime retrieval behavior:
 - embed query
 - hybrid candidate search
 - optional source filtering
-- reranking
+- reranking for anchor selection
 - source-profile boosting
-- neighbor expansion
+- direct same-source page-window fetches around selected anchors
+- bundle/block dedupe before formatting
 - merge retrieved chunks
 - format prompt-ready context
 
@@ -162,9 +163,40 @@ At runtime, the flow is:
 3. Query is embedded.
 4. Hybrid search runs against LanceDB.
 5. Candidates are reranked.
-6. Source boosting and neighbor expansion run.
-7. Results are merged and formatted into prompt-ready context.
-8. Responder receives that context.
+6. Source boosting selects anchor chunks.
+7. Each anchor builds a preserved same-source bundle:
+   - page-based anchors fetch a direct page window from the store
+   - page-less rows become singleton non-expandable bundles
+8. Overlapping same-source bundles are resolved in anchor-rank order:
+   - earlier bundles keep overlapping rows/pages
+   - later bundles only contribute unseen rows
+9. `max_expanded` is enforced at bundle boundaries, never by trimming neighbors out of a chosen bundle.
+10. Results are merged and formatted into prompt-ready context.
+11. Responder receives that context.
+
+## Retrieval Keys
+
+Runtime retrieval now uses explicit stable keys:
+
+- `bundle_key`
+  - identifies one selected anchor-centered bundle
+  - page-based shape: `bundle:{source}:{page_start}-{page_end}:anchor:{anchor_row_key}`
+  - page-less shape: `bundle:{source}:singleton:{anchor_row_key}`
+- `page_window_key`
+  - identifies one delivered contiguous page range from a formatted block
+  - shape: `window:{source}:{page_start}-{page_end}`
+  - page-less rows do not get a page-window key
+- `block_key`
+  - identifies one final formatted block delivered to the model
+  - page-based shape: `block:{source}:{page_start}-{page_end}`
+  - page-less shape: `block:{source}:singleton:{row_key}`
+
+Current overlap rule:
+
+- same-source anchor bundles may overlap
+- overlap is resolved in anchor rank order
+- once a row/page has been claimed by an earlier bundle, later bundles do not re-deliver it
+- this dedupe happens before formatting, so the final rendered blocks stay coherent
 
 ## Retrieval Events
 
@@ -177,6 +209,14 @@ The runtime search pipeline emits events such as:
 - `retrieval_source_boosting`
 - `retrieval_expanding`
 - `retrieval_complete`
+
+Current observability fields now include:
+
+- anchor count / anchor pages
+- fetched neighbor pages
+- delivered bundle count
+- excluded-seen count
+- skipped bundle count
 
 These events are used for observability and live frontend status updates.
 

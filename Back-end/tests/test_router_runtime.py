@@ -12,7 +12,7 @@ deterministic. They protect orchestration behavior:
 from types import SimpleNamespace
 
 from orchestration.history_preparer import PreparedHistory
-from orchestration.model_router import ModelRouter, RouterExecutionError, RouterState
+from orchestration.model_router import ModelRouter, RouterExecutionError, RouterState, TurnContext
 from orchestration.run_control import RunPausedError
 from agents.response_agent import ResponseAgent
 from agents.response_agent import ResponseState
@@ -537,6 +537,224 @@ def test_router_tool_search_emits_prompt_facing_retrieval_blocks_for_tool_result
                 }
             ],
             "selected_sources": ["Debian.pdf:Page 4"],
+            "cached": False,
+            "anchor_count": 0,
+            "anchor_pages": [],
+            "fetched_neighbor_pages": [],
+            "delivered_bundle_count": 0,
+            "excluded_seen_count": 0,
+            "skipped_bundle_count": 0,
+        },
+    )
+
+
+def test_router_tool_search_exact_duplicate_hits_cache_when_seen_state_is_unchanged():
+    class FakeDedupingDatabase(FakeDatabase):
+        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None):
+            self.calls.append(
+                (
+                    query,
+                    tuple(sources or []),
+                    tuple((window.get("key"), window.get("page_start"), window.get("page_end")) for window in (excluded_page_windows or [])),
+                    tuple(excluded_block_keys or []),
+                )
+            )
+            return {
+                "context_text": "",
+                "selected_sources": [],
+                "merged_blocks": [],
+                "bundle_summaries": [],
+                "retrieval_metadata": {
+                    "anchor_count": 1,
+                    "anchor_pages": [],
+                    "fetched_neighbor_pages": [],
+                    "delivered_bundle_count": 0,
+                    "delivered_bundle_keys": [],
+                    "delivered_block_keys": [],
+                    "delivered_page_window_keys": [],
+                    "delivered_page_windows": [],
+                    "excluded_seen_count": 0,
+                    "skipped_bundle_count": 0,
+                },
+            }
+
+    database = FakeDedupingDatabase()
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    events = []
+    router.set_event_listener(lambda event_type, payload: events.append((event_type, payload)))
+
+    first = router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "repeat me", "relevant_documents": ["debian"]},
+    )
+    second = router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "repeat me", "relevant_documents": ["debian"]},
+    )
+
+    assert first == ""
+    assert second == ""
+    assert len(database.calls) == 1
+    assert events[-1] == (
+        "tool_complete",
+        {
+            "name": "search_rag_database",
+            "result_size": 0,
+            "result_text": "",
+            "result_blocks": [],
+            "selected_sources": [],
+            "cached": True,
+            "anchor_count": 1,
+            "anchor_pages": [],
+            "fetched_neighbor_pages": [],
+            "delivered_bundle_count": 0,
+            "excluded_seen_count": 0,
+            "skipped_bundle_count": 0,
+        },
+    )
+
+
+def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
+    class FakeProgressiveDatabase(FakeDatabase):
+        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None):
+            self.calls.append(
+                {
+                    "query": query,
+                    "sources": tuple(sources or []),
+                    "excluded_page_windows": list(excluded_page_windows or []),
+                    "excluded_block_keys": list(excluded_block_keys or []),
+                }
+            )
+            if excluded_page_windows:
+                return {
+                    "context_text": "",
+                    "selected_sources": [],
+                    "merged_blocks": [],
+                    "bundle_summaries": [],
+                    "retrieval_metadata": {
+                        "anchor_count": 1,
+                        "anchor_pages": [4],
+                        "fetched_neighbor_pages": [],
+                        "delivered_bundle_count": 0,
+                        "delivered_bundle_keys": [],
+                        "delivered_block_keys": [],
+                        "delivered_page_window_keys": [],
+                        "delivered_page_windows": [],
+                        "excluded_seen_count": 1,
+                        "skipped_bundle_count": 0,
+                    },
+                }
+            return {
+                "context_text": "---\n[Source: Debian.pdf (Page 4)]\napt install foo\n",
+                "selected_sources": ["Debian.pdf:Page 4"],
+                "merged_blocks": [
+                    {
+                        "source": "Debian.pdf",
+                        "pages": [4],
+                        "page_label": "Page 4",
+                        "text": "apt install foo",
+                        "bundle_key": "bundle:Debian.pdf:4-4:anchor:vec_4",
+                        "block_key": "block:Debian.pdf:4-4",
+                        "page_window_key": "window:Debian.pdf:4-4",
+                    }
+                ],
+                "bundle_summaries": [
+                    {
+                        "bundle_key": "bundle:Debian.pdf:4-4:anchor:vec_4",
+                        "source": "Debian.pdf",
+                        "anchor_row_key": "vec_4",
+                        "anchor_page": 4,
+                        "requested_page_window_key": "window:Debian.pdf:4-4",
+                        "requested_page_start": 4,
+                        "requested_page_end": 4,
+                        "delivered_page_window_key": "window:Debian.pdf:4-4",
+                        "delivered_pages": [4],
+                        "row_keys": ["vec_4"],
+                        "page_less": False,
+                    }
+                ],
+                "retrieval_metadata": {
+                    "anchor_count": 1,
+                    "anchor_pages": [4],
+                    "fetched_neighbor_pages": [],
+                    "delivered_bundle_count": 1,
+                    "delivered_bundle_keys": ["bundle:Debian.pdf:4-4:anchor:vec_4"],
+                    "delivered_block_keys": ["block:Debian.pdf:4-4"],
+                    "delivered_page_window_keys": ["window:Debian.pdf:4-4"],
+                    "delivered_page_windows": [
+                        {
+                            "key": "window:Debian.pdf:4-4",
+                            "source": "Debian.pdf",
+                            "page_start": 4,
+                            "page_end": 4,
+                        }
+                    ],
+                    "excluded_seen_count": 0,
+                    "skipped_bundle_count": 0,
+                },
+            }
+
+    database = FakeProgressiveDatabase()
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["debian"]),
+        context_agent=FakeContextAgent("install package"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    events = []
+    router.set_event_listener(lambda event_type, payload: events.append((event_type, payload)))
+
+    turn = TurnContext(user_question="How do I install it?")
+    router.current_turn = turn
+    try:
+        router._retrieve_context(turn)
+        result = router._handle_responder_tool_call(
+            "search_rag_database",
+            {"query": "install package", "relevant_documents": ["debian"]},
+        )
+    finally:
+        router.current_turn = None
+
+    assert turn.retrieved_docs == "---\n[Source: Debian.pdf (Page 4)]\napt install foo\n"
+    assert result == ""
+    assert len(database.calls) == 2
+    assert database.calls[0]["excluded_page_windows"] == []
+    assert database.calls[1]["excluded_page_windows"] == [
+        {
+            "key": "window:Debian.pdf:4-4",
+            "source": "Debian.pdf",
+            "page_start": 4,
+            "page_end": 4,
+        }
+    ]
+    assert events[-1] == (
+        "tool_complete",
+        {
+            "name": "search_rag_database",
+            "result_size": 0,
+            "result_text": "",
+            "result_blocks": [],
+            "selected_sources": [],
+            "cached": False,
+            "anchor_count": 1,
+            "anchor_pages": [4],
+            "fetched_neighbor_pages": [],
+            "delivered_bundle_count": 0,
+            "excluded_seen_count": 1,
+            "skipped_bundle_count": 0,
         },
     )
 

@@ -184,6 +184,7 @@ Key rules:
 - web search is fallback behavior, not default behavior
 - classifier output is a search suggestion, not a hard prohibition
 - control labels like `no_rag` affect router prefetch, not tool-level retrieval rights
+- the router owns turn-scoped retrieval progression state, including duplicate suppression and unseen-only exclusions shared by prefetch and responder tool retrieval
 
 Retrieval should remain:
 
@@ -211,6 +212,7 @@ Current retrieval debug rule:
 
 - the initial router-selected merged retrieval context belongs to the canonical run-level `normalized_inputs` bundle
 - a responder-triggered retrieval tool call owns its own returned prompt-facing text and merged blocks on that specific tool-completion event
+- tool-visible retrieval progression must stay explicit: cached duplicate hits, anchor/bundle counts, fetched neighbors, and excluded-seen counts belong on tool/retrieval events rather than hidden helper state
 
 The goal is not only capability. The goal is auditable capability.
 

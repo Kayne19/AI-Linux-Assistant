@@ -1,4 +1,6 @@
 import inspect
+import json
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
@@ -70,6 +72,7 @@ class TurnContext:
     schedule_auto_name: bool = False
     generated_chat_title: str = ""
     magi_resume_state: dict | None = None
+    retrieval_ledger: dict = field(default_factory=dict)
 
 
 class ModelRouter:
@@ -134,6 +137,7 @@ class ModelRouter:
         self.magi_responder = None
         self.magi_lite_responder = None
         self._magi_active = "off"
+        self._standalone_retrieval_ledger = self._build_retrieval_ledger()
         self.state_actions = {
             RouterState.START: self._start,
             RouterState.LOAD_MEMORY: self._load_memory,
@@ -663,6 +667,139 @@ class ModelRouter:
     def _build_memory_store(self, memory_store):
         return memory_store
 
+    def _build_retrieval_ledger(self):
+        return {
+            "cache": {},
+            "delivered_bundle_keys": set(),
+            "delivered_block_keys": set(),
+            "delivered_page_window_keys": set(),
+            "delivered_page_windows": [],
+        }
+
+    def _active_retrieval_ledger(self):
+        turn = self.current_turn
+        if turn is not None:
+            if not turn.retrieval_ledger:
+                turn.retrieval_ledger = self._build_retrieval_ledger()
+            return turn.retrieval_ledger
+        return self._standalone_retrieval_ledger
+
+    def _database_retrieve_context_result(self, query, searchable_labels, *, excluded_page_windows, excluded_block_keys):
+        if not hasattr(self.database, "retrieve_context_result"):
+            return {
+                "context_text": self.database.retrieve_context(query, searchable_labels),
+                "selected_sources": [],
+                "merged_blocks": [],
+                "bundle_summaries": [],
+                "retrieval_metadata": {},
+            }
+
+        retrieve_context_result = self.database.retrieve_context_result
+        kwargs = {}
+        try:
+            signature = inspect.signature(retrieve_context_result)
+            accepts_var_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
+            if accepts_var_kwargs or "excluded_page_windows" in signature.parameters:
+                kwargs["excluded_page_windows"] = excluded_page_windows
+            if accepts_var_kwargs or "excluded_block_keys" in signature.parameters:
+                kwargs["excluded_block_keys"] = excluded_block_keys
+        except (TypeError, ValueError):
+            kwargs = {}
+        return retrieve_context_result(query, searchable_labels, **kwargs) or {}
+
+    def _retrieval_runtime_shape(self):
+        config = getattr(self.database, "config", None)
+        if config is None:
+            return {}
+        return {
+            "db_path": getattr(config, "db_path", None),
+            "table_name": getattr(config, "table_name", None),
+            "embed_provider_name": getattr(config, "embed_provider_name", None),
+            "embed_model_name": getattr(config, "embed_model_name", None),
+            "rerank_provider_name": getattr(config, "rerank_provider_name", None),
+            "rerank_model_name": getattr(config, "rerank_model_name", None),
+            "initial_fetch": getattr(config, "initial_fetch", None),
+            "final_top_k": getattr(config, "final_top_k", None),
+            "neighbor_pages": getattr(config, "neighbor_pages", None),
+            "max_expanded": getattr(config, "max_expanded", None),
+            "source_profile_sample": getattr(config, "source_profile_sample", None),
+        }
+
+    def _retrieval_fingerprint(self, query, searchable_labels, excluded_page_windows, excluded_block_keys):
+        payload = {
+            "query": query,
+            "searchable_labels": list(searchable_labels or []),
+            "excluded_page_windows": [
+                {
+                    "key": window.get("key"),
+                    "source": window.get("source"),
+                    "page_start": window.get("page_start"),
+                    "page_end": window.get("page_end"),
+                }
+                for window in excluded_page_windows
+            ],
+            "excluded_block_keys": list(excluded_block_keys or []),
+            "runtime_shape": self._retrieval_runtime_shape(),
+        }
+        return json.dumps(payload, sort_keys=True)
+
+    def _register_retrieval_result(self, ledger, retrieval_result):
+        metadata = retrieval_result.get("retrieval_metadata") or {}
+        for bundle_key in metadata.get("delivered_bundle_keys") or []:
+            if bundle_key:
+                ledger["delivered_bundle_keys"].add(bundle_key)
+        for block_key in metadata.get("delivered_block_keys") or []:
+            if block_key:
+                ledger["delivered_block_keys"].add(block_key)
+        for page_window in metadata.get("delivered_page_windows") or []:
+            key = page_window.get("key")
+            if not key or key in ledger["delivered_page_window_keys"]:
+                continue
+            ledger["delivered_page_window_keys"].add(key)
+            ledger["delivered_page_windows"].append(
+                {
+                    "key": key,
+                    "source": page_window.get("source"),
+                    "page_start": page_window.get("page_start"),
+                    "page_end": page_window.get("page_end"),
+                }
+            )
+
+    def _retrieve_with_ledger(self, query, searchable_labels):
+        ledger = self._active_retrieval_ledger()
+        excluded_page_windows = list(ledger["delivered_page_windows"])
+        excluded_block_keys = sorted(ledger["delivered_block_keys"])
+        fingerprint = self._retrieval_fingerprint(
+            query,
+            searchable_labels,
+            excluded_page_windows,
+            excluded_block_keys,
+        )
+        cached_result = ledger["cache"].get(fingerprint)
+        if cached_result is not None:
+            retrieval_result = deepcopy(cached_result)
+            retrieval_metadata = dict(retrieval_result.get("retrieval_metadata") or {})
+            retrieval_metadata["cached_hit"] = True
+            retrieval_result["retrieval_metadata"] = retrieval_metadata
+            self._register_retrieval_result(ledger, retrieval_result)
+            return retrieval_result, True
+
+        retrieval_result = self._database_retrieve_context_result(
+            query,
+            searchable_labels,
+            excluded_page_windows=excluded_page_windows,
+            excluded_block_keys=excluded_block_keys,
+        )
+        retrieval_metadata = dict(retrieval_result.get("retrieval_metadata") or {})
+        retrieval_metadata["cached_hit"] = False
+        retrieval_result["retrieval_metadata"] = retrieval_metadata
+        ledger["cache"][fingerprint] = deepcopy(retrieval_result)
+        self._register_retrieval_result(ledger, retrieval_result)
+        return retrieval_result, False
+
     def _handle_responder_tool_call(self, tool_name, tool_args):
         self._check_cancel(f"before_tool:{tool_name}")
         self._emit_event("tool_start", {"name": tool_name, "args": tool_args})
@@ -677,29 +814,26 @@ class ModelRouter:
                     tool_complete_payload = None
                 else:
                     searchable_labels = self._searchable_labels(relevant_documents)
-                    if hasattr(self.database, "retrieve_context_result"):
-                        retrieval_result = self.database.retrieve_context_result(
-                            query,
-                            searchable_labels,
-                        ) or {}
-                        result = str(retrieval_result.get("context_text") or "")
-                        tool_complete_payload = {
-                            "name": tool_name,
-                            "result_size": len(result),
-                            "result_text": result,
-                            "result_blocks": list(retrieval_result.get("merged_blocks") or []),
-                            "selected_sources": list(retrieval_result.get("selected_sources") or []),
-                        }
-                    else:
-                        result = self.database.retrieve_context(
-                            query,
-                            searchable_labels,
-                        )
-                        tool_complete_payload = {
-                            "name": tool_name,
-                            "result_size": len(result) if isinstance(result, str) else len(str(result)),
-                            "result_text": str(result or ""),
-                        }
+                    retrieval_result, cached_hit = self._retrieve_with_ledger(
+                        query,
+                        searchable_labels,
+                    )
+                    result = str(retrieval_result.get("context_text") or "")
+                    retrieval_metadata = retrieval_result.get("retrieval_metadata") or {}
+                    tool_complete_payload = {
+                        "name": tool_name,
+                        "result_size": len(result),
+                        "result_text": result,
+                        "result_blocks": list(retrieval_result.get("merged_blocks") or []),
+                        "selected_sources": list(retrieval_result.get("selected_sources") or []),
+                        "cached": cached_hit,
+                        "anchor_count": retrieval_metadata.get("anchor_count", 0),
+                        "anchor_pages": list(retrieval_metadata.get("anchor_pages") or []),
+                        "fetched_neighbor_pages": list(retrieval_metadata.get("fetched_neighbor_pages") or []),
+                        "delivered_bundle_count": retrieval_metadata.get("delivered_bundle_count", 0),
+                        "excluded_seen_count": retrieval_metadata.get("excluded_seen_count", 0),
+                        "skipped_bundle_count": retrieval_metadata.get("skipped_bundle_count", 0),
+                    }
             elif tool_name == "search_conversation_history":
                 self._append_trace_marker("TOOL_SEARCH_HISTORY")
                 result = self._search_conversation_history(
@@ -848,19 +982,12 @@ class ModelRouter:
         return RouterState.REWRITE_QUERY
 
     def _retrieve_context(self, turn):
-        if hasattr(self.database, "retrieve_context_result"):
-            retrieval_result = self.database.retrieve_context_result(
-                turn.retrieval_query,
-                turn.suggested_search_labels,
-            ) or {}
-            turn.retrieved_docs = str(retrieval_result.get("context_text") or "")
-            turn.retrieved_context_blocks = list(retrieval_result.get("merged_blocks") or [])
-        else:
-            turn.retrieved_docs = self.database.retrieve_context(
-                turn.retrieval_query,
-                turn.suggested_search_labels,
-            )
-            turn.retrieved_context_blocks = []
+        retrieval_result, _ = self._retrieve_with_ledger(
+            turn.retrieval_query,
+            turn.suggested_search_labels,
+        )
+        turn.retrieved_docs = str(retrieval_result.get("context_text") or "")
+        turn.retrieved_context_blocks = list(retrieval_result.get("merged_blocks") or [])
         return RouterState.GENERATE_RESPONSE
 
     def _summarize_retrieved_docs(self, turn):

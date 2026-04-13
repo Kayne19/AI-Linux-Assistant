@@ -3,7 +3,16 @@ import re
 from collections import Counter, defaultdict
 
 from orchestration.routing_registry import get_aliases_for_label
-from retrieval.formatter import format_context_blocks, merge_context_chunks, serialize_context_blocks
+from retrieval.formatter import (
+    build_block_key,
+    build_bundle_key,
+    build_page_window_key,
+    build_row_key,
+    coerce_page_number,
+    format_context_blocks,
+    merge_context_chunks,
+    serialize_context_blocks,
+)
 from utils.debug_utils import debug_print
 
 
@@ -109,20 +118,170 @@ class RetrievalSearchPipeline:
             boosts[src] = score / (len(query_tokens) + 1.0)
         return boosts
 
-    def retrieve_context_result(self, query, sources):
+    def _empty_result(self, context_text="", *, excluded_seen_count=0):
+        return {
+            "context_text": context_text,
+            "selected_sources": [],
+            "merged_blocks": [],
+            "bundle_summaries": [],
+            "retrieval_metadata": {
+                "anchor_count": 0,
+                "anchor_pages": [],
+                "fetched_neighbor_pages": [],
+                "delivered_bundle_count": 0,
+                "delivered_bundle_keys": [],
+                "delivered_block_keys": [],
+                "delivered_page_window_keys": [],
+                "delivered_page_windows": [],
+                "excluded_seen_count": excluded_seen_count,
+                "skipped_bundle_count": 0,
+            },
+        }
+
+    def _clone_doc(self, doc):
+        clone = dict(doc or {})
+        clone["row_key"] = build_row_key(clone)
+        return clone
+
+    def _rank_candidates(self, query, candidates):
+        debug_print(f"   - Reranking {len(candidates)} chunks...")
+        self._emit_event("retrieval_reranking", {"count": len(candidates)})
+        rerank_documents = [doc["search_text"] for doc in candidates]
+        scores = self.reranker_provider.rerank(query, rerank_documents)
+        ranked = []
+        for index, doc in enumerate(candidates):
+            ranked_doc = self._clone_doc(doc)
+            ranked_doc["rerank_score"] = scores[index]
+            ranked.append(ranked_doc)
+
+        ranked_results = sorted(ranked, key=lambda item: item["rerank_score"], reverse=True)
+
+        if not self._source_profiles_ready:
+            self._build_source_profiles()
+        boosts = self._source_boost(query)
+        self._emit_event("retrieval_source_boosting", {"sources": len(boosts)})
+        for doc in ranked_results:
+            doc["rerank_score"] += 0.2 * boosts.get(doc.get("source", "Unknown"), 0.0)
+        return sorted(ranked_results, key=lambda item: item["rerank_score"], reverse=True)
+
+    def _excluded_page_windows_by_source(self, excluded_page_windows):
+        by_source = defaultdict(list)
+        for window in excluded_page_windows or []:
+            if not isinstance(window, dict):
+                continue
+            source = window.get("source")
+            page_start = coerce_page_number(window.get("page_start"))
+            page_end = coerce_page_number(window.get("page_end"))
+            if not source or page_start is None or page_end is None:
+                continue
+            by_source[source].append((page_start, page_end))
+        return by_source
+
+    def _doc_is_excluded(self, doc, excluded_page_windows_by_source, excluded_block_keys):
+        source = doc.get("source", "Unknown")
+        page = coerce_page_number(doc.get("page"))
+        if page is not None:
+            for page_start, page_end in excluded_page_windows_by_source.get(source, []):
+                if page_start <= page <= page_end:
+                    return True
+            return False
+        singleton_block_key = build_block_key(source, row_keys=[build_row_key(doc)])
+        return singleton_block_key in excluded_block_keys
+
+    def _dedupe_docs(self, docs):
+        deduped = []
+        seen = set()
+        for doc in docs:
+            row_key = build_row_key(doc)
+            if row_key in seen:
+                continue
+            doc["row_key"] = row_key
+            deduped.append(doc)
+            seen.add(row_key)
+        return deduped
+
+    def _build_anchor_bundle(self, anchor_doc, bundle_rank):
+        source = anchor_doc.get("source", "Unknown")
+        anchor_row_key = build_row_key(anchor_doc)
+        anchor_page = coerce_page_number(anchor_doc.get("page"))
+        anchor_score = float(anchor_doc.get("rerank_score", 0.0))
+
+        if anchor_page is None:
+            bundle_key = build_bundle_key(source, anchor_row_key)
+            anchor_bundle_docs = [anchor_doc]
+            return {
+                "bundle_key": bundle_key,
+                "bundle_rank": bundle_rank,
+                "anchor_row_key": anchor_row_key,
+                "anchor_page": None,
+                "anchor_score": anchor_score,
+                "requested_page_window_key": None,
+                "requested_page_start": None,
+                "requested_page_end": None,
+                "fetched_neighbor_pages": [],
+                "docs": anchor_bundle_docs,
+                "is_page_less": True,
+            }
+
+        page_start = max(1, anchor_page - self.neighbor_pages)
+        page_end = max(anchor_page, anchor_page + self.neighbor_pages)
+        fetched_docs = [
+            self._clone_doc(doc)
+            for doc in self.store.fetch_source_page_window(
+                source,
+                page_start,
+                page_end,
+                limit=max(1000, self.max_expanded * 20),
+            )
+        ]
+        if not any(build_row_key(doc) == anchor_row_key for doc in fetched_docs):
+            fetched_docs.append(anchor_doc)
+
+        bundle_key = build_bundle_key(source, anchor_row_key, page_start, page_end)
+        fetched_neighbor_pages = sorted(
+            {
+                page
+                for page in (coerce_page_number(doc.get("page")) for doc in fetched_docs)
+                if page is not None and page != anchor_page
+            }
+        )
+        return {
+            "bundle_key": bundle_key,
+            "bundle_rank": bundle_rank,
+            "anchor_row_key": anchor_row_key,
+            "anchor_page": anchor_page,
+            "anchor_score": anchor_score,
+            "requested_page_window_key": build_page_window_key(source, page_start, page_end),
+            "requested_page_start": page_start,
+            "requested_page_end": page_end,
+            "fetched_neighbor_pages": fetched_neighbor_pages,
+            "docs": self._dedupe_docs(fetched_docs),
+            "is_page_less": False,
+        }
+
+    def retrieve_context_result(
+        self,
+        query,
+        sources,
+        excluded_page_windows=None,
+        excluded_block_keys=None,
+    ):
+        excluded_block_keys = set(excluded_block_keys or [])
+        excluded_page_windows = list(excluded_page_windows or [])
         try:
             self.store.open_table()
         except Exception:
-            return {
-                "context_text": "Error: Database not initialized.",
-                "selected_sources": [],
-                "merged_blocks": [],
-            }
+            return self._empty_result("Error: Database not initialized.")
 
         debug_print(f"\n🔍 Searching manual for: '{query}'...")
         self._emit_event(
             "retrieval_search_started",
-            {"query": query, "sources": list(sources or [])},
+            {
+                "query": query,
+                "sources": list(sources or []),
+                "excluded_page_window_count": len(excluded_page_windows),
+                "excluded_block_count": len(excluded_block_keys),
+            },
         )
         self.metadata_store.ensure_embedding_compatibility(self.embedding_provider, require_metadata=False)
         query_vec = self.embedding_provider.embed_query(query)
@@ -144,102 +303,158 @@ class RetrievalSearchPipeline:
 
         if not candidates:
             self._emit_event("retrieval_no_results", {"query": query})
-            return {
-                "context_text": "",
-                "selected_sources": [],
-                "merged_blocks": [],
-            }
+            return self._empty_result()
 
-        debug_print(f"   - Reranking {len(candidates)} chunks...")
-        self._emit_event("retrieval_reranking", {"count": len(candidates)})
-        rerank_documents = [doc["search_text"] for doc in candidates]
-        scores = self.reranker_provider.rerank(query, rerank_documents)
-        for index, doc in enumerate(candidates):
-            doc["rerank_score"] = scores[index]
-        ranked_results = sorted(candidates, key=lambda item: item["rerank_score"], reverse=True)
+        ranked_results = self._rank_candidates(query, candidates)
+        anchors = ranked_results[: self.final_top_k]
+        anchor_pages = [
+            page
+            for page in (coerce_page_number(doc.get("page")) for doc in anchors)
+            if page is not None
+        ]
+        self._emit_event(
+            "retrieval_expanding",
+            {
+                "neighbor_pages": self.neighbor_pages,
+                "max_expanded": self.max_expanded,
+                "anchor_count": len(anchors),
+                "anchor_pages": anchor_pages,
+            },
+        )
 
-        if not self._source_profiles_ready:
-            self._build_source_profiles()
-        boosts = self._source_boost(query)
-        self._emit_event("retrieval_source_boosting", {"sources": len(boosts)})
-        for doc in ranked_results:
-            doc["rerank_score"] += 0.2 * boosts.get(doc.get("source", "Unknown"), 0.0)
-        ranked_results = sorted(ranked_results, key=lambda item: item["rerank_score"], reverse=True)
+        excluded_windows_by_source = self._excluded_page_windows_by_source(excluded_page_windows)
+        selected_docs = []
+        selected_doc_keys = set()
+        bundle_summaries = []
+        fetched_neighbor_pages_by_source = defaultdict(set)
+        excluded_seen_count = 0
+        skipped_bundle_count = 0
 
-        final_results = ranked_results[: self.final_top_k]
+        for bundle_rank, anchor in enumerate(anchors):
+            anchor_doc = self._clone_doc(anchor)
+            bundle = self._build_anchor_bundle(anchor_doc, bundle_rank)
+            source = anchor_doc.get("source", "Unknown")
+            for page in bundle["fetched_neighbor_pages"]:
+                fetched_neighbor_pages_by_source[source].add(page)
 
-        if self.neighbor_pages > 0:
-            self._emit_event(
-                "retrieval_expanding",
-                {"neighbor_pages": self.neighbor_pages, "max_expanded": self.max_expanded},
+            bundle_docs = []
+            for raw_doc in bundle["docs"]:
+                row_key = build_row_key(raw_doc)
+                if self._doc_is_excluded(raw_doc, excluded_windows_by_source, excluded_block_keys):
+                    excluded_seen_count += 1
+                    continue
+                if row_key in selected_doc_keys:
+                    continue
+                bundle_doc = dict(raw_doc)
+                bundle_doc["row_key"] = row_key
+                bundle_doc["bundle_key"] = bundle["bundle_key"]
+                bundle_doc["bundle_rank"] = bundle["bundle_rank"]
+                bundle_doc["anchor_row_key"] = bundle["anchor_row_key"]
+                bundle_doc["anchor_page"] = bundle["anchor_page"]
+                bundle_doc["requested_page_window_key"] = bundle["requested_page_window_key"]
+                bundle_doc["rerank_score"] = bundle["anchor_score"]
+                bundle_docs.append(bundle_doc)
+
+            if not bundle_docs:
+                skipped_bundle_count += 1
+                continue
+
+            if selected_docs and len(selected_docs) + len(bundle_docs) > self.max_expanded:
+                skipped_bundle_count += 1
+                break
+
+            delivered_pages = sorted(
+                {
+                    page
+                    for page in (coerce_page_number(doc.get("page")) for doc in bundle_docs)
+                    if page is not None
+                }
             )
-            by_source_page = {}
-            for doc in candidates:
-                src = doc.get("source", "Unknown")
-                try:
-                    page = int(doc.get("page"))
-                except Exception:
-                    continue
-                by_source_page.setdefault(src, {}).setdefault(page, []).append(doc)
+            delivered_page_window_key = build_page_window_key(
+                source,
+                delivered_pages[0] if delivered_pages else None,
+                delivered_pages[-1] if delivered_pages else None,
+            )
+            bundle_summaries.append(
+                {
+                    "bundle_key": bundle["bundle_key"],
+                    "source": source,
+                    "anchor_row_key": bundle["anchor_row_key"],
+                    "anchor_page": bundle["anchor_page"],
+                    "requested_page_window_key": bundle["requested_page_window_key"],
+                    "requested_page_start": bundle["requested_page_start"],
+                    "requested_page_end": bundle["requested_page_end"],
+                    "delivered_page_window_key": delivered_page_window_key,
+                    "delivered_pages": delivered_pages,
+                    "row_keys": [doc["row_key"] for doc in bundle_docs],
+                    "page_less": bundle["is_page_less"],
+                }
+            )
+            for doc in bundle_docs:
+                selected_docs.append(doc)
+                selected_doc_keys.add(doc["row_key"])
 
-            expanded = []
-            seen = set()
-
-            def _doc_key(doc):
-                return doc.get("id") or (doc.get("source"), doc.get("page"), doc.get("text", "")[:64])
-
-            for doc in final_results:
-                key = _doc_key(doc)
-                if key not in seen:
-                    expanded.append(doc)
-                    seen.add(key)
-
-                try:
-                    page = int(doc.get("page"))
-                except Exception:
-                    page = None
-                if page is None:
-                    continue
-
-                src = doc.get("source", "Unknown")
-                for candidate_page in range(page - self.neighbor_pages, page + self.neighbor_pages + 1):
-                    for neighbor_doc in by_source_page.get(src, {}).get(candidate_page, []):
-                        neighbor_key = _doc_key(neighbor_doc)
-                        if neighbor_key in seen:
-                            continue
-                        expanded.append(neighbor_doc)
-                        seen.add(neighbor_key)
-                        if len(expanded) >= self.max_expanded:
-                            break
-                    if len(expanded) >= self.max_expanded:
-                        break
-                if len(expanded) >= self.max_expanded:
-                    break
-
-            if expanded:
-                expanded_documents = [doc.get("search_text", "") for doc in expanded]
-                expanded_scores = self.reranker_provider.rerank(query, expanded_documents)
-                for index, doc in enumerate(expanded):
-                    doc["rerank_score"] = expanded_scores[index]
-                expanded = sorted(expanded, key=lambda item: item["rerank_score"], reverse=True)
-                expanded = expanded[: self.max_expanded]
-            final_results = expanded
-
-        merged_results = merge_context_chunks(final_results)
+        merged_results = merge_context_chunks(selected_docs)
         merged_blocks = serialize_context_blocks(merged_results)
         context_text, selected_sources = format_context_blocks(merged_results)
+
+        delivered_page_windows = []
+        delivered_page_window_keys = []
+        delivered_block_keys = []
+        for block in merged_blocks:
+            delivered_block_keys.append(block.get("block_key"))
+            page_window_key = block.get("page_window_key")
+            if page_window_key and block.get("pages"):
+                delivered_page_window_keys.append(page_window_key)
+                delivered_page_windows.append(
+                    {
+                        "key": page_window_key,
+                        "source": block.get("source"),
+                        "page_start": block["pages"][0],
+                        "page_end": block["pages"][-1],
+                    }
+                )
+
+        retrieval_metadata = {
+            "anchor_count": len(anchors),
+            "anchor_pages": anchor_pages,
+            "fetched_neighbor_pages": [
+                {"source": source, "pages": sorted(pages)}
+                for source, pages in sorted(fetched_neighbor_pages_by_source.items())
+            ],
+            "delivered_bundle_count": len(bundle_summaries),
+            "delivered_bundle_keys": [bundle["bundle_key"] for bundle in bundle_summaries],
+            "delivered_block_keys": [key for key in delivered_block_keys if key],
+            "delivered_page_window_keys": delivered_page_window_keys,
+            "delivered_page_windows": delivered_page_windows,
+            "excluded_seen_count": excluded_seen_count,
+            "skipped_bundle_count": skipped_bundle_count,
+        }
+
         self._emit_event(
             "retrieval_complete",
-            {"merged_blocks": len(merged_results), "selected_sources": selected_sources},
+            {
+                "merged_blocks": len(merged_blocks),
+                "selected_sources": selected_sources,
+                "anchor_count": retrieval_metadata["anchor_count"],
+                "anchor_pages": retrieval_metadata["anchor_pages"],
+                "fetched_neighbor_pages": retrieval_metadata["fetched_neighbor_pages"],
+                "delivered_bundle_count": retrieval_metadata["delivered_bundle_count"],
+                "excluded_seen_count": retrieval_metadata["excluded_seen_count"],
+                "skipped_bundle_count": retrieval_metadata["skipped_bundle_count"],
+            },
         )
         debug_print(
-            f"   (Selected top {len(merged_results)} merged blocks from: {', '.join(selected_sources)}...)"
+            f"   (Selected {len(bundle_summaries)} bundles / {len(merged_blocks)} merged blocks from: "
+            f"{', '.join(selected_sources)}...)"
         )
         return {
             "context_text": context_text,
             "selected_sources": selected_sources,
             "merged_blocks": merged_blocks,
+            "bundle_summaries": bundle_summaries,
+            "retrieval_metadata": retrieval_metadata,
         }
 
-    def retrieve_context(self, query, sources):
-        return self.retrieve_context_result(query, sources)["context_text"]
+    def retrieve_context(self, query, sources, **kwargs):
+        return self.retrieve_context_result(query, sources, **kwargs)["context_text"]

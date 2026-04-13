@@ -90,6 +90,7 @@ Important debug ownership rule:
 - large prompt-facing input text belongs to the run snapshot / terminal `debug.normalized_inputs` bundle
 - normal `event` rows should stay phase-owned and compact instead of duplicating the same retrieved context or loaded memory snapshot text over and over
 - exception: a retrieval tool-completion event may carry its own returned `result_text` / `result_blocks`, because that text is owned by that specific tool invocation rather than the initial run-level retrieval bundle
+- retrieval tool-completion events may also report progression metadata such as cached-hit state, anchor pages, fetched neighbors, delivered bundle count, and excluded-seen count
 
 `error` reports backend failure.
 

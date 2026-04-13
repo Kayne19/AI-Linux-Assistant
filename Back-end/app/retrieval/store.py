@@ -25,6 +25,17 @@ class LanceDBStore:
             .to_list()
         )
 
+    def fetch_source_page_window(self, source: str, page_start: int, page_end: int, limit: int | None = None):
+        escaped_source = (source or "").replace("'", "''")
+        query = (
+            f"source = '{escaped_source}' "
+            f"AND page >= {int(page_start)} "
+            f"AND page <= {int(page_end)}"
+        )
+        search = self.open_table().search().where(query)
+        search = search.limit(10000 if limit is None else int(limit))
+        return search.to_list()
+
     def add_rows(self, rows):
         db = self.connect()
         if self.table_exists():
