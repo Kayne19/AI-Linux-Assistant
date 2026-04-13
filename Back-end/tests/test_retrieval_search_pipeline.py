@@ -332,3 +332,45 @@ def test_retrieval_covered_region_keys_input_is_echoed_in_metadata():
     result = pipeline.retrieve_context_result("arch", [], covered_region_keys=covered_keys)
     metadata = result["retrieval_metadata"]
     assert metadata.get("covered_region_keys_input") == covered_keys
+
+
+def test_retrieval_requested_goal_does_not_crash_goal_alignment_scoring():
+    candidates = [
+        {
+            "id": "vec_4",
+            "source": "Guide.pdf",
+            "page": 4,
+            "text": "Verify the service state after installation",
+            "search_text": "Verify the service state after installation",
+        },
+    ]
+    window_rows = {
+        ("Guide.pdf", 2, 6): [
+            {
+                "id": f"vec_{p}",
+                "source": "Guide.pdf",
+                "page": p,
+                "text": f"guide page {p}",
+                "search_text": f"guide page {p}",
+            }
+            for p in range(2, 7)
+        ],
+    }
+    pipeline, _ = build_pipeline(
+        candidates=candidates,
+        window_rows=window_rows,
+        score_by_text={"Verify the service state after installation": 9.0},
+        final_top_k=1,
+        neighbor_pages=2,
+        max_expanded=10,
+    )
+
+    result = pipeline.retrieve_context_result(
+        "check installation",
+        ["guide"],
+        requested_evidence_goal="verify_state",
+    )
+
+    metadata = result["retrieval_metadata"]
+    assert metadata["requested_evidence_goal"] == "verify_state"
+    assert metadata["delivered_bundle_count"] == 1

@@ -128,7 +128,7 @@ class RetrievalSearchPipeline:
         return boosts
 
     def _goal_alignment_boost(self, requested_evidence_goal, doc):
-        goal_tokens = self._tokenize(requested_evidence_goal or "")
+        goal_tokens = set(self._tokenize(requested_evidence_goal or ""))
         if not goal_tokens:
             return 0.0
         doc_tokens = set(
