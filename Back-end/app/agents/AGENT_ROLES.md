@@ -41,6 +41,23 @@ The Magi system is an alternative response mode that uses a council of models to
 4. **Closing Arguments**: Roles provide concise stance updates after the discussion.
 5. **Arbiter Synthesis**: The Arbiter produces the final response along with internal synthesis metadata (e.g., `winning_branch`, `uncertainty_level`).
 
+## Evidence Pool Integration (MAGI Turns)
+
+On MAGI turns (`magi="full"` or `magi="lite"`), the router's per-turn `EvidencePool` injects a short `EVIDENCE POOL SUMMARY` block into each role's opening-argument prompt and each discussion-round prompt.
+
+The summary includes:
+
+- covered region keys (what evidence areas have already been retrieved this turn)
+- the latest retrieval outcome classification (`delivered_new_evidence`, `cache_hit`, `reused_known_evidence`, `no_new_evidence`, `search_exhausted_for_scope`)
+- any unresolved evidence gap from the prior query
+- exhausted scope keys (scopes where the pool has blocked further retrieval)
+
+An accompanying `MAGI_NET_NEW_INSTRUCTION` is also injected to guide tool use:
+
+> When using tools: prefer net-new evidence regions not yet covered this run. Revisit covered regions only for contradiction checks, alternate-source confirmation, or explicit gap expansion.
+
+Roles that attempt retrieval on an exhausted scope receive a `retrieval_gated` event and an empty result, rather than a real DB call. Roles can bypass gating by supplying a recognized `repeat_reason` (`contradiction_check`, `alternate_source_confirmation`, `gap_expansion`, `explicit_gap`).
+
 ## Traceability
 
 All agent actions, especially Magi deliberation phases, must emit explicit events and traces. The goal is to make the "why" behind every answer auditable and transparent.

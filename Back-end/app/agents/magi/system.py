@@ -367,7 +367,7 @@ class MagiSystem:
 
         return "\n".join(sections).strip()
 
-    def _run_opening_arguments(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text):
+    def _run_opening_arguments(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, evidence_pool_summary=""):
         self._check_cancel("before_magi_opening_arguments")
         self._set_state(MagiState.OPENING_ARGUMENTS)
         self._emit_event("magi_phase", {"phase": "opening_arguments"})
@@ -386,6 +386,7 @@ class MagiSystem:
             parsed = role_agent.opening_argument(
                 user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text,
                 event_listener=self._make_role_streamer_listener(role_name, "opening_arguments"),
+                evidence_pool_summary=evidence_pool_summary,
             )
             position_text = parsed.get("position", "")
             self._emit_role_text(role_name, "opening_arguments", position_text)
@@ -400,7 +401,7 @@ class MagiSystem:
 
         return positions
 
-    def _run_discussion(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, opening_positions):
+    def _run_discussion(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, opening_positions, evidence_pool_summary=""):
         return self._resume_discussion(
             user_query,
             retrieved_docs,
@@ -413,6 +414,7 @@ class MagiSystem:
             start_role_index=0,
             interventions=[],
             emit_gate_event=True,
+            evidence_pool_summary=evidence_pool_summary,
         )
 
     def _serialize_history(self, summarized_conversation_history):
@@ -483,6 +485,7 @@ class MagiSystem:
         start_role_index,
         interventions,
         emit_gate_event,
+        evidence_pool_summary="",
     ):
         discussion_rounds = [list(round_positions or []) for round_positions in discussion_rounds or []]
         interventions = self._normalize_interventions(interventions)
@@ -555,6 +558,7 @@ class MagiSystem:
                     unresolved_issue=unresolved_issue,
                     user_intervention_block=self._discussion_prompt_intervention_block(interventions),
                     event_listener=self._make_role_streamer_listener(role_name, "discussion", round_num),
+                    evidence_pool_summary=evidence_pool_summary,
                 )
                 position_text = parsed.get("position", "")
                 new_info = parsed.get("new_information", False)
@@ -777,7 +781,7 @@ class MagiSystem:
             "interventions": self._normalize_interventions(pause_state.get("interventions") or []),
         }
 
-    def _run(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", *, stream=False, pause_state=None):
+    def _run(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", *, stream=False, pause_state=None, evidence_pool_summary=""):
         self.last_arbiter_metadata = {}
         self.last_pause_state = {}
         interventions = []
@@ -808,13 +812,16 @@ class MagiSystem:
                 start_role_index=int(checkpoint.get("next_role_index", 0) or 0),
                 interventions=interventions,
                 emit_gate_event=False,
+                evidence_pool_summary=evidence_pool_summary,
             )
         else:
             opening_positions = self._run_opening_arguments(
                 user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text,
+                evidence_pool_summary=evidence_pool_summary,
             )
             discussion_rounds = self._run_discussion(
                 user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, opening_positions,
+                evidence_pool_summary=evidence_pool_summary,
             )
         closing_positions = self._run_closing_arguments(user_query, opening_positions, discussion_rounds)
         self.last_council_entries = self._build_council_entries(opening_positions, discussion_rounds, closing_positions, interventions=interventions)
@@ -830,7 +837,7 @@ class MagiSystem:
             interventions=interventions,
         )
 
-    def call_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
+    def call_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", evidence_pool_summary=""):
         try:
             return self._run(
                 user_query,
@@ -839,6 +846,7 @@ class MagiSystem:
                 memory_snapshot_text,
                 stream=False,
                 pause_state=None,
+                evidence_pool_summary=evidence_pool_summary,
             )
         except RunPausedError:
             raise
@@ -846,7 +854,7 @@ class MagiSystem:
             self._set_state(MagiState.ERROR)
             raise
 
-    def stream_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
+    def stream_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", evidence_pool_summary=""):
         try:
             return self._run(
                 user_query,
@@ -855,6 +863,7 @@ class MagiSystem:
                 memory_snapshot_text,
                 stream=True,
                 pause_state=None,
+                evidence_pool_summary=evidence_pool_summary,
             )
         except RunPausedError:
             raise
@@ -862,7 +871,7 @@ class MagiSystem:
             self._set_state(MagiState.ERROR)
             raise
 
-    def resume_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", pause_state=None, stream=False):
+    def resume_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", pause_state=None, stream=False, evidence_pool_summary=""):
         try:
             return self._run(
                 user_query,
@@ -871,6 +880,7 @@ class MagiSystem:
                 memory_snapshot_text,
                 stream=stream,
                 pause_state=pause_state,
+                evidence_pool_summary=evidence_pool_summary,
             )
         except RunPausedError:
             raise

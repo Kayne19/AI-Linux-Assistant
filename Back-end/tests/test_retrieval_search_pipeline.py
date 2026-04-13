@@ -202,3 +202,133 @@ def test_page_less_rows_stay_singleton_non_expandable_bundles():
     ]
     assert result["bundle_summaries"][0]["page_less"] is True
     assert result["bundle_summaries"][0]["requested_page_window_key"] is None
+
+
+# ---------------------------------------------------------------------------
+# V2: region key metadata, coverage/exclusion inputs, singleton handling
+# ---------------------------------------------------------------------------
+
+def test_retrieval_returns_delivered_region_keys_for_paged_result():
+    """delivered_region_keys must be present in metadata for paged results."""
+    candidates = [
+        {"id": "vec_10", "source": "Debian.pdf", "page": 10, "text": "anchor", "search_text": "anchor"},
+    ]
+    window_rows = {
+        ("Debian.pdf", 8, 12): [
+            {"id": f"vec_{p}", "source": "Debian.pdf", "page": p, "text": f"p{p}", "search_text": f"p{p}"}
+            for p in range(8, 13)
+        ],
+    }
+    pipeline, _ = build_pipeline(
+        candidates=candidates,
+        window_rows=window_rows,
+        score_by_text={"anchor": 10.0},
+        final_top_k=1,
+        neighbor_pages=2,
+        max_expanded=10,
+    )
+    result = pipeline.retrieve_context_result("install", ["debian"])
+    metadata = result["retrieval_metadata"]
+    assert "delivered_region_keys" in metadata
+    assert len(metadata["delivered_region_keys"]) >= 1
+    # Region key should cover the delivered page window
+    assert any("region:Debian.pdf:" in rk for rk in metadata["delivered_region_keys"])
+
+
+def test_retrieval_obeys_excluded_page_windows_and_reports_region_keys_seen():
+    """excluded_page_windows blocks matching docs; excluded_region_keys_seen reports what was filtered."""
+    candidates = [
+        {"id": "vec_10", "source": "Debian.pdf", "page": 10, "text": "anchor", "search_text": "anchor"},
+    ]
+    window_rows = {
+        ("Debian.pdf", 8, 12): [
+            {"id": f"vec_{p}", "source": "Debian.pdf", "page": p, "text": f"p{p}", "search_text": f"p{p}"}
+            for p in range(8, 13)
+        ],
+    }
+    pipeline, _ = build_pipeline(
+        candidates=candidates,
+        window_rows=window_rows,
+        score_by_text={"anchor": 10.0},
+        final_top_k=1,
+        neighbor_pages=2,
+        max_expanded=10,
+    )
+    # Exclude the exact window that the anchor falls in
+    excluded_windows = [{"source": "Debian.pdf", "page_start": 8, "page_end": 12}]
+    result = pipeline.retrieve_context_result("install", ["debian"], excluded_page_windows=excluded_windows)
+    metadata = result["retrieval_metadata"]
+    assert metadata["excluded_seen_count"] >= 1
+    # excluded_region_keys_seen should report at least one filtered region
+    assert "excluded_region_keys_seen" in metadata
+    assert len(metadata["excluded_region_keys_seen"]) >= 1
+    assert any("region:Debian.pdf:" in rk for rk in metadata["excluded_region_keys_seen"])
+
+
+def test_retrieval_singleton_excluded_by_block_key():
+    """Page-less singletons are excluded by block key, not page window."""
+    row_key = "vec_unpaged"
+    candidates = [
+        {"id": row_key, "source": "Notes.md", "page": None, "text": "note", "search_text": "note"},
+    ]
+    pipeline, _ = build_pipeline(
+        candidates=candidates,
+        window_rows={},
+        score_by_text={"note": 10.0},
+        final_top_k=1,
+        neighbor_pages=2,
+        max_expanded=10,
+    )
+    singleton_block_key = f"block:Notes.md:singleton:{row_key}"
+    result = pipeline.retrieve_context_result(
+        "note query", [],
+        excluded_block_keys=[singleton_block_key],
+    )
+    metadata = result["retrieval_metadata"]
+    # The singleton should be excluded
+    assert metadata["excluded_seen_count"] >= 1
+    assert len(result["merged_blocks"]) == 0
+    # The excluded region key should be a singleton region key
+    excluded_rks = metadata.get("excluded_region_keys_seen", [])
+    assert any(":singleton:" in rk for rk in excluded_rks)
+
+
+def test_retrieval_empty_result_has_region_key_fields():
+    """Even an empty result includes the region key metadata fields."""
+    pipeline, _ = build_pipeline(
+        candidates=[],
+        window_rows={},
+        score_by_text={},
+    )
+    result = pipeline._empty_result()
+    metadata = result["retrieval_metadata"]
+    assert "delivered_region_keys" in metadata
+    assert "excluded_region_keys_seen" in metadata
+    assert "net_new_region_count" in metadata
+    assert metadata["delivered_region_keys"] == []
+    assert metadata["net_new_region_count"] == 0
+
+
+def test_retrieval_covered_region_keys_input_is_echoed_in_metadata():
+    """covered_region_keys passed in are echoed back in metadata for pool reconciliation."""
+    candidates = [
+        {"id": "vec_5", "source": "Arch.pdf", "page": 5, "text": "arch doc", "search_text": "arch doc"},
+    ]
+    window_rows = {
+        ("Arch.pdf", 3, 7): [
+            {"id": f"vec_{p}", "source": "Arch.pdf", "page": p, "text": f"p{p}", "search_text": f"p{p}"}
+            for p in range(3, 8)
+        ],
+    }
+    pipeline, _ = build_pipeline(
+        candidates=candidates,
+        window_rows=window_rows,
+        score_by_text={"arch doc": 10.0},
+        final_top_k=1,
+        neighbor_pages=2,
+        max_expanded=10,
+    )
+    covered_keys = ["region:Arch.pdf:1-2"]
+    result = pipeline.retrieve_context_result("arch", [], covered_region_keys=covered_keys)
+    metadata = result["retrieval_metadata"]
+    assert metadata.get("covered_region_keys_input") == covered_keys

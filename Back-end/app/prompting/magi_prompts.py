@@ -255,6 +255,8 @@ PRIOR CONVERSATION SUMMARY:
 KNOWN SYSTEM MEMORY:
 {memory_snapshot_text}
 
+{evidence_pool_summary}
+
 REFERENCE CONTEXT:
 {retrieved_docs}
 
@@ -424,3 +426,10 @@ ROLE_REMINDERS = {
     "skeptic": "You are Skeptic. Attack the branch, surface the weakest assumption, and identify what would falsify it. Do not choose the winning branch or give the final recommendation.",
     "historian": "You are Historian. Verify with tools and evidence. State whether evidence supports, weakens, conflicts with, or fails to support the branch. Do not speculate and do not give the final recommendation.",
 }
+
+MAGI_NET_NEW_INSTRUCTION = (
+    "When using tools: prefer net-new evidence regions not yet covered this run. "
+    "Revisit covered regions only for contradiction checks, alternate-source confirmation, or explicit gap expansion."
+)
+
+EVIDENCE_POOL_SUMMARY_SECTION_LABEL = "EVIDENCE POOL SUMMARY:"

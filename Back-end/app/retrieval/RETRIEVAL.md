@@ -17,7 +17,7 @@ It is not responsible for:
 - storing chats, users, or projects
 - owning ingestion orchestration
 
-The router decides when retrieval matters. Retrieval executes that decision.
+The router coordinates when and what retrieval runs; the router-owned `EvidencePool` tracks coverage, outcomes, and gating. The retrieval pipeline executes that search and returns region-key metadata so the pool can update its coverage state.
 
 ## Ownership Split
 
@@ -190,6 +190,29 @@ Runtime retrieval now uses explicit stable keys:
   - identifies one final formatted block delivered to the model
   - page-based shape: `block:{source}:{page_start}-{page_end}`
   - page-less shape: `block:{source}:singleton:{row_key}`
+- `region_key`
+  - identifies a covered evidence region for pool tracking
+  - paged shape: `region:{source}:{page_start}-{page_end}`
+  - page-less shape: `region:{source}:singleton:{row_key}`
+  - derived from delivered page windows and singleton block keys
+  - used by `EvidencePool` to track what evidence is already covered
+
+### Evidence Pool Inputs (accepted by `retrieve_context_result`)
+
+The router's `EvidencePool` passes per-call exclusion and coverage inputs to the search pipeline:
+
+- `excluded_page_windows` — list of `{"key", "source", "page_start", "page_end"}` dicts; the pipeline skips bundles whose page window overlaps these
+- `excluded_block_keys` — list of block key strings; used to exclude singleton blocks already covered
+- `covered_region_keys` — list of region key strings (informational; echoed back in metadata for pool reconciliation)
+
+### Retrieval Metadata (returned by `retrieve_context_result`)
+
+In addition to existing fields, the pipeline now returns:
+
+- `delivered_region_keys` — region keys for all evidence delivered in this call
+- `excluded_region_keys_seen` — region keys that were requested but skipped because they were in `excluded_page_windows` / `excluded_block_keys`
+- `net_new_region_count` — count of delivered regions not already in the covered set
+- `covered_region_keys_input` — echo of the `covered_region_keys` input (for pool reconciliation)
 
 Current overlap rule:
 
@@ -210,7 +233,12 @@ The runtime search pipeline emits events such as:
 - `retrieval_expanding`
 - `retrieval_complete`
 
-Current observability fields now include:
+The router/evidence pool emits additional events:
+
+- `evidence_pool_update` — emitted after every retrieval (fresh or cached) with pool summary state: `query_count`, `evidence_count`, `covered_region_count`, `exhausted_scope_keys`, `last_outcome`
+- `retrieval_gated` — emitted when a MAGI role retrieval is blocked by scope exhaustion; includes `scope_exhausted`, `blocked_reason`, and caller context
+
+Current observability fields on retrieval pipeline events include:
 
 - anchor count / anchor pages
 - fetched neighbor pages

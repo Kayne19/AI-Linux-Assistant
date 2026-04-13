@@ -185,6 +185,22 @@ Key rules:
 - classifier output is a search suggestion, not a hard prohibition
 - control labels like `no_rag` affect router prefetch, not tool-level retrieval rights
 - the router owns turn-scoped retrieval progression state, including duplicate suppression and unseen-only exclusions shared by prefetch and responder tool retrieval
+- the router's per-turn `EvidencePool` is the coordination layer that tracks queries, coverage, scope exhaustion, and gating decisions — the retrieval search pipeline executes search; the pool records what was found
+
+Evidence pool responsibilities (router-owned):
+
+- fingerprint-based exact cache for turn-scoped repeat queries
+- track covered region keys so downstream calls exclude already-delivered pages
+- classify each retrieval outcome: `delivered_new_evidence`, `cache_hit`, `reused_known_evidence`, `no_new_evidence`, `search_exhausted_for_scope`
+- gate exhausted MAGI role scopes (blocks redundant search, emits `retrieval_gated`)
+- emit `evidence_pool_update` after every retrieval so the stream can reflect coverage state
+- build a short `EVIDENCE POOL SUMMARY` block injected into MAGI role prompts
+
+Retrieval pipeline responsibilities (search-pipeline-owned):
+
+- embed query, hybrid search, rerank, bundle, format
+- accept `excluded_page_windows`, `excluded_block_keys` from the pool and apply them
+- return `delivered_region_keys`, `excluded_region_keys_seen`, `net_new_region_count` so the pool can update coverage
 
 Retrieval should remain:
 
@@ -192,7 +208,7 @@ Retrieval should remain:
 - scoped
 - replaceable at the provider/model layer
 
-The router decides when retrieval matters. Retrieval components execute that decision.
+The router coordinates when and what retrieval runs. The retrieval pipeline executes that search.
 
 ### 7. Tool Use Must Stay Visible
 
@@ -289,6 +305,7 @@ Owns:
 - history preparation
 - run cancellation checkpoints consumed by router-owned phases
 - structured success/failure outcomes consumed by workers without parsing assistant text
+- per-turn `EvidencePool` (`evidence_pool.py`) — query records, coverage, outcome classification, scope exhaustion, MAGI gating, and fingerprint cache
 
 Current router turn phases remain explicit and inspectable:
 

@@ -1249,3 +1249,201 @@ def test_magi_parser_fallbacks_normalize_optional_and_required_fields():
     assert arbiter_result["immediate_obligation"] == "Advance the best current branch without losing the higher-order framing."
     assert arbiter_result["decision_mode"] == "best_current_branch"
     assert arbiter_result["uncertainty_level"] == "medium"
+
+
+# ---------------------------------------------------------------------------
+# Evidence pool coordination tests
+# ---------------------------------------------------------------------------
+
+from orchestration.evidence_pool import (
+    OUTCOME_CACHE_HIT,
+    OUTCOME_EXHAUSTED,
+    OUTCOME_NEW_EVIDENCE,
+    OUTCOME_NO_NEW,
+    OUTCOME_REUSED_KNOWN,
+    EvidencePool,
+)
+
+
+def _make_result(source, page_start, page_end, bundle_key=None, block_key=None):
+    """Build a minimal retrieval result dict for pool tests."""
+    bk = bundle_key or f"bundle:{source}:{page_start}-{page_end}:anchor:row_1"
+    blk = block_key or f"block:{source}:{page_start}-{page_end}"
+    return {
+        "context_text": f"doc from {source}",
+        "selected_sources": [source],
+        "merged_blocks": [],
+        "bundle_summaries": [],
+        "retrieval_metadata": {
+            "anchor_count": 1,
+            "anchor_pages": [page_start],
+            "fetched_neighbor_pages": [],
+            "delivered_bundle_count": 1,
+            "delivered_bundle_keys": [bk],
+            "delivered_block_keys": [blk],
+            "delivered_page_window_keys": [f"window:{source}:{page_start}-{page_end}"],
+            "delivered_page_windows": [
+                {"key": f"window:{source}:{page_start}-{page_end}",
+                 "source": source, "page_start": page_start, "page_end": page_end}
+            ],
+            "excluded_seen_count": 0,
+            "skipped_bundle_count": 0,
+        },
+    }
+
+
+def _make_singleton_result(source, row_key):
+    """Build a minimal singleton (page-less) retrieval result dict for pool tests."""
+    block_key = f"block:{source}:singleton:{row_key}"
+    return {
+        "context_text": f"singleton from {source}",
+        "selected_sources": [source],
+        "merged_blocks": [],
+        "bundle_summaries": [],
+        "retrieval_metadata": {
+            "anchor_count": 1,
+            "anchor_pages": [],
+            "fetched_neighbor_pages": [],
+            "delivered_bundle_count": 1,
+            "delivered_bundle_keys": [f"bundle:{source}:singleton:{row_key}"],
+            "delivered_block_keys": [block_key],
+            "delivered_page_window_keys": [],
+            "delivered_page_windows": [],
+            "excluded_seen_count": 0,
+            "skipped_bundle_count": 0,
+        },
+    }
+
+
+def test_evidence_pool_two_roles_same_source_region_second_is_reused():
+    """Two different role calls hitting the same source/page region.
+
+    The first call delivers new evidence. The second call (same result set)
+    gets classified as reused_known_evidence.
+    """
+    pool = EvidencePool()
+    result = _make_result("Debian.pdf", 4, 6)
+
+    # First call: eager role at opening
+    q1 = pool.record_query("install package", ["debian"], caller_role="eager", caller_phase="opening")
+    pool.record_evidence_from_result(result, q1)
+    assert q1.outcome == OUTCOME_NEW_EVIDENCE
+
+    # Second call: skeptic role hits the exact same result set
+    q2 = pool.record_query("install package", ["debian"], caller_role="skeptic", caller_phase="opening")
+    pool.record_evidence_from_result(result, q2)
+    assert q2.outcome == OUTCOME_REUSED_KNOWN
+
+
+def test_evidence_pool_later_role_gets_net_new_for_uncovered_pages():
+    """A later role querying a different page range gets new evidence even if the source is known."""
+    pool = EvidencePool()
+    result_early = _make_result("Debian.pdf", 4, 6)
+    result_late = _make_result("Debian.pdf", 10, 12)
+
+    q1 = pool.record_query("install package", ["debian"], caller_role="eager")
+    pool.record_evidence_from_result(result_early, q1)
+    assert q1.outcome == OUTCOME_NEW_EVIDENCE
+
+    q2 = pool.record_query("install flags", ["debian"], caller_role="historian")
+    pool.record_evidence_from_result(result_late, q2)
+    assert q2.outcome == OUTCOME_NEW_EVIDENCE
+
+    covered = pool.known_covered_region_keys()
+    assert "region:Debian.pdf:4-6" in covered
+    assert "region:Debian.pdf:10-12" in covered
+
+
+def test_evidence_pool_repeated_no_progress_exhausts_scope():
+    """After NO_NEW_EVIDENCE_THRESHOLD no-new-evidence results, scope is exhausted."""
+    from orchestration.evidence_pool import NO_NEW_EVIDENCE_THRESHOLD
+
+    pool = EvidencePool()
+    result = _make_result("Debian.pdf", 1, 5)
+
+    # First call delivers new evidence and registers coverage
+    q0 = pool.record_query("any query", ["debian"], caller_role="eager")
+    pool.record_evidence_from_result(result, q0)
+    assert q0.outcome == OUTCOME_NEW_EVIDENCE
+
+    # Subsequent calls with the same result set (no new regions) increment the counter
+    for i in range(1, NO_NEW_EVIDENCE_THRESHOLD):
+        q = pool.record_query(f"any query {i}", [f"label{i}"], caller_role="eager")
+        pool.record_evidence_from_result(result, q)
+        assert q.outcome == OUTCOME_REUSED_KNOWN  # same result_set_fingerprint
+
+    # To hit the no_new_evidence counter we need a result with no region keys (empty result)
+    empty_result = {
+        "context_text": "",
+        "selected_sources": [],
+        "merged_blocks": [],
+        "bundle_summaries": [],
+        "retrieval_metadata": {
+            "delivered_bundle_keys": [],
+            "delivered_block_keys": [],
+            "delivered_page_windows": [],
+        },
+    }
+    # First empty: no_new_evidence (count = 1)
+    qe1 = pool.record_query("no results query 1", ["debian"], caller_role="eager")
+    pool.record_evidence_from_result(empty_result, qe1)
+    assert qe1.outcome == OUTCOME_NO_NEW
+
+    # Second empty: no_new_evidence (count = 2)
+    qe2 = pool.record_query("no results query 2", ["debian"], caller_role="eager")
+    pool.record_evidence_from_result(empty_result, qe2)
+    assert qe2.outcome == OUTCOME_NO_NEW
+
+    # Third empty: exhausted
+    qe3 = pool.record_query("no results query 3", ["debian"], caller_role="eager")
+    pool.record_evidence_from_result(empty_result, qe3)
+    assert qe3.outcome == OUTCOME_EXHAUSTED
+    assert any("eager" in sk for sk in pool.scope_state.exhausted_scope_keys)
+
+
+def test_evidence_pool_gate_blocks_exhausted_scope():
+    """check_gate blocks retrieval on an exhausted MAGI role scope."""
+    pool = EvidencePool()
+    # Manually exhaust a scope
+    scope_key = "eager:debian"
+    pool.scope_state.exhausted_scope_keys.add(scope_key)
+
+    gate = pool.check_gate("some query", ["debian"], caller_role="eager")
+    assert not gate.allow_search
+    assert gate.scope_exhausted
+
+
+def test_evidence_pool_allowed_repeat_reason_bypasses_exhaustion():
+    """A legitimate repeat reason bypasses exhaustion gating."""
+    pool = EvidencePool()
+    pool.scope_state.exhausted_scope_keys.add("eager:debian")
+
+    gate = pool.check_gate(
+        "some query",
+        ["debian"],
+        caller_role="eager",
+        repeat_reason="contradiction_check",
+    )
+    assert gate.allow_search
+    assert gate.allow_overlap_for_reason == "contradiction_check"
+
+
+def test_evidence_pool_singleton_dedupe_by_exact_key():
+    """Page-less singletons dedupe only by exact row key, not by source."""
+    pool = EvidencePool()
+    result_a = _make_singleton_result("Notes.md", "row_abc")
+    result_b = _make_singleton_result("Notes.md", "row_xyz")  # different row key
+
+    q1 = pool.record_query("singleton query 1", [])
+    pool.record_evidence_from_result(result_a, q1)
+    assert q1.outcome == OUTCOME_NEW_EVIDENCE
+
+    q2 = pool.record_query("singleton query 2", [])
+    pool.record_evidence_from_result(result_b, q2)
+    # Different row key — should still be new evidence
+    assert q2.outcome == OUTCOME_NEW_EVIDENCE
+
+    # Exact same result again — reused
+    q3 = pool.record_query("singleton query 3", [])
+    pool.record_evidence_from_result(result_a, q3)
+    assert q3.outcome == OUTCOME_REUSED_KNOWN

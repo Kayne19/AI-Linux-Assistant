@@ -16,6 +16,15 @@ from retrieval.formatter import (
 from utils.debug_utils import debug_print
 
 
+def _build_region_key(source, page_start=None, page_end=None, row_key=None):
+    """Local helper — mirrors evidence_pool.build_region_key without the circular import."""
+    if page_start is not None and page_end is not None:
+        return f"region:{source}:{int(page_start)}-{int(page_end)}"
+    if row_key is not None:
+        return f"region:{source}:singleton:{row_key}"
+    return f"region:{source}:singleton:unknown"
+
+
 class RetrievalSearchPipeline:
     def __init__(
         self,
@@ -135,6 +144,9 @@ class RetrievalSearchPipeline:
                 "delivered_page_windows": [],
                 "excluded_seen_count": excluded_seen_count,
                 "skipped_bundle_count": 0,
+                "delivered_region_keys": [],
+                "excluded_region_keys_seen": [],
+                "net_new_region_count": 0,
             },
         }
 
@@ -265,9 +277,11 @@ class RetrievalSearchPipeline:
         sources,
         excluded_page_windows=None,
         excluded_block_keys=None,
+        covered_region_keys=None,
     ):
         excluded_block_keys = set(excluded_block_keys or [])
         excluded_page_windows = list(excluded_page_windows or [])
+        covered_region_keys_input = list(covered_region_keys or [])
         try:
             self.store.open_table()
         except Exception:
@@ -329,6 +343,8 @@ class RetrievalSearchPipeline:
         fetched_neighbor_pages_by_source = defaultdict(set)
         excluded_seen_count = 0
         skipped_bundle_count = 0
+        excluded_region_keys_seen = []
+        _excluded_region_key_set = set()
 
         for bundle_rank, anchor in enumerate(anchors):
             anchor_doc = self._clone_doc(anchor)
@@ -342,6 +358,15 @@ class RetrievalSearchPipeline:
                 row_key = build_row_key(raw_doc)
                 if self._doc_is_excluded(raw_doc, excluded_windows_by_source, excluded_block_keys):
                     excluded_seen_count += 1
+                    # Record the region key so the pool can classify this as overlap/reused
+                    page = coerce_page_number(raw_doc.get("page"))
+                    if page is not None:
+                        rk = _build_region_key(source, page, page)
+                    else:
+                        rk = _build_region_key(source, row_key=row_key)
+                    if rk not in _excluded_region_key_set:
+                        _excluded_region_key_set.add(rk)
+                        excluded_region_keys_seen.append(rk)
                     continue
                 if row_key in selected_doc_keys:
                     continue
@@ -415,12 +440,24 @@ class RetrievalSearchPipeline:
                     }
                 )
 
+        # Derive region keys from delivered page windows + singleton block keys
+        delivered_region_keys = []
+        for window in delivered_page_windows:
+            delivered_region_keys.append(
+                _build_region_key(window["source"], window["page_start"], window["page_end"])
+            )
+        for block_key in delivered_block_keys:
+            if block_key and ":singleton:" in block_key:
+                parts = block_key.split(":", 3)
+                if len(parts) == 4:
+                    delivered_region_keys.append(_build_region_key(parts[1], row_key=parts[3]))
+
         retrieval_metadata = {
             "anchor_count": len(anchors),
             "anchor_pages": anchor_pages,
             "fetched_neighbor_pages": [
-                {"source": source, "pages": sorted(pages)}
-                for source, pages in sorted(fetched_neighbor_pages_by_source.items())
+                {"source": src, "pages": sorted(pages)}
+                for src, pages in sorted(fetched_neighbor_pages_by_source.items())
             ],
             "delivered_bundle_count": len(bundle_summaries),
             "delivered_bundle_keys": [bundle["bundle_key"] for bundle in bundle_summaries],
@@ -429,6 +466,11 @@ class RetrievalSearchPipeline:
             "delivered_page_windows": delivered_page_windows,
             "excluded_seen_count": excluded_seen_count,
             "skipped_bundle_count": skipped_bundle_count,
+            # V2 region-key fields for the evidence pool
+            "delivered_region_keys": delivered_region_keys,
+            "excluded_region_keys_seen": excluded_region_keys_seen,
+            "net_new_region_count": len(delivered_region_keys),
+            "covered_region_keys_input": covered_region_keys_input,
         }
 
         self._emit_event(

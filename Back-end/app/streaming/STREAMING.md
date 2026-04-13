@@ -80,6 +80,7 @@ The stream currently sends JSON payloads shaped like:
 - provider/tool events
 - Magi phase and role events
 - paused-run control events such as `magi_pause_requested`, `magi_intervention_added`, and `magi_resumed`
+- evidence pool events: `evidence_pool_update` (emitted after every retrieval, contains coverage summary) and `retrieval_gated` (emitted when a MAGI scope is exhausted and a retrieval is blocked)
 
 `paused` reports a MAGI run that stopped at a durable discussion checkpoint and can later be resumed with the same `run_id`.
 
@@ -90,7 +91,7 @@ Important debug ownership rule:
 - large prompt-facing input text belongs to the run snapshot / terminal `debug.normalized_inputs` bundle
 - normal `event` rows should stay phase-owned and compact instead of duplicating the same retrieved context or loaded memory snapshot text over and over
 - exception: a retrieval tool-completion event may carry its own returned `result_text` / `result_blocks`, because that text is owned by that specific tool invocation rather than the initial run-level retrieval bundle
-- retrieval tool-completion events may also report progression metadata such as cached-hit state, anchor pages, fetched neighbors, delivered bundle count, and excluded-seen count
+- retrieval tool-completion events may also report progression metadata such as cached-hit state, anchor pages, fetched neighbors, delivered bundle count, excluded-seen count, search outcome classification (`search_outcome`), covered region count (`covered_region_count`), scope-exhausted flag, and active MAGI caller context (`caller_role`, `caller_phase`, `caller_round`)
 
 `error` reports backend failure.
 

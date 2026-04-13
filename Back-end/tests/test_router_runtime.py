@@ -544,6 +544,12 @@ def test_router_tool_search_emits_prompt_facing_retrieval_blocks_for_tool_result
             "delivered_bundle_count": 0,
             "excluded_seen_count": 0,
             "skipped_bundle_count": 0,
+            "search_outcome": "no_new_evidence",
+            "covered_region_count": 0,
+            "scope_exhausted": False,
+            "caller_role": "",
+            "caller_phase": "",
+            "caller_round": 0,
         },
     )
 
@@ -619,6 +625,12 @@ def test_router_tool_search_exact_duplicate_hits_cache_when_seen_state_is_unchan
             "delivered_bundle_count": 0,
             "excluded_seen_count": 0,
             "skipped_bundle_count": 0,
+            "search_outcome": "cache_hit",
+            "covered_region_count": 0,
+            "scope_exhausted": False,
+            "caller_role": "",
+            "caller_phase": "",
+            "caller_round": 0,
         },
     )
 
@@ -755,6 +767,12 @@ def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
             "delivered_bundle_count": 0,
             "excluded_seen_count": 1,
             "skipped_bundle_count": 0,
+            "search_outcome": "no_new_evidence",
+            "covered_region_count": 1,
+            "scope_exhausted": False,
+            "caller_role": "",
+            "caller_phase": "",
+            "caller_round": 0,
         },
     )
 
@@ -1165,12 +1183,12 @@ class FakeMagiResponder:
         self.response_text = response_text
         self.calls = []
 
-    def call_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
+    def call_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", evidence_pool_summary=""):
         self.calls.append(user_query)
         return self.response_text
 
-    def stream_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
-        return self.call_api(user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text)
+    def stream_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", evidence_pool_summary=""):
+        return self.call_api(user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, evidence_pool_summary)
 
 
 def test_router_magi_toggle_dispatches_correctly():
@@ -1266,3 +1284,206 @@ def test_router_magi_off_uses_standard_responder():
     assert result == "normal answer"
     assert len(normal_responder.calls) == 1
     assert len(full_responder.calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Evidence pool router integration tests
+# ---------------------------------------------------------------------------
+
+from orchestration.evidence_pool import (
+    OUTCOME_CACHE_HIT,
+    OUTCOME_NEW_EVIDENCE,
+    OUTCOME_NO_NEW,
+    OUTCOME_REUSED_KNOWN,
+    EvidencePool,
+)
+from orchestration.model_router import TurnContext
+
+
+def _make_progressive_db(first_result, second_result=None):
+    """Database whose second call returns a different result from the first."""
+    class ProgressiveDB(FakeDatabase):
+        def __init__(self):
+            super().__init__("")
+            self.result_sequence = [first_result]
+            if second_result is not None:
+                self.result_sequence.append(second_result)
+
+        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None):
+            self.calls.append(
+                {"query": query, "sources": sources,
+                 "excluded_page_windows": list(excluded_page_windows or []),
+                 "excluded_block_keys": list(excluded_block_keys or [])},
+            )
+            index = min(len(self.calls) - 1, len(self.result_sequence) - 1)
+            return self.result_sequence[index]
+    return ProgressiveDB()
+
+
+def _page_result(source, ps, pe):
+    return {
+        "context_text": f"text from {source} p{ps}-{pe}",
+        "selected_sources": [source],
+        "merged_blocks": [],
+        "bundle_summaries": [],
+        "retrieval_metadata": {
+            "anchor_count": 1,
+            "anchor_pages": [ps],
+            "fetched_neighbor_pages": [],
+            "delivered_bundle_count": 1,
+            "delivered_bundle_keys": [f"bundle:{source}:{ps}-{pe}:anchor:r1"],
+            "delivered_block_keys": [f"block:{source}:{ps}-{pe}"],
+            "delivered_page_window_keys": [f"window:{source}:{ps}-{pe}"],
+            "delivered_page_windows": [
+                {"key": f"window:{source}:{ps}-{pe}", "source": source, "page_start": ps, "page_end": pe}
+            ],
+            "excluded_seen_count": 0,
+            "skipped_bundle_count": 0,
+        },
+    }
+
+
+def _empty_db_result():
+    return {
+        "context_text": "",
+        "selected_sources": [],
+        "merged_blocks": [],
+        "bundle_summaries": [],
+        "retrieval_metadata": {
+            "anchor_count": 0, "anchor_pages": [], "fetched_neighbor_pages": [],
+            "delivered_bundle_count": 0, "delivered_bundle_keys": [], "delivered_block_keys": [],
+            "delivered_page_window_keys": [], "delivered_page_windows": [],
+            "excluded_seen_count": 0, "skipped_bundle_count": 0,
+        },
+    }
+
+
+def test_router_evidence_pool_stores_query_and_coverage_state():
+    """After a prefetch retrieval, the turn's evidence pool contains the correct query record and coverage."""
+    db = _make_progressive_db(_page_result("Debian.pdf", 4, 6))
+    router = ModelRouter(
+        database=db,
+        classifier=FakeClassifier(["debian"]),
+        context_agent=FakeContextAgent("install package"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    turn = TurnContext(user_question="How do I install?")
+    router.current_turn = turn
+    try:
+        router._retrieve_context(turn)
+    finally:
+        router.current_turn = None
+
+    pool = turn.evidence_pool
+    assert pool is not None
+    assert len(pool.query_records) == 1
+    assert pool.query_records[0].outcome == OUTCOME_NEW_EVIDENCE
+    assert "region:Debian.pdf:4-6" in pool.known_covered_region_keys()
+
+
+def test_router_evidence_pool_exact_duplicate_is_cache_hit():
+    """Same query twice with unchanged coverage hits the pool cache on the second call.
+
+    The fingerprint includes the exclusion state. After a first call that returns
+    no page windows, coverage stays at zero, so the second call has an identical
+    fingerprint and is served from the pool cache without a second DB call.
+    """
+    # Empty result — no delivered pages, so coverage stays at zero between calls.
+    db = _make_progressive_db(_empty_db_result())
+    router = ModelRouter(
+        database=db,
+        classifier=FakeClassifier(["debian"]),
+        context_agent=FakeContextAgent("install package"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    turn = TurnContext(user_question="How do I install?")
+    router.current_turn = turn
+    try:
+        _, first_cache = router._retrieve_with_ledger("install package", ["debian"])
+        _, is_cache = router._retrieve_with_ledger("install package", ["debian"])
+    finally:
+        router.current_turn = None
+
+    assert first_cache is False   # first was a real DB call
+    assert is_cache is True       # second hit the pool cache (same fingerprint)
+    pool = turn.evidence_pool
+    assert len(pool.query_records) == 2
+    assert pool.query_records[0].outcome == OUTCOME_NO_NEW
+    assert pool.query_records[1].outcome == OUTCOME_CACHE_HIT
+    # Database should only have been called once
+    assert len(db.calls) == 1
+
+
+def test_router_evidence_pool_no_new_evidence_different_query():
+    """Two different queries returning the same result set — second is reused_known_evidence, not cache_hit."""
+    shared_result = _page_result("Debian.pdf", 4, 6)
+    db = _make_progressive_db(shared_result, shared_result)
+    router = ModelRouter(
+        database=db,
+        classifier=FakeClassifier(["debian"]),
+        context_agent=FakeContextAgent("q1"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    turn = TurnContext(user_question="question")
+    router.current_turn = turn
+    try:
+        router._retrieve_with_ledger("install package query A", ["debian"])
+        # Second call: different query string so fingerprint differs, different DB call, but same result set
+        # The page window from the first call is now in covered_intervals and passed as excluded_page_windows.
+        # The DB returns the same result again (second_result = shared_result).
+        # Because the result set fingerprint is already known, outcome = OUTCOME_REUSED_KNOWN.
+        router._retrieve_with_ledger("install package query B", ["debian"])
+    finally:
+        router.current_turn = None
+
+    pool = turn.evidence_pool
+    assert pool.query_records[0].outcome == OUTCOME_NEW_EVIDENCE
+    # Second query has a different fingerprint (different query string) so it goes to DB,
+    # but the returned result set is identical → reused_known_evidence.
+    assert pool.query_records[1].outcome in {OUTCOME_REUSED_KNOWN, OUTCOME_NO_NEW}
+
+
+def test_router_evidence_pool_fresh_per_turn():
+    """Each turn gets its own fresh EvidencePool; state does not bleed between turns."""
+    db = _make_progressive_db(_page_result("Debian.pdf", 4, 6))
+    router = ModelRouter(
+        database=db,
+        classifier=FakeClassifier(["debian"]),
+        context_agent=FakeContextAgent("q"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    turn1 = TurnContext(user_question="turn 1")
+    router.current_turn = turn1
+    try:
+        router._retrieve_with_ledger("query", ["debian"])
+    finally:
+        router.current_turn = None
+
+    turn2 = TurnContext(user_question="turn 2")
+    router.current_turn = turn2
+    try:
+        router._retrieve_with_ledger("query", ["debian"])
+    finally:
+        router.current_turn = None
+
+    # Each turn has its own pool with exactly one query record
+    assert len(turn1.evidence_pool.query_records) == 1
+    assert len(turn2.evidence_pool.query_records) == 1
+    assert turn1.evidence_pool is not turn2.evidence_pool

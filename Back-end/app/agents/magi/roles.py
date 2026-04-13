@@ -11,6 +11,7 @@ from prompting.magi_prompts import (
     MAGI_HISTORIAN_CLOSING_OUTPUT_FORMAT,
     MAGI_HISTORIAN_OUTPUT_FORMAT,
     MAGI_HISTORIAN_SYSTEM_PROMPT,
+    MAGI_NET_NEW_INSTRUCTION,
     MAGI_SKEPTIC_CLOSING_OUTPUT_FORMAT,
     MAGI_SKEPTIC_OUTPUT_FORMAT,
     MAGI_SKEPTIC_SYSTEM_PROMPT,
@@ -111,17 +112,21 @@ class MagiRole:
         if self.event_listener is not None:
             self.event_listener(event_type, payload)
 
-    def _build_context_bundle(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text):
+    def _build_context_bundle(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, evidence_pool_summary=""):
         if summarized_conversation_history is None:
             summarized_conversation_history = PreparedHistory()
         history_summary_text = (summarized_conversation_history.summary_text or "").strip()
+        pool_section = ""
+        if evidence_pool_summary:
+            net_new_note = MAGI_NET_NEW_INSTRUCTION
+            pool_section = f"\n{evidence_pool_summary}\nNote: {net_new_note}\n"
         return f"""
 PRIOR CONVERSATION SUMMARY:
 {history_summary_text}
 
 KNOWN SYSTEM MEMORY:
 {memory_snapshot_text}
-
+{pool_section}
 REFERENCE CONTEXT:
 {retrieved_docs}
 
@@ -129,9 +134,10 @@ USER QUESTION:
 {user_query}
 """.strip()
 
-    def _build_opening_message(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text):
+    def _build_opening_message(self, user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, evidence_pool_summary=""):
         return self._build_context_bundle(
             user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text,
+            evidence_pool_summary=evidence_pool_summary,
         )
 
     def _base_payload(self, parsed):
@@ -232,10 +238,11 @@ USER QUESTION:
                 return stream_fn
         return self.worker.generate_text
 
-    def opening_argument(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", event_listener=None):
+    def opening_argument(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", event_listener=None, evidence_pool_summary=""):
         listener = event_listener if event_listener is not None else self._forward_worker_event
         user_message = self._build_opening_message(
             user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text,
+            evidence_pool_summary=evidence_pool_summary,
         )
         invoke_cancel_check(self.cancel_check, f"before_model_call:{self.role_name}:opening")
         raw = call_with_optional_cancel_check(
@@ -264,11 +271,15 @@ USER QUESTION:
         unresolved_issue="",
         user_intervention_block="none",
         event_listener=None,
+        evidence_pool_summary="",
     ):
         listener = event_listener if event_listener is not None else self._forward_worker_event
         if summarized_conversation_history is None:
             summarized_conversation_history = PreparedHistory()
         history_summary_text = (summarized_conversation_history.summary_text or "").strip()
+        pool_block = ""
+        if evidence_pool_summary:
+            pool_block = f"{evidence_pool_summary}\nNote: {MAGI_NET_NEW_INSTRUCTION}"
         discussion_prompt = MAGI_DISCUSSION_PROMPT_TEMPLATE.format(
             role_name=self.role_name.upper(),
             round_number=round_number,
@@ -277,6 +288,7 @@ USER QUESTION:
             user_query=user_query,
             history_summary_text=history_summary_text,
             memory_snapshot_text=memory_snapshot_text,
+            evidence_pool_summary=pool_block,
             retrieved_docs=retrieved_docs,
             transcript=transcript,
             user_intervention_block=user_intervention_block or "none",

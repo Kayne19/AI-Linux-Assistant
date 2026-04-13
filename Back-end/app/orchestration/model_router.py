@@ -12,6 +12,7 @@ from agents.response_agent import ResponseAgent
 from orchestration.history_preparer import PreparedHistory
 from orchestration.routing_registry import get_allowed_labels, get_searchable_labels
 from orchestration.run_control import RunCancelledError, RunPausedError, invoke_cancel_check
+from orchestration.evidence_pool import EvidencePool
 from config.settings import SETTINGS
 from agents.summarizers import ContextSummarizer, HistorySummarizer
 from retrieval.vectorDB import VectorDB
@@ -72,7 +73,7 @@ class TurnContext:
     schedule_auto_name: bool = False
     generated_chat_title: str = ""
     magi_resume_state: dict | None = None
-    retrieval_ledger: dict = field(default_factory=dict)
+    evidence_pool: object | None = None  # EvidencePool, created on first use
 
 
 class ModelRouter:
@@ -137,7 +138,9 @@ class ModelRouter:
         self.magi_responder = None
         self.magi_lite_responder = None
         self._magi_active = "off"
-        self._standalone_retrieval_ledger = self._build_retrieval_ledger()
+        self._standalone_evidence_pool = EvidencePool()
+        # Tracks active MAGI role/phase/round so tool calls can be tagged
+        self._active_magi_caller: dict = {}
         self.state_actions = {
             RouterState.START: self._start,
             RouterState.LOAD_MEMORY: self._load_memory,
@@ -202,6 +205,7 @@ class ModelRouter:
 
     def _execute_turn(self, turn, initial_state, *, stream_response=False, magi="off", manage_memory_turn=True):
         self._magi_active = magi
+        self._active_magi_caller = {}
         self.current_turn = turn
         self._stream_response_enabled = stream_response
         state = initial_state
@@ -361,6 +365,19 @@ class ModelRouter:
             },
         )
 
+    # Maps MagiState names to (role, phase) for caller metadata tagging
+    _MAGI_STATE_TO_CALLER = {
+        "ROLE_EAGER":            ("eager",    "opening"),
+        "ROLE_SKEPTIC":          ("skeptic",  "opening"),
+        "ROLE_HISTORIAN":        ("historian","opening"),
+        "DISCUSSION_EAGER":      ("eager",    "discussion"),
+        "DISCUSSION_SKEPTIC":    ("skeptic",  "discussion"),
+        "DISCUSSION_HISTORIAN":  ("historian","discussion"),
+        "CLOSING_EAGER":         ("eager",    "closing"),
+        "CLOSING_SKEPTIC":       ("skeptic",  "closing"),
+        "CLOSING_HISTORIAN":     ("historian","closing"),
+    }
+
     def _handle_magi_state(self, state, payload):
         marker = f"MAGI_{state.name}"
         self._append_trace_marker(marker)
@@ -373,6 +390,27 @@ class ModelRouter:
                 "trace_marker": marker,
             },
         )
+        # Update active caller metadata so retrieval tool calls can be tagged
+        caller_pair = self._MAGI_STATE_TO_CALLER.get(state.name)
+        if caller_pair:
+            role, phase = caller_pair
+            round_number = int((payload or {}).get("round") or 0)
+            unresolved = str((payload or {}).get("unresolved_issue") or "")
+            self._active_magi_caller = {
+                "caller_role": role,
+                "caller_phase": phase,
+                "caller_round": round_number,
+                "unresolved_issue": unresolved,
+            }
+        elif state.name in {"OPENING_ARGUMENTS", "DISCUSSION", "CLOSING_ARGUMENTS", "ARBITER", "COMPLETE"}:
+            # Phase-level state; only update round and unresolved_issue if provided
+            if payload:
+                self._active_magi_caller.update({
+                    "caller_round": int(payload.get("round") or self._active_magi_caller.get("caller_round", 0)),
+                    "unresolved_issue": str(payload.get("unresolved_issue") or self._active_magi_caller.get("unresolved_issue", "")),
+                })
+        elif state.name in {"ERROR", "COMPLETE"}:
+            self._active_magi_caller = {}
 
     def _instantiate_worker(self, provider, model, reasoning_effort=None):
         worker_class = self.WORKER_TYPES.get(provider.lower())
@@ -667,22 +705,13 @@ class ModelRouter:
     def _build_memory_store(self, memory_store):
         return memory_store
 
-    def _build_retrieval_ledger(self):
-        return {
-            "cache": {},
-            "delivered_bundle_keys": set(),
-            "delivered_block_keys": set(),
-            "delivered_page_window_keys": set(),
-            "delivered_page_windows": [],
-        }
-
-    def _active_retrieval_ledger(self):
+    def _active_evidence_pool(self) -> EvidencePool:
         turn = self.current_turn
         if turn is not None:
-            if not turn.retrieval_ledger:
-                turn.retrieval_ledger = self._build_retrieval_ledger()
-            return turn.retrieval_ledger
-        return self._standalone_retrieval_ledger
+            if turn.evidence_pool is None:
+                turn.evidence_pool = EvidencePool()
+            return turn.evidence_pool
+        return self._standalone_evidence_pool
 
     def _database_retrieve_context_result(self, query, searchable_labels, *, excluded_page_windows, excluded_block_keys):
         if not hasattr(self.database, "retrieve_context_result"):
@@ -746,47 +775,95 @@ class ModelRouter:
         }
         return json.dumps(payload, sort_keys=True)
 
-    def _register_retrieval_result(self, ledger, retrieval_result):
-        metadata = retrieval_result.get("retrieval_metadata") or {}
-        for bundle_key in metadata.get("delivered_bundle_keys") or []:
-            if bundle_key:
-                ledger["delivered_bundle_keys"].add(bundle_key)
-        for block_key in metadata.get("delivered_block_keys") or []:
-            if block_key:
-                ledger["delivered_block_keys"].add(block_key)
-        for page_window in metadata.get("delivered_page_windows") or []:
-            key = page_window.get("key")
-            if not key or key in ledger["delivered_page_window_keys"]:
-                continue
-            ledger["delivered_page_window_keys"].add(key)
-            ledger["delivered_page_windows"].append(
-                {
-                    "key": key,
-                    "source": page_window.get("source"),
-                    "page_start": page_window.get("page_start"),
-                    "page_end": page_window.get("page_end"),
-                }
-            )
+    def _active_caller_metadata(self) -> dict:
+        """Return the current MAGI caller context (role/phase/round/unresolved_issue)."""
+        if self._magi_active in {"full", "lite"}:
+            return dict(self._active_magi_caller)
+        return {}
 
-    def _retrieve_with_ledger(self, query, searchable_labels):
-        ledger = self._active_retrieval_ledger()
-        excluded_page_windows = list(ledger["delivered_page_windows"])
-        excluded_block_keys = sorted(ledger["delivered_block_keys"])
+    def _retrieve_with_pool(self, query, searchable_labels, *, repeat_reason: str = "", requested_evidence_goal: str = ""):
+        """Core retrieval entry point. Uses the EvidencePool for gating, caching, and outcome tracking."""
+        pool = self._active_evidence_pool()
+        caller = self._active_caller_metadata()
+
+        # --- Gate check ---
+        gate = pool.check_gate(
+            query,
+            searchable_labels,
+            caller_role=caller.get("caller_role", ""),
+            repeat_reason=repeat_reason,
+            requested_evidence_goal=requested_evidence_goal,
+        )
+        if not gate.allow_search:
+            self._emit_event(
+                "retrieval_gated",
+                {
+                    "query": query,
+                    "scope_exhausted": gate.scope_exhausted,
+                    "blocked_reason": gate.blocked_reason,
+                    **caller,
+                },
+            )
+            empty_result = {
+                "context_text": "",
+                "selected_sources": [],
+                "merged_blocks": [],
+                "bundle_summaries": [],
+                "retrieval_metadata": {
+                    "anchor_count": 0,
+                    "anchor_pages": [],
+                    "fetched_neighbor_pages": [],
+                    "delivered_bundle_count": 0,
+                    "delivered_bundle_keys": [],
+                    "delivered_block_keys": [],
+                    "delivered_page_window_keys": [],
+                    "delivered_page_windows": [],
+                    "excluded_seen_count": 0,
+                    "skipped_bundle_count": 0,
+                    "cached_hit": False,
+                    "gated": True,
+                    "gated_reason": gate.blocked_reason,
+                },
+            }
+            return empty_result, False
+
+        # --- Build exclusion inputs from pool coverage ---
+        excluded_page_windows = pool.coverage_as_excluded_page_windows()
+        excluded_block_keys = pool.coverage_as_excluded_block_keys()
+
+        # --- Exact fingerprint cache check ---
         fingerprint = self._retrieval_fingerprint(
             query,
             searchable_labels,
             excluded_page_windows,
             excluded_block_keys,
         )
-        cached_result = ledger["cache"].get(fingerprint)
+        cached_result = pool._cache.get(fingerprint)
+
+        # --- Record query before retrieval ---
+        q_record = pool.record_query(
+            raw_query=query,
+            searchable_labels=list(searchable_labels or []),
+            caller_role=caller.get("caller_role", ""),
+            caller_phase=caller.get("caller_phase", ""),
+            caller_round=int(caller.get("caller_round") or 0),
+            unresolved_issue=caller.get("unresolved_issue", ""),
+            requested_evidence_goal=requested_evidence_goal,
+        )
+
         if cached_result is not None:
             retrieval_result = deepcopy(cached_result)
             retrieval_metadata = dict(retrieval_result.get("retrieval_metadata") or {})
             retrieval_metadata["cached_hit"] = True
             retrieval_result["retrieval_metadata"] = retrieval_metadata
-            self._register_retrieval_result(ledger, retrieval_result)
+            pool.record_evidence_from_result(retrieval_result, q_record, is_cache_hit=True)
+            self._emit_event(
+                "evidence_pool_update",
+                {**pool.summary_event_payload(), "query": query, **caller},
+            )
             return retrieval_result, True
 
+        # --- Fresh retrieval ---
         retrieval_result = self._database_retrieve_context_result(
             query,
             searchable_labels,
@@ -796,9 +873,17 @@ class ModelRouter:
         retrieval_metadata = dict(retrieval_result.get("retrieval_metadata") or {})
         retrieval_metadata["cached_hit"] = False
         retrieval_result["retrieval_metadata"] = retrieval_metadata
-        ledger["cache"][fingerprint] = deepcopy(retrieval_result)
-        self._register_retrieval_result(ledger, retrieval_result)
+        pool._cache[fingerprint] = deepcopy(retrieval_result)
+        pool.record_evidence_from_result(retrieval_result, q_record, is_cache_hit=False)
+        self._emit_event(
+            "evidence_pool_update",
+            {**pool.summary_event_payload(), "query": query, **caller},
+        )
         return retrieval_result, False
+
+    def _retrieve_with_ledger(self, query, searchable_labels):
+        """Public-facing retrieval entry point (name kept for compatibility)."""
+        return self._retrieve_with_pool(query, searchable_labels)
 
     def _handle_responder_tool_call(self, tool_name, tool_args):
         self._check_cancel(f"before_tool:{tool_name}")
@@ -820,6 +905,8 @@ class ModelRouter:
                     )
                     result = str(retrieval_result.get("context_text") or "")
                     retrieval_metadata = retrieval_result.get("retrieval_metadata") or {}
+                    pool = self._active_evidence_pool()
+                    caller = self._active_caller_metadata()
                     tool_complete_payload = {
                         "name": tool_name,
                         "result_size": len(result),
@@ -833,6 +920,13 @@ class ModelRouter:
                         "delivered_bundle_count": retrieval_metadata.get("delivered_bundle_count", 0),
                         "excluded_seen_count": retrieval_metadata.get("excluded_seen_count", 0),
                         "skipped_bundle_count": retrieval_metadata.get("skipped_bundle_count", 0),
+                        # Evidence pool fields
+                        "search_outcome": pool.last_query_outcome(),
+                        "covered_region_count": len(pool.known_covered_region_keys()),
+                        "scope_exhausted": bool(pool.scope_state.exhausted_scope_keys),
+                        "caller_role": caller.get("caller_role", ""),
+                        "caller_phase": caller.get("caller_phase", ""),
+                        "caller_round": caller.get("caller_round", 0),
                     }
             elif tool_name == "search_conversation_history":
                 self._append_trace_marker("TOOL_SEARCH_HISTORY")
@@ -1017,6 +1111,13 @@ class ModelRouter:
             responder = self.magi_lite_responder
         else:
             responder = self.responder
+
+        # Build evidence pool summary for MAGI modes
+        evidence_pool_summary = ""
+        if self._magi_active in {"full", "lite"}:
+            pool = self._active_evidence_pool()
+            evidence_pool_summary = pool.build_prompt_summary()
+
         if turn.magi_resume_state and hasattr(responder, "resume_api"):
             turn.response = responder.resume_api(
                 turn.user_question,
@@ -1025,14 +1126,19 @@ class ModelRouter:
                 turn.memory_snapshot_text,
                 pause_state=turn.magi_resume_state,
                 stream=self._stream_response_enabled,
+                evidence_pool_summary=evidence_pool_summary,
             )
         else:
             responder_method = responder.stream_api if self._stream_response_enabled else responder.call_api
+            kwargs = {}
+            if evidence_pool_summary:
+                kwargs["evidence_pool_summary"] = evidence_pool_summary
             turn.response = responder_method(
                 turn.user_question,
                 turn.retrieved_docs,
                 turn.summarized_conversation_history,
                 turn.memory_snapshot_text,
+                **kwargs,
             )
         self._check_cancel("after_generate_response")
         turn.council_entries = list(getattr(responder, "last_council_entries", None) or [])
