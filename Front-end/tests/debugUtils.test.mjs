@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { eventSummary, TAB_FILTERS } from "../.test-dist/src/debug/debugUtils.js";
+import { eventSummary, getRetrievalEvents, TAB_FILTERS } from "../.test-dist/src/debug/debugUtils.js";
 
 test("summarizes retrieval completion with merged block count and sources", () => {
   const summary = eventSummary({
@@ -52,4 +52,39 @@ test("routes retrieval tool calls into the retrieval tab", () => {
   };
 
   assert.equal(TAB_FILTERS.Retrieval(event), true);
+});
+
+test("keeps retrieval provider round events with retrieval tool calls", () => {
+  const events = [
+    {
+      type: "event",
+      seq: 1,
+      code: "request_submitted",
+      created_at: "2026-04-12T12:00:00Z",
+      payload: { round: 2 },
+    },
+    {
+      type: "event",
+      seq: 2,
+      code: "tool_calls_received",
+      created_at: "2026-04-12T12:00:01Z",
+      payload: {
+        round: 2,
+        count: 1,
+        names: ["search_rag_database"],
+      },
+    },
+    {
+      type: "event",
+      seq: 3,
+      code: "tool_results_submitted",
+      created_at: "2026-04-12T12:00:02Z",
+      payload: { round: 2 },
+    },
+  ];
+
+  assert.deepEqual(
+    getRetrievalEvents(events).map((event) => event.code),
+    ["request_submitted", "tool_calls_received", "tool_results_submitted"],
+  );
 });

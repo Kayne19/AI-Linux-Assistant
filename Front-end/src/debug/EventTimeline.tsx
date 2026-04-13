@@ -6,6 +6,7 @@ import {
   eventTitle,
   formatDuration,
   formatTimestamp,
+  getRetrievalEvents,
   getLatencyTone,
   getStateRows,
   isObjectRecord,
@@ -154,19 +155,58 @@ function DetailCard({
   );
 }
 
-function RetrievalBlockList({ blocks }: { blocks: RetrievedContextBlock[] }) {
-  if (blocks.length === 0) {
+function RetrievalBlockList({
+  blocks,
+  fallbackText,
+}: {
+  blocks: RetrievedContextBlock[];
+  fallbackText: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasBlocks = blocks.length > 0;
+  const hasFallbackText = Boolean(fallbackText);
+
+  if (!hasBlocks && !hasFallbackText) {
     return <div className="debug-empty-state">No merged retrieval blocks recorded for this run.</div>;
   }
+
+  const label = hasBlocks
+    ? `Show merged blocks (${blocks.length})`
+    : "Show merged retrieval context";
+
+  if (!expanded) {
+    return (
+      <button type="button" className="debug-inline-link" onClick={() => setExpanded(true)}>
+        {label}
+      </button>
+    );
+  }
+
+  if (!hasBlocks) {
+    return (
+      <>
+        <button type="button" className="debug-inline-link" onClick={() => setExpanded(false)}>
+          Hide merged retrieval context
+        </button>
+        <DetailText text={fallbackText} />
+      </>
+    );
+  }
+
   return (
-    <div className="debug-detail-list">
-      {blocks.map((block, index) => (
-        <div key={`${block.source}-${block.page_label}-${index}`} className="debug-detail-list-item">
-          <strong>{block.source} • {block.page_label}</strong>
-          <ExpandableText text={block.text} emptyText="—" />
-        </div>
-      ))}
-    </div>
+    <>
+      <button type="button" className="debug-inline-link" onClick={() => setExpanded(false)}>
+        Hide merged blocks
+      </button>
+      <div className="debug-detail-list">
+        {blocks.map((block, index) => (
+          <div key={`${block.source}-${block.page_label}-${index}`} className="debug-detail-list-item">
+            <strong>{block.source} • {block.page_label}</strong>
+            <DetailText text={block.text} />
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -212,14 +252,10 @@ function RetrievalTab({ events, run }: { events: RunEvent[]; run?: ChatRun | nul
         <DetailText text={inputs?.retrieval_query || "No retrieval query recorded."} />
       </DetailCard>
       <DetailCard label="merged context blocks">
-        {(inputs?.retrieved_context_blocks?.length || 0) > 0 ? (
-          <RetrievalBlockList blocks={inputs?.retrieved_context_blocks || []} />
-        ) : (
-          <ExpandableText
-            text={inputs?.retrieved_context_text || ""}
-            emptyText="No merged retrieval blocks recorded for this run."
-          />
-        )}
+        <RetrievalBlockList
+          blocks={inputs?.retrieved_context_blocks || []}
+          fallbackText={inputs?.retrieved_context_text || ""}
+        />
       </DetailCard>
       <div className="debug-timeline-list">
         {events.length === 0 ? <div className="debug-empty-state">No retrieval events for this run.</div> : null}
@@ -408,7 +444,7 @@ export function EventTimeline({ events, tab, run }: EventTimelineProps) {
   }
 
   if (tab === "Retrieval") {
-    return <RetrievalTab events={filteredEvents} run={run} />;
+    return <RetrievalTab events={getRetrievalEvents(events)} run={run} />;
   }
 
   if (tab === "Memory") {

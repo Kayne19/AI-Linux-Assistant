@@ -14,11 +14,54 @@ export const DEBUG_TABS = ["Timeline", "States", "Context", "Retrieval", "Memory
 
 export type DebugTab = (typeof DEBUG_TABS)[number];
 
+export function isRetrievalToolName(name: unknown): boolean {
+  return typeof name === "string" && RETRIEVAL_TOOL_NAMES.has(name);
+}
+
+function payloadNamesIncludeRetrievalTool(payload: Record<string, unknown>): boolean {
+  return Array.isArray(payload.names) && payload.names.some((name) => isRetrievalToolName(name));
+}
+
 export function isRetrievalToolEvent(event: RunEvent): boolean {
   if (event.type !== "event" || !event.code.startsWith("tool_") || !isObjectRecord(event.payload)) {
     return false;
   }
-  return typeof event.payload.name === "string" && RETRIEVAL_TOOL_NAMES.has(event.payload.name);
+  return isRetrievalToolName(event.payload.name);
+}
+
+export function getRetrievalEvents(events: RunEvent[]): RunEvent[] {
+  const retrievalRounds = new Set<number>();
+
+  for (const event of events) {
+    if (event.type !== "event" || event.code !== "tool_calls_received" || !isObjectRecord(event.payload)) {
+      continue;
+    }
+    if (!payloadNamesIncludeRetrievalTool(event.payload)) {
+      continue;
+    }
+    if (typeof event.payload.round === "number") {
+      retrievalRounds.add(event.payload.round);
+    }
+  }
+
+  return events.filter((event) => {
+    if (event.type === "event" && event.code.startsWith("retrieval_")) {
+      return true;
+    }
+    if (isRetrievalToolEvent(event)) {
+      return true;
+    }
+    if (event.type !== "event" || !isObjectRecord(event.payload)) {
+      return false;
+    }
+    if (event.code === "tool_calls_received") {
+      return payloadNamesIncludeRetrievalTool(event.payload);
+    }
+    if ((event.code === "request_submitted" || event.code === "tool_results_submitted") && typeof event.payload.round === "number") {
+      return retrievalRounds.has(event.payload.round);
+    }
+    return false;
+  });
 }
 
 export const TAB_FILTERS: Record<DebugTab, (event: RunEvent) => boolean> = {
@@ -26,7 +69,9 @@ export const TAB_FILTERS: Record<DebugTab, (event: RunEvent) => boolean> = {
   States: (event) => event.type === "state" || (event.type === "event" && !STREAMING_CODES.has(event.code)),
   Context: (event) => event.type === "event" && CONTEXT_EVENT_CODES.has(event.code),
   Retrieval: (event) =>
-    ((event.type === "state" || event.type === "event") && event.code.startsWith("retrieval_")) || isRetrievalToolEvent(event),
+    (event.type === "event" && event.code.startsWith("retrieval_"))
+      || isRetrievalToolEvent(event)
+      || (event.type === "event" && event.code === "tool_calls_received" && isObjectRecord(event.payload) && payloadNamesIncludeRetrievalTool(event.payload)),
   Memory: (event) => (event.type === "state" || event.type === "event") && event.code.includes("memory"),
   Streaming: (event) => event.type === "event" && STREAMING_CODES.has(event.code),
   Raw: () => true,
