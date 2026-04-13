@@ -2,6 +2,14 @@
 
 Use this file for shared agent workflow and doc routing. Keep subsystem detail in the dedicated markdown files.
 
+## Sub-Agent Model Preference
+
+- For read-only tasks (audits, exploration, research, doc review) dispatch sub-agents using the latest available Gemini model via the `mcp__ai-cli__run` tool. Google models are preferred for these tasks to conserve Claude tokens.
+- Use Claude models for tasks that require code generation, editing, or any writes to the codebase.
+- Always instruct read-only Gemini agents explicitly that they must not modify files.
+- **Parallel agent rate limits:** Running 5+ Gemini agents simultaneously will hit capacity limits (`429 MODEL_CAPACITY_EXHAUSTED`). The agents retry with backoff and eventually complete, but total wall time can stretch to 30+ minutes. Expect this and use `mcp__ai-cli__wait` with a generous timeout (600s+), or poll with `mcp__ai-cli__list_processes` / `mcp__ai-cli__get_result` instead of blocking. Stagger large batches if rate pressure is a concern.
+- **Rate limits are per model tier:** Quota is shared across all concurrent agents using the same model (e.g. all `gemini-3.1-pro-preview` agents share one bucket). If rate pressure is high, spreading agents across tiers (e.g. some on `gemini-3.1-pro-preview`, others on `gemini-3-flash-preview`) can reduce contention.
+
 ## Core Workflow
 
 - Run backend Python commands inside the `AI-Linux-Assistant` conda environment.

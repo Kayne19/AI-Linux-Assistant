@@ -401,66 +401,75 @@ Return EXACTLY one JSON object in this shape:
 {
   "facts": [
     {
-      "fact_key": "",
-      "fact_value": "",
-      "source_type": "model",
-      "source_ref": "conversation",
-      "confidence": 0.0,
-      "evidence_quote": ""
+      "fact_key": "os.distribution",
+      "fact_value": "Debian 12",
+      "source_type": "user",
+      "source_ref": "user_question",
+      "confidence": 0.9,
+      "evidence_quote": "I'm running Debian 12"
     }
   ],
   "issues": [
     {
-      "title": "",
-      "category": "",
-      "summary": "",
-      "status": "open|resolved|unknown",
-      "source_type": "model",
-      "source_ref": "conversation",
-      "confidence": 0.0,
-      "evidence_quote": ""
+      "title": "GPU passthrough not working",
+      "category": "hardware",
+      "summary": "PCIe passthrough fails on boot with IOMMU error",
+      "status": "open",
+      "source_type": "user",
+      "source_ref": "user_question",
+      "confidence": 0.9,
+      "evidence_quote": "my GPU passthrough broke after the kernel update"
     }
   ],
   "attempts": [
     {
-      "action": "",
-      "command": "",
-      "outcome": "",
-      "status": "attempted|worked|failed|unknown",
-      "issue_title": "",
-      "source_type": "model",
-      "source_ref": "conversation",
-      "evidence_quote": ""
+      "action": "Restarted the networking service",
+      "command": "systemctl restart networking",
+      "outcome": "Did not fix the issue",
+      "status": "failed",
+      "issue_title": "Network connectivity lost",
+      "source_type": "user",
+      "source_ref": "user_question",
+      "evidence_quote": "I already tried restarting networking but it didn't help"
     }
   ],
   "constraints": [
     {
-      "constraint_key": "",
-      "constraint_value": "",
-      "source_type": "model",
-      "source_ref": "conversation",
-      "evidence_quote": ""
+      "constraint_key": "no_reboot",
+      "constraint_value": "Cannot reboot the machine right now",
+      "source_type": "user",
+      "source_ref": "user_question",
+      "evidence_quote": "I can't reboot right now"
     }
   ],
   "preferences": [
     {
-      "preference_key": "",
-      "preference_value": "",
-      "source_type": "model",
-      "source_ref": "conversation",
-      "evidence_quote": ""
+      "preference_key": "package_manager",
+      "preference_value": "Prefers apt over snap",
+      "source_type": "user",
+      "source_ref": "user_question",
+      "evidence_quote": "I'd rather use apt"
     }
   ],
   "session_summary": ""
 }
 
+source_type rules (CRITICAL — this controls whether memory is committed or discarded):
+- "user": the fact, preference, constraint, attempt, or issue was stated or clearly implied by the user. This is the DEFAULT for anything appearing in or derived from `user_question`. Most extracted items should be "user".
+- "assistant": the item originates from `assistant_response` with no user confirmation.
+- "model": use ONLY when the item is a pure inference not grounded in either the user or assistant text. This should be rare.
+
+confidence rules:
+- 0.9: the item is explicitly stated in the turn with a clear quote.
+- 0.8: the item is strongly implied or paraphrased from the turn.
+- 0.6-0.7: the item is a reasonable inference from context.
+- Below 0.6: do not extract — omit the item instead.
+
 Rules:
 - Extract only durable and reusable technical memory.
 - `recent_history` is provided only to resolve references like "that", "this", or "do it"; do not mine unrelated older facts from it unless they are clearly part of the same immediate exchange.
 - Prefer explicit user facts over guesses.
-- Facts, attempts, constraints, and preferences explicitly stated in `user_question` should usually use `source_type: "user"`.
-- Use `source_type: "assistant"` only when an item comes from `assistant_response` rather than the user.
-- Do not default everything to `model`; preserve whether the user or assistant actually stated it.
+- When the user states a fact, preference, constraint, or attempt, set `source_type` to `"user"` and `confidence` to 0.9.
 - Prefer extracting explicit user-stated attempts such as "I tried X", "I edited Y", "I restarted Z", or "that didn't help".
 - If a field is uncertain, omit it instead of inferring.
 - Do not invent versions, commands, outcomes, products, or hardware.

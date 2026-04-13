@@ -119,7 +119,7 @@ class OpenAICaller:
         if translated_tools:
             request_kwargs["tools"] = translated_tools
             request_kwargs["parallel_tool_calls"] = True
-        if temperature is not None:
+        if temperature is not None and not self.reasoning_effort:
             request_kwargs["temperature"] = temperature
         if max_output_tokens is not None:
             request_kwargs["max_output_tokens"] = max_output_tokens

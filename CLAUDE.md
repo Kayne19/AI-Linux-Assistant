@@ -2,6 +2,14 @@
 
 Use this file for shared workflow and doc routing when working in this repository. Keep subsystem detail in the dedicated markdown files.
 
+## Sub-Agent Model Preference
+
+- For read-only tasks (audits, exploration, research, doc review) dispatch sub-agents using the latest available Gemini model via the `mcp__ai-cli__run` tool. Google models are preferred for these tasks to conserve Claude tokens.
+- Use Claude models for tasks that require code generation, editing, or any writes to the codebase.
+- Always instruct read-only Gemini agents explicitly that they must not modify files.
+- **Parallel agent rate limits:** Running 5+ Gemini agents simultaneously will hit capacity limits (`429 MODEL_CAPACITY_EXHAUSTED`). The agents retry with backoff and eventually complete, but total wall time can stretch to 30+ minutes. Expect this and use `mcp__ai-cli__wait` with a generous timeout (600s+), or poll with `mcp__ai-cli__list_processes` / `mcp__ai-cli__get_result` instead of blocking. Stagger large batches if rate pressure is a concern.
+- **Rate limits are per model tier:** Quota is shared across all concurrent agents using the same model (e.g. all `gemini-3.1-pro-preview` agents share one bucket). If rate pressure is high, spreading agents across tiers (e.g. some on `gemini-3.1-pro-preview`, others on `gemini-3-flash-preview`) can reduce contention.
+
 ## Core Workflow
 
 - Run backend Python commands inside the `AI-Linux-Assistant` conda environment.
@@ -81,3 +89,35 @@ cd Back-end && python scripts/db/init_postgres_schema.py
 - Keep default role/provider/model configuration centralized in [Back-end/app/config/settings.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/config/settings.py).
 - Retrieval runtime/index configuration lives in [Back-end/app/retrieval/config.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/config.py).
 - Retrieval device placement may be overridden with `VECTORDB_EMBED_DEVICE` and `VECTORDB_RERANK_DEVICE`.
+
+## Documentation Maintenance
+
+Important maintained docs:
+
+- [README.md](/home/kayne19/projects/AI-Linux-Assistant/README.md)
+- [Back-end/app/auth/AUTHENTICATION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/auth/AUTHENTICATION.md)
+- [Back-end/app/ARCHITECTURE.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/ARCHITECTURE.md)
+- [Back-end/app/orchestration/RUNS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/RUNS.md)
+- [Back-end/app/persistence/MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence/MEMORY.md)
+- [Back-end/app/retrieval/RETRIEVAL.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/RETRIEVAL.md)
+- [Back-end/app/ingestion/INGESTION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/ingestion/INGESTION.md)
+- [Back-end/app/API.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/API.md)
+- [Back-end/app/streaming/STREAMING.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/streaming/STREAMING.md)
+- [Back-end/app/agents/AGENT_ROLES.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/AGENT_ROLES.md)
+- [Back-end/app/providers/PROVIDERS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/providers/PROVIDERS.md)
+- [Front-end/FRONTEND.md](/home/kayne19/projects/AI-Linux-Assistant/Front-end/FRONTEND.md)
+- [Back-end/evals/README.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/evals/README.md)
+
+If code changes affect one of those surfaces, updating the relevant markdown is part of the implementation.
+
+## Commits
+
+- For substantial completed changes or multi-step implemented plans, make a git commit unless the user explicitly says not to.
+- Generate one short, human-readable commit title for the whole commit, such as a one-to-three word summary.
+- Write that title once at the top of the commit message, then follow it with these sections:
+  - `Added: ...`
+  - `Removed: ...`
+  - `Fixed: ...`
+  - `Implemented: ...`
+- Use `none` for sections that do not apply.
+- Do NOT add a `Co-Authored-By` trailer or any attribution line to commit messages.
