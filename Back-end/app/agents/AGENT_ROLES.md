@@ -20,6 +20,19 @@ The system employs several specialized agents to handle specific phases of the r
 - **Memory Resolver**: Merges extracted candidates with existing project memory, resolving conflicts and updating stale information.
 - **Summarizers**: Create concise representations of conversation history or retrieved documents to maintain context efficiency.
 
+## Regular Responder Mini-Protocol
+
+The normal responder now borrows MAGI's search discipline without becoming MAGI.
+
+- the router owns a lightweight `DECIDE_NEXT_STEP -> SEARCH -> EVALUATE_TOOL_RESULT -> FINALIZE_RESPONSE` mini-protocol for non-MAGI turns
+- before any regular-responder retrieval, the model must choose `answer_now`, `ask_focused_follow_up_questions`, or `search`
+- search decisions must include explicit justification for the router, including `requested_evidence_goal`, `unresolved_gap`, and why the current evidence is insufficient
+- `gap_type` may optionally identify a `procedural_doc_gap`, `environment_fact_gap`, or `confirmation_gap`
+- after each responder search, the model must evaluate what new evidence was added, what gap was reduced if any, and whether another search is still justified
+- the router and evidence pool remain the authority on whether another search is allowed; the evaluation step is advisory for reasoning clarity
+- when the unresolved gap is mainly about the user's real environment, the responder should prefer 1 to 3 tightly related follow-up questions instead of speculative extra retrieval
+- repeated same-scope responder retrieval requires a named `repeat_reason`
+
 ## Magi System (Multi-Agent Deliberation)
 
 The Magi system is an alternative response mode that uses a council of models to deliberate on complex issues. It is toggled via the `magi` flag in the API.
@@ -70,7 +83,7 @@ Current MAGI rule:
 
 - soft exhaustion triggers `require_reason`
 - hard exhaustion triggers `block`
-- the normal responder uses the same evidence-pool machinery, but reaches `require_reason` more softly than MAGI
+- the normal responder uses the same evidence-pool machinery, but through its own router-owned mini-protocol and without changing MAGI's role contracts or prompts
 
 Current Historian fallback rule:
 

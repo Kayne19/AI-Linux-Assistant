@@ -759,7 +759,7 @@ def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
     database = FakeProgressiveDatabase()
     router = ModelRouter(
         database=database,
-        classifier=FakeClassifier(["debian"]),
+        classifier=FakeClassifier(["no_rag"]),
         context_agent=FakeContextAgent("install package"),
         history_summarizer=FakeHistorySummarizer(),
         context_summarizer=FakeContextSummarizer(summarized=False),
@@ -1307,127 +1307,461 @@ def test_router_responder_state_events_include_phase_and_details():
     }
 
 
-def test_router_regular_responder_protocol_removes_exhausted_search_tool():
-    class FakeEmptyDatabase:
-        def __init__(self):
-            self.calls = []
+class FakeSequentialSearchDatabase:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
 
-        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, requested_evidence_goal=None):
-            self.calls.append(
-                {
-                    "query": query,
-                    "sources": tuple(sources or []),
-                    "excluded_page_windows": list(excluded_page_windows or []),
-                    "excluded_block_keys": list(excluded_block_keys or []),
-                    "requested_evidence_goal": requested_evidence_goal,
-                }
-            )
-            return {
-                "context_text": "",
-                "selected_sources": [],
-                "merged_blocks": [],
-                "bundle_summaries": [],
-                "retrieval_metadata": {
-                    "anchor_count": 0,
-                    "anchor_pages": [],
-                    "fetched_neighbor_pages": [],
-                    "delivered_bundle_count": 0,
-                    "delivered_bundle_keys": [],
-                    "delivered_block_keys": [],
-                    "delivered_page_window_keys": [],
-                    "delivered_page_windows": [],
-                    "excluded_seen_count": 0,
-                    "skipped_bundle_count": 0,
-                },
+    def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, requested_evidence_goal=None):
+        self.calls.append(
+            {
+                "query": query,
+                "sources": tuple(sources or []),
+                "excluded_page_windows": list(excluded_page_windows or []),
+                "excluded_block_keys": list(excluded_block_keys or []),
+                "requested_evidence_goal": requested_evidence_goal,
             }
+        )
+        if not self.results:
+            raise AssertionError("No fake retrieval results remaining")
+        return self.results.pop(0)
 
+
+def _retrieval_result_with_evidence(text, *, source="Debian.pdf", page=4, selected_sources=None):
+    selected_sources = list(selected_sources if selected_sources is not None else [source])
+    return {
+        "context_text": text,
+        "selected_sources": selected_sources,
+        "merged_blocks": [],
+        "bundle_summaries": [],
+        "retrieval_metadata": {
+            "anchor_count": 1,
+            "anchor_pages": [page],
+            "fetched_neighbor_pages": [],
+            "delivered_bundle_count": 1,
+            "delivered_bundle_keys": [f"bundle:{source}:{page}-{page}:anchor:r{page}"],
+            "delivered_block_keys": [f"block:{source}:{page}-{page}"],
+            "delivered_page_window_keys": [f"window:{source}:{page}-{page}"],
+            "delivered_page_windows": [{"key": f"window:{source}:{page}-{page}", "source": source, "page_start": page, "page_end": page}],
+            "excluded_seen_count": 0,
+            "skipped_bundle_count": 0,
+        },
+    }
+
+
+def _retrieval_result_without_evidence():
+    return {
+        "context_text": "",
+        "selected_sources": [],
+        "merged_blocks": [],
+        "bundle_summaries": [],
+        "retrieval_metadata": {
+            "anchor_count": 0,
+            "anchor_pages": [],
+            "fetched_neighbor_pages": [],
+            "delivered_bundle_count": 0,
+            "delivered_bundle_keys": [],
+            "delivered_block_keys": [],
+            "delivered_page_window_keys": [],
+            "delivered_page_windows": [],
+            "excluded_seen_count": 0,
+            "skipped_bundle_count": 0,
+        },
+    }
+
+
+def test_router_regular_responder_same_scope_repeat_requires_repeat_reason():
+    database = FakeSequentialSearchDatabase(
+        [
+            _retrieval_result_with_evidence("install_component troubleshoot_failure Debian package steps", source="Debian.pdf", page=4),
+        ]
+    )
     protocol_worker = FakeProtocolWorker(
         start_result=ProviderStepResult(
-            tool_calls=[ProviderToolCall(name="search_rag_database", arguments={"query": "repeat me", "relevant_documents": ["debian"]}, call_id="call_1")],
+            tool_calls=[
+                ProviderToolCall(
+                    name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
+                    arguments={
+                        "action": "search",
+                        "query": "install package steps",
+                        "relevant_documents": ["debian"],
+                        "requested_evidence_goal": "install_component",
+                        "unresolved_gap": "missing package install step",
+                        "gap_type": "procedural_doc_gap",
+                        "why_current_evidence_is_insufficient": "the exact install step is not grounded yet",
+                    },
+                    call_id="call_decide_1",
+                )
+            ],
             session_state={"session": "start"},
         ),
         continue_results=[
             ProviderStepResult(
-                tool_calls=[ProviderToolCall(name="search_rag_database", arguments={"query": "repeat me", "relevant_documents": ["debian"]}, call_id="call_2")],
-                session_state={"session": "repeat"},
+                tool_calls=[
+                    ProviderToolCall(
+                        name=ModelRouter.RESPONDER_EVALUATION_TOOL_NAME,
+                        arguments={
+                            "new_fact_or_evidence": "The result added Debian install steps.",
+                            "reduced_unresolved_gap": "missing package install step",
+                            "progress_assessment": "partial_progress",
+                            "another_search_justified": True,
+                            "remaining_unresolved_gap": "still need the exact variant for this package",
+                        },
+                        call_id="call_eval_1",
+                    )
+                ],
+                session_state={"session": "eval_1"},
             ),
-            ProviderStepResult(output_text="final answer after bounded search", session_state={"session": "final"}),
-        ],
-    )
-    router = ModelRouter(
-        database=FakeEmptyDatabase(),
-        classifier=FakeClassifier(["no_rag"]),
-        context_agent=FakeContextAgent(""),
-        history_summarizer=FakeHistorySummarizer(),
-        context_summarizer=FakeContextSummarizer(summarized=False),
-        responder=protocol_worker,
-        memory_store=None,
-    )
-
-    turn = router.run_turn("question", stream_response=False)
-
-    assert turn.response == "final answer after bounded search"
-    assert "search_rag_database" in protocol_worker.continue_calls[0]["tool_names"]
-    assert "search_rag_database" not in protocol_worker.continue_calls[1]["tool_names"]
-    assert any(name == "search_conversation_history" for name in protocol_worker.continue_calls[1]["tool_names"])
-    assert "RESPONDER_EVALUATE_TOOL_RESULT" in turn.state_trace
-
-
-def test_router_regular_responder_protocol_finalizes_when_tool_budget_is_spent():
-    class FakeSearchDatabase:
-        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, requested_evidence_goal=None):
-            del query, sources, excluded_page_windows, excluded_block_keys, requested_evidence_goal
-            return {
-                "context_text": "retrieved context",
-                "selected_sources": ["Debian.pdf"],
-                "merged_blocks": [],
-                "bundle_summaries": [],
-                "retrieval_metadata": {
-                    "anchor_count": 1,
-                    "anchor_pages": [4],
-                    "fetched_neighbor_pages": [],
-                    "delivered_bundle_count": 1,
-                    "delivered_bundle_keys": ["bundle:Debian.pdf:4-4:anchor:r1"],
-                    "delivered_block_keys": ["block:Debian.pdf:4-4"],
-                    "delivered_page_window_keys": ["window:Debian.pdf:4-4"],
-                    "delivered_page_windows": [{"key": "window:Debian.pdf:4-4", "source": "Debian.pdf", "page_start": 4, "page_end": 4}],
-                    "excluded_seen_count": 0,
-                    "skipped_bundle_count": 0,
-                },
-            }
-
-    protocol_worker = FakeProtocolWorker(
-        start_result=ProviderStepResult(
-            tool_calls=[ProviderToolCall(name="search_rag_database", arguments={"query": "install package", "relevant_documents": ["debian"]}, call_id="call_1")],
-            session_state={"session": "start"},
-        ),
-        continue_results=[
+            ProviderStepResult(
+                tool_calls=[
+                    ProviderToolCall(
+                        name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
+                        arguments={
+                            "action": "search",
+                            "query": "install package steps",
+                            "relevant_documents": ["debian"],
+                            "requested_evidence_goal": "install_component",
+                            "unresolved_gap": "missing package install step",
+                            "gap_type": "procedural_doc_gap",
+                            "why_current_evidence_is_insufficient": "need one more manual pass for exact variant",
+                        },
+                        call_id="call_decide_2",
+                    )
+                ],
+                session_state={"session": "decide_2"},
+            ),
             ProviderStepResult(output_text="final answer after forced finalize", session_state={"session": "final"}),
         ],
     )
     router = ModelRouter(
-        database=FakeSearchDatabase(),
-        classifier=FakeClassifier(["debian"]),
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
         context_agent=FakeContextAgent("install package"),
         history_summarizer=FakeHistorySummarizer(),
         context_summarizer=FakeContextSummarizer(summarized=False),
         responder=protocol_worker,
-        response_tool_rounds=1,
         memory_store=None,
     )
 
     turn = router.run_turn("How do I install it?", stream_response=False)
 
     assert turn.response == "final answer after forced finalize"
-    assert protocol_worker.continue_calls[0]["tool_names"] == []
-    assert protocol_worker.continue_calls[0]["enable_web_search"] is False
+    assert len(database.calls) == 1
+    assert protocol_worker.continue_calls[0]["tool_names"] == [ModelRouter.RESPONDER_EVALUATION_TOOL_NAME]
+    assert protocol_worker.continue_calls[1]["tool_names"] == [ModelRouter.RESPONDER_DECISION_TOOL_NAME]
+    assert protocol_worker.continue_calls[2]["tool_names"] == []
     assert any(
         event["type"] == "responder_state"
         and event["payload"]["state"] == "FINALIZE_RESPONSE"
-        and event["payload"]["details"]["reason"] == "tool_budget_exhausted"
+        and event["payload"]["details"]["reason"] == "search_justification_collapsed"
         for event in turn.tool_events
     )
-    assert "RESPONDER_FINALIZE_RESPONSE" in turn.state_trace
+
+
+def test_router_regular_responder_paraphrased_same_scope_retry_is_still_bounded():
+    database = FakeSequentialSearchDatabase(
+        [
+            _retrieval_result_with_evidence("verify_state troubleshoot_failure Debian service docs", source="Debian.pdf", page=5),
+        ]
+    )
+    protocol_worker = FakeProtocolWorker(
+        start_result=ProviderStepResult(
+            tool_calls=[
+                ProviderToolCall(
+                    name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
+                    arguments={
+                        "action": "search",
+                        "query": "check Debian service docs",
+                        "relevant_documents": ["debian"],
+                        "requested_evidence_goal": "verify_state",
+                        "unresolved_gap": "need the service state check",
+                        "gap_type": "confirmation_gap",
+                        "why_current_evidence_is_insufficient": "the current docs do not confirm the exact state check",
+                    },
+                    call_id="call_decide_1",
+                )
+            ],
+            session_state={"session": "start"},
+        ),
+        continue_results=[
+            ProviderStepResult(
+                tool_calls=[
+                    ProviderToolCall(
+                        name=ModelRouter.RESPONDER_EVALUATION_TOOL_NAME,
+                        arguments={
+                            "new_fact_or_evidence": "The result added Debian service verification material.",
+                            "reduced_unresolved_gap": "need the service state check",
+                            "progress_assessment": "partial_progress",
+                            "another_search_justified": True,
+                            "remaining_unresolved_gap": "still need one confirming variant",
+                        },
+                        call_id="call_eval_1",
+                    )
+                ],
+                session_state={"session": "eval_1"},
+            ),
+            ProviderStepResult(
+                tool_calls=[
+                    ProviderToolCall(
+                        name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
+                        arguments={
+                            "action": "search",
+                            "query": "how do I confirm the service is up on Debian",
+                            "relevant_documents": ["debian"],
+                            "requested_evidence_goal": "verify_state",
+                            "unresolved_gap": "need the service state check",
+                            "gap_type": "confirmation_gap",
+                            "why_current_evidence_is_insufficient": "I want a confirming variant from the same scope",
+                        },
+                        call_id="call_decide_2",
+                    )
+                ],
+                session_state={"session": "decide_2"},
+            ),
+            ProviderStepResult(output_text="final answer after bounded paraphrase retry", session_state={"session": "final"}),
+        ],
+    )
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent("check service state"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=protocol_worker,
+        memory_store=None,
+    )
+
+    turn = router.run_turn("How do I confirm the service is up?", stream_response=False)
+
+    assert turn.response == "final answer after bounded paraphrase retry"
+    assert len(database.calls) == 1
+    assert protocol_worker.continue_calls[2]["tool_names"] == []
+    assert any(
+        event["type"] == "responder_state"
+        and event["payload"]["state"] == "FINALIZE_RESPONSE"
+        and event["payload"]["details"]["reason"] == "search_justification_collapsed"
+        for event in turn.tool_events
+    )
+
+
+def test_router_regular_responder_zero_progress_search_forces_finalization_after_evaluation():
+    database = FakeSequentialSearchDatabase([_retrieval_result_without_evidence()])
+    protocol_worker = FakeProtocolWorker(
+        start_result=ProviderStepResult(
+            tool_calls=[
+                ProviderToolCall(
+                    name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
+                    arguments={
+                        "action": "search",
+                        "query": "install package",
+                        "relevant_documents": ["debian"],
+                        "requested_evidence_goal": "install_component",
+                        "unresolved_gap": "missing install steps",
+                        "gap_type": "procedural_doc_gap",
+                        "why_current_evidence_is_insufficient": "the current evidence has no exact install step",
+                    },
+                    call_id="call_decide_1",
+                )
+            ],
+            session_state={"session": "start"},
+        ),
+        continue_results=[
+            ProviderStepResult(
+                tool_calls=[
+                    ProviderToolCall(
+                        name=ModelRouter.RESPONDER_EVALUATION_TOOL_NAME,
+                        arguments={
+                            "new_fact_or_evidence": "none",
+                            "reduced_unresolved_gap": "",
+                            "progress_assessment": "no_meaningful_progress",
+                            "another_search_justified": True,
+                            "remaining_unresolved_gap": "missing install steps",
+                        },
+                        call_id="call_eval_1",
+                    )
+                ],
+                session_state={"session": "eval_1"},
+            ),
+            ProviderStepResult(output_text="final answer after no progress", session_state={"session": "final"}),
+        ],
+    )
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent("install package"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=protocol_worker,
+        memory_store=None,
+    )
+
+    turn = router.run_turn("How do I install it?", stream_response=False)
+
+    assert turn.response == "final answer after no progress"
+    assert protocol_worker.continue_calls[0]["tool_names"] == [ModelRouter.RESPONDER_EVALUATION_TOOL_NAME]
+    assert protocol_worker.continue_calls[1]["tool_names"] == []
+    assert "RESPONDER_EVALUATE_TOOL_RESULT" in turn.state_trace
+    assert any(
+        event["type"] == "responder_state"
+        and event["payload"]["state"] == "FINALIZE_RESPONSE"
+        and event["payload"]["details"]["reason"] == "search_no_progress"
+        for event in turn.tool_events
+    )
+
+
+def test_router_regular_responder_low_usefulness_does_not_force_immediate_finalization():
+    database = FakeSequentialSearchDatabase(
+        [
+            _retrieval_result_with_evidence("install_component", source="Debian.pdf", page=4, selected_sources=[]),
+            _retrieval_result_with_evidence("install_component exact package example", source="Debian-Guide-Alt.pdf", page=9),
+        ]
+    )
+    protocol_worker = FakeProtocolWorker(
+        start_result=ProviderStepResult(
+            tool_calls=[
+                ProviderToolCall(
+                    name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
+                    arguments={
+                        "action": "search",
+                        "query": "install package",
+                        "relevant_documents": ["debian"],
+                        "requested_evidence_goal": "install_component",
+                        "unresolved_gap": "missing exact package example",
+                        "gap_type": "procedural_doc_gap",
+                        "why_current_evidence_is_insufficient": "need an exact grounded example",
+                    },
+                    call_id="call_decide_1",
+                )
+            ],
+            session_state={"session": "start"},
+        ),
+        continue_results=[
+            ProviderStepResult(
+                tool_calls=[
+                    ProviderToolCall(
+                        name=ModelRouter.RESPONDER_EVALUATION_TOOL_NAME,
+                        arguments={
+                            "new_fact_or_evidence": "The result added one install fragment.",
+                            "reduced_unresolved_gap": "missing exact package example",
+                            "progress_assessment": "partial_progress",
+                            "another_search_justified": True,
+                            "remaining_unresolved_gap": "still need an alternate grounded example",
+                        },
+                        call_id="call_eval_1",
+                    )
+                ],
+                session_state={"session": "eval_1"},
+            ),
+            ProviderStepResult(
+                tool_calls=[
+                    ProviderToolCall(
+                        name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
+                        arguments={
+                            "action": "search",
+                            "query": "alternate install package example",
+                            "relevant_documents": ["debian"],
+                            "requested_evidence_goal": "install_component",
+                            "unresolved_gap": "missing exact package example",
+                            "gap_type": "procedural_doc_gap",
+                            "why_current_evidence_is_insufficient": "need confirmation from an alternate source",
+                            "repeat_reason": "alternate_source_confirmation",
+                        },
+                        call_id="call_decide_2",
+                    )
+                ],
+                session_state={"session": "decide_2"},
+            ),
+            ProviderStepResult(
+                tool_calls=[
+                    ProviderToolCall(
+                        name=ModelRouter.RESPONDER_EVALUATION_TOOL_NAME,
+                        arguments={
+                            "new_fact_or_evidence": "The alternate source confirmed the install example.",
+                            "reduced_unresolved_gap": "missing exact package example",
+                            "progress_assessment": "meaningful_progress",
+                            "another_search_justified": False,
+                            "remaining_unresolved_gap": "",
+                            "suggested_repeat_reason": "alternate_source_confirmation",
+                        },
+                        call_id="call_eval_2",
+                    )
+                ],
+                session_state={"session": "eval_2"},
+            ),
+            ProviderStepResult(output_text="final answer after bounded low-usefulness retry", session_state={"session": "final"}),
+        ],
+    )
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent("install package"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=protocol_worker,
+        memory_store=None,
+    )
+
+    turn = router.run_turn("How do I install it?", stream_response=False)
+
+    assert turn.response == "final answer after bounded low-usefulness retry"
+    assert len(database.calls) == 2
+    assert protocol_worker.continue_calls[1]["tool_names"] == [ModelRouter.RESPONDER_DECISION_TOOL_NAME]
+    assert protocol_worker.continue_calls[2]["tool_names"] == [ModelRouter.RESPONDER_EVALUATION_TOOL_NAME]
+    assert protocol_worker.continue_calls[3]["tool_names"] == []
+    assert not any(
+        event["type"] == "responder_state"
+        and event["payload"]["state"] == "FINALIZE_RESPONSE"
+        and event["payload"]["details"]["reason"] == "search_no_progress"
+        for event in turn.tool_events
+    )
+
+
+def test_router_regular_responder_environment_gap_biases_to_follow_up_questions():
+    database = FakeSequentialSearchDatabase([_retrieval_result_with_evidence("should not be used")])
+    protocol_worker = FakeProtocolWorker(
+        start_result=ProviderStepResult(
+            tool_calls=[
+                ProviderToolCall(
+                    name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
+                    arguments={
+                        "action": "search",
+                        "query": "which bridge should I use",
+                        "relevant_documents": ["debian"],
+                        "requested_evidence_goal": "configure_access",
+                        "unresolved_gap": "need the user's actual bridge name and whether this is LAN-only",
+                        "gap_type": "environment_fact_gap",
+                        "why_current_evidence_is_insufficient": "the missing detail is the user's real network setup",
+                    },
+                    call_id="call_decide_1",
+                )
+            ],
+            session_state={"session": "start"},
+        ),
+        continue_results=[
+            ProviderStepResult(output_text="Is this LAN-only, and what is the actual bridge name?", session_state={"session": "final"}),
+        ],
+    )
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent("bridge configuration"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=protocol_worker,
+        memory_store=None,
+    )
+
+    turn = router.run_turn("How should I expose this service?", stream_response=False)
+
+    assert turn.response == "Is this LAN-only, and what is the actual bridge name?"
+    assert len(database.calls) == 0
+    assert protocol_worker.continue_calls[0]["tool_names"] == []
+    assert any(
+        event["type"] == "responder_state"
+        and event["payload"]["state"] == "FINALIZE_RESPONSE"
+        and event["payload"]["details"]["reason"] == "environment_fact_gap_prefers_follow_up"
+        for event in turn.tool_events
+    )
 
 
 # ---------------------------------------------------------------------------

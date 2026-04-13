@@ -197,11 +197,32 @@ const STREAM_STATUS_TEXT: Record<string, StatusEntry> = {
       "Checking the web",
     ],
   },
+  "responder:DECIDE_NEXT_STEP": {
+    label: "Deciding next step",
+    aliases: [
+      "Choosing the next move",
+      "Checking if more evidence is needed",
+    ],
+  },
   "responder:PROCESS_TOOL_CALLS": {
     label: "Using tools",
     aliases: [
       "Using tools",
       "Running tool calls",
+    ],
+  },
+  "responder:EVALUATE_TOOL_RESULT": {
+    label: "Evaluating evidence",
+    aliases: [
+      "Checking what changed",
+      "Reviewing search progress",
+    ],
+  },
+  "responder:FINALIZE_RESPONSE": {
+    label: "Finalizing response",
+    aliases: [
+      "Wrapping up",
+      "Answering with current evidence",
     ],
   },
   "responder:SUBMIT_TOOL_RESULTS": {

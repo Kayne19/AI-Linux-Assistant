@@ -9,6 +9,7 @@ from prompting.prompts import CHATBOT_SYSTEM_PROMPT
 class ResponseState(Enum):
     PREPARE_REQUEST = auto()
     REQUEST_MODEL = auto()
+    DECIDE_NEXT_STEP = auto()
     WEB_SEARCH = auto()
     PROCESS_TOOL_CALLS = auto()
     EVALUATE_TOOL_RESULT = auto()
@@ -107,6 +108,7 @@ class ResponseAgent:
         summarized_conversation_history=None,
         memory_snapshot_text="",
         *,
+        system_prompt=None,
         tools=None,
         enable_web_search=None,
         round_number=0,
@@ -119,10 +121,11 @@ class ResponseAgent:
         )
         self._set_state(ResponseState.PREPARE_REQUEST, {})
         invoke_cancel_check(self.cancel_check, "before_model_call")
+        prompt = system_prompt or self.chatbot_prompt
         step_result = call_with_optional_cancel_check(
             self.worker.start_text_step,
             cancel_check=self.cancel_check,
-            system_prompt=self.chatbot_prompt,
+            system_prompt=prompt,
             user_message=current_turn_content,
             history=summarized_conversation_history.recent_turns if summarized_conversation_history else [],
             tools=self.tools if tools is None else tools,
@@ -142,15 +145,17 @@ class ResponseAgent:
         session_state,
         tool_results,
         *,
+        system_prompt=None,
         tools=None,
         enable_web_search=None,
         round_number=1,
     ):
         invoke_cancel_check(self.cancel_check, "before_model_call")
+        prompt = system_prompt or self.chatbot_prompt
         step_result = call_with_optional_cancel_check(
             self.worker.continue_text_step,
             cancel_check=self.cancel_check,
-            system_prompt=self.chatbot_prompt,
+            system_prompt=prompt,
             session_state=session_state,
             tool_results=tool_results,
             tools=self.tools if tools is None else tools,

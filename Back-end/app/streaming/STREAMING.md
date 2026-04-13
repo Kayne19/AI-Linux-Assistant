@@ -202,10 +202,12 @@ Important detail:
 
 - the normal responder now runs as a router-owned bounded mini-protocol rather than a provider-owned internal tool loop
 - provider adapters supply one model step at a time; the router decides whether another tool-bearing step is allowed or whether the responder must finalize with tools disabled
+- the router now begins non-MAGI retrieval with an explicit `DECIDE_NEXT_STEP` responder sub-state before any fresh responder search runs
+- after each router-executed responder search, the router emits `EVALUATE_TOOL_RESULT` before any further responder search is considered
 - the normal responder still suppresses raw provider `text_delta` chunks during streaming-oriented runs
 - once the router-owned responder protocol finishes, it emits one finalized assistant `text_delta` payload into the shared frontend pacing path
 - this keeps normal chat streaming aligned with the Magi arbiter path and avoids partial-markdown or tool-round artifacts reaching the UI
-- responder sub-states such as `PREPARE_REQUEST`, `REQUEST_MODEL`, `PROCESS_TOOL_CALLS`, `EVALUATE_TOOL_RESULT`, `FINALIZE_RESPONSE`, and `COMPLETE` are emitted as `responder_state` events with structured `phase/state/details` payloads
+- responder sub-states such as `PREPARE_REQUEST`, `REQUEST_MODEL`, `DECIDE_NEXT_STEP`, `EVALUATE_TOOL_RESULT`, `FINALIZE_RESPONSE`, and `COMPLETE` are emitted as `responder_state` events with structured `phase/state/details` payloads
 - those sub-states are intentionally event-scoped rather than top-level router `state` rows, so the frontend can show them as nested execution detail under `GENERATE_RESPONSE`
 - other non-streaming execution events such as provider lifecycle, tool calls, retrieval activity, memory events, and naming events remain normal `event` rows and can be grouped beneath the active router state in debug views
 

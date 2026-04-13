@@ -103,10 +103,22 @@ _REPEAT_REASON_ALIASES = {
 }
 
 ALLOWED_REPEAT_REASONS = frozenset(_REPEAT_REASON_ALIASES.values())
+ALLOWED_GAP_TYPES = frozenset(
+    {
+        "procedural_doc_gap",
+        "environment_fact_gap",
+        "confirmation_gap",
+    }
+)
 
 
 def normalize_repeat_reason(reason: str) -> str:
     return _REPEAT_REASON_ALIASES.get(_normalize_text(reason).replace(" ", "_"), "")
+
+
+def normalize_gap_type(gap_type: str) -> str:
+    normalized = _normalize_text(gap_type).replace(" ", "_")
+    return normalized if normalized in ALLOWED_GAP_TYPES else ""
 
 
 @dataclass(frozen=True)
@@ -115,6 +127,7 @@ class EvidenceScope:
     searchable_labels: tuple[str, ...]
     requested_evidence_goal: str = ""
     unresolved_issue: str = ""
+    gap_type: str = ""
     scope_anchor: str = ""
 
 
@@ -123,18 +136,23 @@ def build_evidence_scope(
     *,
     requested_evidence_goal: str = "",
     unresolved_issue: str = "",
+    gap_type: str = "",
     normalized_query: str = "",
 ) -> EvidenceScope:
     labels = tuple(sorted(searchable_labels or []))
     goal = normalize_evidence_goal(requested_evidence_goal)
     issue = _normalize_text(unresolved_issue).replace(" ", "_")
+    gap = normalize_gap_type(gap_type)
     anchor = goal or issue or _normalize_text(normalized_query).replace(" ", "_") or "general"
+    if gap:
+        anchor = f"{gap}:{anchor}"
     labels_part = ",".join(labels) or "all"
     return EvidenceScope(
         scope_key=f"{labels_part}::{anchor}",
         searchable_labels=labels,
         requested_evidence_goal=goal,
         unresolved_issue=issue,
+        gap_type=gap,
         scope_anchor=anchor,
     )
 
@@ -144,12 +162,14 @@ def build_query_fingerprint(
     searchable_labels: list[str],
     requested_evidence_goal: str = "",
     unresolved_issue: str = "",
+    gap_type: str = "",
 ) -> str:
     payload = {
         "query": normalized_query or "",
         "labels": sorted(searchable_labels or []),
         "goal": normalize_evidence_goal(requested_evidence_goal),
         "unresolved_issue": _normalize_text(unresolved_issue),
+        "gap_type": normalize_gap_type(gap_type),
     }
     return _sha1_hex(json.dumps(payload, sort_keys=True))
 
@@ -185,6 +205,7 @@ class QueryRecord:
     caller_phase: str = ""
     caller_round: int = 0
     unresolved_issue: str = ""
+    gap_type: str = ""
     requested_evidence_goal: str = ""
     repeat_reason: str = ""
     usefulness: str = ""
@@ -337,20 +358,39 @@ class EvidencePool:
     # Scope helpers
     # ------------------------------------------------------------------
 
-    def _scope(self, searchable_labels, *, requested_evidence_goal="", unresolved_issue="", normalized_query="") -> EvidenceScope:
+    def _scope(
+        self,
+        searchable_labels,
+        *,
+        requested_evidence_goal="",
+        unresolved_issue="",
+        gap_type="",
+        normalized_query="",
+    ) -> EvidenceScope:
         return build_evidence_scope(
             list(searchable_labels or []),
             requested_evidence_goal=requested_evidence_goal,
             unresolved_issue=unresolved_issue,
+            gap_type=gap_type,
             normalized_query=normalized_query,
         )
 
-    def _scope_key(self, caller_role: str, searchable_labels: list[str], *, requested_evidence_goal="", unresolved_issue="", normalized_query="") -> str:
+    def _scope_key(
+        self,
+        caller_role: str,
+        searchable_labels: list[str],
+        *,
+        requested_evidence_goal="",
+        unresolved_issue="",
+        gap_type="",
+        normalized_query="",
+    ) -> str:
         del caller_role
         return self._scope(
             searchable_labels,
             requested_evidence_goal=requested_evidence_goal,
             unresolved_issue=unresolved_issue,
+            gap_type=gap_type,
             normalized_query=normalized_query,
         ).scope_key
 
@@ -481,6 +521,7 @@ class EvidencePool:
         caller_phase: str = "",
         caller_round: int = 0,
         unresolved_issue: str = "",
+        gap_type: str = "",
         requested_evidence_goal: str = "",
         repeat_reason: str = "",
     ) -> QueryRecord:
@@ -489,6 +530,7 @@ class EvidencePool:
             searchable_labels,
             requested_evidence_goal=requested_evidence_goal,
             unresolved_issue=unresolved_issue,
+            gap_type=gap_type,
             normalized_query=normalized,
         )
         qfp = build_query_fingerprint(
@@ -496,6 +538,7 @@ class EvidencePool:
             searchable_labels,
             requested_evidence_goal=requested_evidence_goal,
             unresolved_issue=unresolved_issue,
+            gap_type=gap_type,
         )
         record = QueryRecord(
             query_fingerprint=qfp,
@@ -507,6 +550,7 @@ class EvidencePool:
             caller_phase=caller_phase,
             caller_round=caller_round,
             unresolved_issue=_normalize_text(unresolved_issue),
+            gap_type=normalize_gap_type(gap_type),
             requested_evidence_goal=scope.requested_evidence_goal,
             repeat_reason=normalize_repeat_reason(repeat_reason),
         )
@@ -593,12 +637,15 @@ class EvidencePool:
         repeat_reason: str = "",
         requested_evidence_goal: str = "",
         unresolved_issue: str = "",
+        gap_type: str = "",
+        strict_repeat_reason: bool = False,
     ) -> GateDecision:
         normalized = _normalize_text(raw_query)
         scope = self._scope(
             searchable_labels,
             requested_evidence_goal=requested_evidence_goal,
             unresolved_issue=unresolved_issue,
+            gap_type=gap_type,
             normalized_query=normalized,
         )
         qfp = build_query_fingerprint(
@@ -606,6 +653,7 @@ class EvidencePool:
             searchable_labels,
             requested_evidence_goal=requested_evidence_goal,
             unresolved_issue=unresolved_issue,
+            gap_type=gap_type,
         )
         repeated_scope = self.scope_state.scope_query_counts.get(scope.scope_key, 0) > 0
         exact_query_seen = qfp in self._known_query_fingerprints
@@ -637,6 +685,20 @@ class EvidencePool:
                 scope_exhausted=True,
                 blocked_reason=reason,
                 exhaustion_level="hard",
+                scope_key=scope.scope_key,
+            )
+
+        if strict_repeat_reason and repeated_scope:
+            reason = f"same scope repeat requires repeat_reason for {scope.scope_key}"
+            self.scope_state.last_require_reason = reason
+            self.scope_state.last_gate_action = GATE_REQUIRE_REASON
+            return GateDecision(
+                action=GATE_REQUIRE_REASON,
+                allow_search=False,
+                requires_reason=True,
+                scope_exhausted=soft_exhausted,
+                blocked_reason=reason,
+                exhaustion_level="soft" if soft_exhausted else "",
                 scope_key=scope.scope_key,
             )
 

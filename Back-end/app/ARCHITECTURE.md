@@ -45,7 +45,11 @@ Current regular-chat rule:
 
 - the normal responder now runs as a router-owned bounded protocol
 - provider adapters return a single model step at a time
-- the router decides whether tools stay visible, whether retrieval remains allowed, and when the responder must finalize with tools disabled
+- before any regular-responder retrieval, the router now requires a named responder decision step that chooses `answer_now`, `ask_focused_follow_up_questions`, or `search`
+- search decisions must carry explicit justification fields such as `requested_evidence_goal`, `unresolved_gap`, and `why_current_evidence_is_insufficient`; `gap_type` may further distinguish procedural-doc, environment-fact, and confirmation gaps
+- after each router-executed responder search, the router requires a responder evaluation step before any further search is considered
+- repeated same-scope responder retrieval now requires a named `repeat_reason`; vague same-scope re-querying is not allowed
+- the router decides whether retrieval remains allowed and when the responder must finalize with tools disabled
 - Magi remains separately bounded by its explicit deliberation phases and keeps the shared tool-result text contract unchanged
 
 ### 1a. Durable Run State Owns Concurrency Policy
@@ -209,6 +213,7 @@ Evidence pool responsibilities (router-owned):
 - score usefulness of returned evidence as `high`, `medium`, `low`, or `zero`
 - track soft/hard scope exhaustion from repeated low-value outcomes
 - gate repeated same-scope retrieval for both the normal responder and MAGI via `allow`, `allow_net_new_only`, `require_reason`, or `block`
+- support a stricter router-owned repeat-reason requirement for the normal responder mini-protocol without changing MAGI's own role contracts
 - emit `evidence_pool_update` after every retrieval so the stream can reflect coverage state
 - build a short `EVIDENCE POOL SUMMARY` block injected into MAGI role prompts
 

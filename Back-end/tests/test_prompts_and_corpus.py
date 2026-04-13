@@ -39,6 +39,11 @@ def test_chatbot_prompt_uses_updated_grounded_response_shape():
     assert "prefer evidence that materially advances the active subtask" in CHATBOT_SYSTEM_PROMPT
     assert "set an internal requested_evidence_goal before repeating database retrieval" in CHATBOT_SYSTEM_PROMPT
     assert "provide a repeat_reason instead of brute-force re-querying the same scope" in CHATBOT_SYSTEM_PROMPT
+    assert "make the next-step decision explicit before any fresh retrieval" in CHATBOT_SYSTEM_PROMPT
+    assert "answer now, ask focused follow-up questions, or search" in CHATBOT_SYSTEM_PROMPT
+    assert "procedural_doc_gap, environment_fact_gap, or confirmation_gap" in CHATBOT_SYSTEM_PROMPT
+    assert "prefer 1 to 3 tightly related follow-up questions over speculative extra retrieval" in CHATBOT_SYSTEM_PROMPT
+    assert "explicitly evaluate what new evidence was added" in CHATBOT_SYSTEM_PROMPT
     assert "TROUBLESHOOTING DISCIPLINE (MANDATORY)" in CHATBOT_SYSTEM_PROMPT
     assert "Do not treat the first plausible branch as proven." in CHATBOT_SYSTEM_PROMPT
     assert "Good troubleshooting is eliminating wrong branches quickly." in CHATBOT_SYSTEM_PROMPT

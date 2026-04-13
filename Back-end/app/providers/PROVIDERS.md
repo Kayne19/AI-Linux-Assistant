@@ -33,4 +33,5 @@ Current responder transport rule:
 
 - provider callers may still expose legacy convenience helpers that internally loop until tool calls stop
 - the regular chatbot path should prefer the single-step transport methods so the router owns the bounded responder protocol
+- those single-step calls must be sufficient for the router to run internal responder decision/evaluation phases before or after router-executed retrieval
 - Magi keeps its existing role-level tool-loop contract and shared tool text contract
