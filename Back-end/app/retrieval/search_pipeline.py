@@ -3,7 +3,7 @@ import re
 from collections import Counter, defaultdict
 
 from orchestration.routing_registry import get_aliases_for_label
-from retrieval.formatter import format_context_blocks, merge_context_chunks
+from retrieval.formatter import format_context_blocks, merge_context_chunks, serialize_context_blocks
 from utils.debug_utils import debug_print
 
 
@@ -109,11 +109,15 @@ class RetrievalSearchPipeline:
             boosts[src] = score / (len(query_tokens) + 1.0)
         return boosts
 
-    def retrieve_context(self, query, sources):
+    def retrieve_context_result(self, query, sources):
         try:
             self.store.open_table()
         except Exception:
-            return "Error: Database not initialized."
+            return {
+                "context_text": "Error: Database not initialized.",
+                "selected_sources": [],
+                "merged_blocks": [],
+            }
 
         debug_print(f"\n🔍 Searching manual for: '{query}'...")
         self._emit_event(
@@ -140,7 +144,11 @@ class RetrievalSearchPipeline:
 
         if not candidates:
             self._emit_event("retrieval_no_results", {"query": query})
-            return ""
+            return {
+                "context_text": "",
+                "selected_sources": [],
+                "merged_blocks": [],
+            }
 
         debug_print(f"   - Reranking {len(candidates)} chunks...")
         self._emit_event("retrieval_reranking", {"count": len(candidates)})
@@ -218,6 +226,7 @@ class RetrievalSearchPipeline:
             final_results = expanded
 
         merged_results = merge_context_chunks(final_results)
+        merged_blocks = serialize_context_blocks(merged_results)
         context_text, selected_sources = format_context_blocks(merged_results)
         self._emit_event(
             "retrieval_complete",
@@ -226,4 +235,11 @@ class RetrievalSearchPipeline:
         debug_print(
             f"   (Selected top {len(merged_results)} merged blocks from: {', '.join(selected_sources)}...)"
         )
-        return context_text
+        return {
+            "context_text": context_text,
+            "selected_sources": selected_sources,
+            "merged_blocks": merged_blocks,
+        }
+
+    def retrieve_context(self, query, sources):
+        return self.retrieve_context_result(query, sources)["context_text"]

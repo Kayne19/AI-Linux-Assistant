@@ -58,7 +58,7 @@ function parseTimeMs(value?: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
+export function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -161,6 +161,65 @@ function summarizeGenericEventPayload(event: RunEvent): string {
     case "tool_error":
       return [
         typeof payload.name === "string" ? payload.name : "",
+        typeof payload.error === "string" ? payload.error : "",
+      ].filter(Boolean).join(" • ");
+    case "retrieval_search_started":
+      return [
+        typeof payload.query === "string" && payload.query ? payload.query : "",
+        Array.isArray(payload.sources) && payload.sources.length > 0 ? `${payload.sources.length} source filter${payload.sources.length === 1 ? "" : "s"}` : "",
+      ].filter(Boolean).join(" • ");
+    case "retrieval_candidates_found":
+      return [
+        typeof payload.count === "number" ? `${payload.count} candidate${payload.count === 1 ? "" : "s"}` : "",
+        typeof payload.initial_fetch === "number" ? `fetch=${payload.initial_fetch}` : "",
+      ].filter(Boolean).join(" • ");
+    case "retrieval_sources_filtered":
+      return [
+        typeof payload.count === "number" ? `${payload.count} remaining` : "",
+        Array.isArray(payload.sources) ? payload.sources.join(", ") : "",
+      ].filter(Boolean).join(" • ");
+    case "retrieval_reranking":
+      return typeof payload.count === "number" ? `${payload.count} candidate${payload.count === 1 ? "" : "s"}` : "reranking";
+    case "retrieval_source_boosting":
+      return typeof payload.sources === "number" ? `${payload.sources} source profile${payload.sources === 1 ? "" : "s"}` : "source boosting";
+    case "retrieval_expanding":
+      return [
+        typeof payload.neighbor_pages === "number" ? `neighbors=${payload.neighbor_pages}` : "",
+        typeof payload.max_expanded === "number" ? `max=${payload.max_expanded}` : "",
+      ].filter(Boolean).join(" • ");
+    case "retrieval_complete":
+      return [
+        typeof payload.merged_blocks === "number" ? `${payload.merged_blocks} merged block${payload.merged_blocks === 1 ? "" : "s"}` : "",
+        Array.isArray(payload.selected_sources) ? payload.selected_sources.join(", ") : "",
+      ].filter(Boolean).join(" • ");
+    case "memory_loaded":
+      return [
+        typeof payload.chars === "number" ? `${payload.chars} chars` : "",
+        payload.has_memory === true ? "loaded" : "empty",
+      ].filter(Boolean).join(" • ");
+    case "memory_extracted":
+      return [
+        typeof payload.facts === "number" ? `facts=${payload.facts}` : "",
+        typeof payload.issues === "number" ? `issues=${payload.issues}` : "",
+        typeof payload.attempts === "number" ? `attempts=${payload.attempts}` : "",
+        typeof payload.constraints === "number" ? `constraints=${payload.constraints}` : "",
+        typeof payload.preferences === "number" ? `preferences=${payload.preferences}` : "",
+      ].filter(Boolean).join(" • ");
+    case "memory_resolved":
+    case "memory_committed": {
+      const committed = isObjectRecord(payload.committed) ? payload.committed : {};
+      return [
+        typeof committed.facts === "number" ? `facts=${committed.facts}` : "",
+        typeof committed.issues === "number" ? `issues=${committed.issues}` : "",
+        typeof payload.candidates === "number" ? `candidates=${payload.candidates}` : "",
+        typeof payload.conflicts === "number" ? `conflicts=${payload.conflicts}` : "",
+      ].filter(Boolean).join(" • ");
+    }
+    case "memory_skipped":
+      return typeof payload.reason === "string" ? payload.reason : "skipped";
+    case "memory_error":
+      return [
+        typeof payload.phase === "string" ? payload.phase : "",
         typeof payload.error === "string" ? payload.error : "",
       ].filter(Boolean).join(" • ");
     case "auto_name_scheduled":

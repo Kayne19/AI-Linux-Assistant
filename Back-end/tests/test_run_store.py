@@ -740,3 +740,49 @@ def test_run_store_can_complete_auto_name_runs_without_messages():
     assert terminal is not None
     assert terminal.type == "done"
     assert terminal.payload_json["debug"]["state_trace"] == ["AUTO_NAME", "DONE"]
+
+
+def test_run_store_seeds_and_replaces_normalized_inputs():
+    run_store, session_factory = _build_run_store()
+    user, project, chat = _seed_chat(session_factory, username="normalized-inputs")
+
+    run = run_store.create_or_reuse_run(
+        chat_session_id=chat.id,
+        project_id=project.id,
+        user_id=user.id,
+        request_content="show me the logs",
+        magi="off",
+        client_request_id="normalized-inputs",
+        max_active_runs_per_user=3,
+    )
+    claimed = run_store.claim_next_run("worker-normalized", lease_seconds=30)
+
+    assert run.normalized_inputs_json["request_text"] == "show me the logs"
+    assert run.normalized_inputs_json["retrieved_context_text"] == ""
+
+    updated = run_store.replace_normalized_inputs_for_worker(
+        run.id,
+        "worker-normalized",
+        {
+            "request_text": "show me the logs",
+            "conversation_summary_text": "Older summary",
+            "recent_turns": [{"role": "user", "content": "earlier turn"}],
+            "memory_snapshot_text": "KNOWN SYSTEM PROFILE:\n- OS: Debian",
+            "retrieval_query": "journalctl ssh",
+            "retrieved_context_text": "---\n[Source: ssh.md (Page 3)]\nUse journalctl -u ssh\n",
+            "retrieved_context_blocks": [
+                {
+                    "source": "ssh.md",
+                    "pages": [3],
+                    "page_label": "Page 3",
+                    "text": "Use journalctl -u ssh",
+                }
+            ],
+        },
+    )
+
+    reloaded = run_store.get_run(claimed.id)
+
+    assert updated["retrieval_query"] == "journalctl ssh"
+    assert reloaded.normalized_inputs_json["conversation_summary_text"] == "Older summary"
+    assert reloaded.normalized_inputs_json["retrieved_context_blocks"][0]["source"] == "ssh.md"

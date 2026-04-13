@@ -243,6 +243,71 @@ def test_router_uses_raw_retrieved_docs_before_post_turn_summarization():
     ]
 
 
+def test_router_preserves_retrieved_blocks_and_full_memory_payloads():
+    class FakeRichDatabase(FakeDatabase):
+        def retrieve_context_result(self, query, sources):
+            self.calls.append((query, tuple(sources or [])))
+            return {
+                "context_text": "---\n[Source: Debian_Install_Guide.pdf (Page 4)]\napt install foo\n",
+                "selected_sources": ["Debian_Install_Guide.pdf:Page 4"],
+                "merged_blocks": [
+                    {
+                        "source": "Debian_Install_Guide.pdf",
+                        "pages": [4],
+                        "page_label": "Page 4",
+                        "text": "apt install foo",
+                    }
+                ],
+            }
+
+    extracted_memory = {
+        "facts": [
+            {
+                "fact_key": "os.distribution",
+                "fact_value": "Debian",
+                "source_type": "user",
+                "source_ref": "user_question",
+                "confidence": 0.9,
+                "verified": False,
+            }
+        ],
+        "issues": [],
+        "attempts": [],
+        "constraints": [],
+        "preferences": [],
+        "session_summary": "User is troubleshooting package install flow.",
+    }
+    router = ModelRouter(
+        database=FakeRichDatabase(returned_docs="ignored"),
+        classifier=FakeClassifier(["debian"]),
+        context_agent=FakeContextAgent("install package"),
+        history_summarizer=FakeHistorySummarizer(
+            prepared=PreparedHistory(recent_turns=[("user", "older question")], summary_text="older summary")
+        ),
+        context_summarizer=FakeContextSummarizer(summarized_text="condensed docs", summarized=True),
+        responder=SpyResponder("final answer"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(extracted=extracted_memory),
+    )
+
+    turn = router.run_turn("How do I install it?", stream_response=False)
+
+    assert turn.retrieved_context_blocks == [
+        {
+            "source": "Debian_Install_Guide.pdf",
+            "pages": [4],
+            "page_label": "Page 4",
+            "text": "apt install foo",
+        }
+    ]
+    memory_extracted = next(event for event in turn.tool_events if event["type"] == "memory_extracted")
+    memory_resolved = next(event for event in turn.tool_events if event["type"] == "memory_resolved")
+    assert memory_extracted["payload"]["items"]["session_summary"] == "User is troubleshooting package install flow."
+    assert memory_extracted["payload"]["items"]["facts"][0]["fact_key"] == "os.distribution"
+    assert memory_resolved["payload"]["committed_full"]["facts"][0]["fact_value"] == "Debian"
+    assert memory_resolved["payload"]["session_summary"] == "User is troubleshooting package install flow."
+
+
 def test_router_conversation_history_search_returns_matching_snippets():
     router = ModelRouter(
         database=FakeDatabase(""),

@@ -123,6 +123,7 @@ Owns result shaping:
 
 - merge adjacent/related chunks
 - format source-labeled context blocks
+- serialize merged context blocks into a stable debug shape for the canonical run-level `normalized_inputs` bundle
 
 This keeps retrieval formatting separate from search and ranking logic.
 
@@ -166,6 +167,11 @@ The runtime search pipeline emits events such as:
 - `retrieval_complete`
 
 These events are used for observability and live frontend status updates.
+
+Current debug ownership rule:
+
+- the full merged chunk text that the responder reads belongs to the run-level `normalized_inputs` bundle
+- retrieval events should stay lightweight and report search/rerank/selection progress plus source metadata, not duplicate the same merged text in every event payload
 
 ## Ingestion Boundary
 

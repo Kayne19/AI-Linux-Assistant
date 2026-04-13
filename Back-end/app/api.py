@@ -22,6 +22,7 @@ from streaming.replay_filters import (
     register_checkpoint_window as _register_checkpoint_window,
     should_forward_stream_delta as _should_forward_stream_delta,
 )
+from orchestration.normalized_inputs import normalize_saved_normalized_inputs
 from streaming.event_serializer import serialize_run_event
 from streaming.redis_events import get_shared_client as _get_redis_client
 
@@ -141,6 +142,7 @@ class ChatRunResponse(BaseModel):
     updated_at: str
     final_user_message_id: int | None = None
     final_assistant_message_id: int | None = None
+    normalized_inputs: "NormalizedInputsResponse | None" = None
 
 
 class ChatRunListResponse(BaseModel):
@@ -161,6 +163,28 @@ class ChatSessionResponse(BaseModel):
     active_run_status: str | None = None
 
 
+class NormalizedTurnEntryResponse(BaseModel):
+    role: str
+    content: str
+
+
+class RetrievedContextBlockResponse(BaseModel):
+    source: str
+    pages: list[int]
+    page_label: str
+    text: str
+
+
+class NormalizedInputsResponse(BaseModel):
+    request_text: str
+    conversation_summary_text: str
+    recent_turns: list[NormalizedTurnEntryResponse]
+    memory_snapshot_text: str
+    retrieval_query: str
+    retrieved_context_text: str
+    retrieved_context_blocks: list[RetrievedContextBlockResponse]
+
+
 class ChatMessageResponse(BaseModel):
     id: int
     session_id: str
@@ -175,12 +199,20 @@ class AssistantDebugResponse(BaseModel):
     tool_events: list[dict[str, Any]]
     retrieval_query: str
     retrieved_sources: list[str]
+    normalized_inputs: "NormalizedInputsResponse | None" = None
 
 
 class SendMessageResponse(BaseModel):
     user_message: ChatMessageResponse
     assistant_message: ChatMessageResponse
     debug: AssistantDebugResponse
+
+
+for _model in (ChatRunResponse, AssistantDebugResponse):
+    if hasattr(_model, "model_rebuild"):
+        _model.model_rebuild()
+    elif hasattr(_model, "update_forward_refs"):
+        _model.update_forward_refs()
 
 
 class AppBootstrapResponse(BaseModel):
@@ -305,7 +337,31 @@ def _serialize_message(message):
     )
 
 
-def _serialize_run(run):
+def _serialize_normalized_inputs(value, request_text=""):
+    normalized = normalize_saved_normalized_inputs(value, request_text=request_text)
+    return NormalizedInputsResponse(
+        request_text=normalized["request_text"],
+        conversation_summary_text=normalized["conversation_summary_text"],
+        recent_turns=[
+            NormalizedTurnEntryResponse(role=item["role"], content=item["content"])
+            for item in normalized["recent_turns"]
+        ],
+        memory_snapshot_text=normalized["memory_snapshot_text"],
+        retrieval_query=normalized["retrieval_query"],
+        retrieved_context_text=normalized["retrieved_context_text"],
+        retrieved_context_blocks=[
+            RetrievedContextBlockResponse(
+                source=item["source"],
+                pages=list(item["pages"]),
+                page_label=item["page_label"],
+                text=item["text"],
+            )
+            for item in normalized["retrieved_context_blocks"]
+        ],
+    )
+
+
+def _serialize_run(run, *, include_normalized_inputs=False):
     return ChatRunResponse(
         id=run.id,
         chat_session_id=run.chat_session_id,
@@ -329,6 +385,14 @@ def _serialize_run(run):
         updated_at=_iso(getattr(run, "updated_at", None)),
         final_user_message_id=getattr(run, "final_user_message_id", None),
         final_assistant_message_id=getattr(run, "final_assistant_message_id", None),
+        normalized_inputs=(
+            _serialize_normalized_inputs(
+                getattr(run, "normalized_inputs_json", None),
+                request_text=run.request_content or "",
+            )
+            if include_normalized_inputs
+            else None
+        ),
     )
 
 
@@ -384,6 +448,12 @@ def _degraded_terminal_event_from_snapshot(run, app_store):
                 "tool_events": [],
                 "retrieval_query": "",
                 "retrieved_sources": [],
+                "normalized_inputs": _model_dump(
+                    _serialize_normalized_inputs(
+                        getattr(run, "normalized_inputs_json", None),
+                        request_text=run.request_content or "",
+                    )
+                ),
             },
         }
     if run.status == "cancelled":
@@ -536,6 +606,10 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                     tool_events=list((terminal_payload.get("debug") or {}).get("tool_events", []) or []),
                     retrieval_query=((terminal_payload.get("debug") or {}).get("retrieval_query", "") or ""),
                     retrieved_sources=list((terminal_payload.get("debug") or {}).get("retrieved_sources", []) or []),
+                    normalized_inputs=_serialize_normalized_inputs(
+                        (terminal_payload.get("debug") or {}).get("normalized_inputs"),
+                        request_text=run.request_content or "",
+                    ),
                 ),
             )
         if run.status == "cancelled":
@@ -889,7 +963,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
             status=status,
         )
         return ChatRunListResponse(
-            runs=[_serialize_run(run) for run in runs],
+            runs=[_serialize_run(run, include_normalized_inputs=False) for run in runs],
             total=total,
             page=page,
             page_size=page_size,
@@ -899,14 +973,14 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
     @app.post("/chats/{chat_session_id}/runs", response_model=ChatRunResponse)
     def create_run(chat_session_id: str, request: RunCreateRequest, current_user=Depends(_require_current_user)):
         run = _create_or_reuse_run(chat_session_id, request, current_user.id)
-        return _serialize_run(run)
+        return _serialize_run(run, include_normalized_inputs=True)
 
     @app.get("/runs/{run_id}", response_model=ChatRunResponse)
     def get_run(run_id: str, current_user=Depends(_require_current_user)):
         run = run_store.get_run_for_user(run_id, current_user.id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found.")
-        return _serialize_run(run)
+        return _serialize_run(run, include_normalized_inputs=True)
 
     @app.get("/runs/{run_id}/events")
     def list_run_events(
@@ -934,15 +1008,15 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
             run = _cancel_run_explicitly(run_id, current_user.id)
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return _serialize_run(run)
+        return _serialize_run(run, include_normalized_inputs=True)
 
     @app.post("/runs/{run_id}/pause", response_model=ChatRunResponse)
     def pause_run(run_id: str, current_user=Depends(_require_current_user)):
-        return _serialize_run(_pause_run_explicitly(run_id, current_user.id))
+        return _serialize_run(_pause_run_explicitly(run_id, current_user.id), include_normalized_inputs=True)
 
     @app.post("/runs/{run_id}/resume", response_model=ChatRunResponse)
     def resume_run(run_id: str, request: RunResumeRequest, current_user=Depends(_require_current_user)):
-        return _serialize_run(_resume_run_explicitly(run_id, request, current_user.id))
+        return _serialize_run(_resume_run_explicitly(run_id, request, current_user.id), include_normalized_inputs=True)
 
     @app.post("/runs/{run_id}/fail", response_model=ChatRunResponse)
     def fail_run(run_id: str, _admin=Depends(_require_admin)):
@@ -950,7 +1024,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
             run = run_store.mark_failed(run_id, error_message="Run marked failed by operator.")
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return _serialize_run(run)
+        return _serialize_run(run, include_normalized_inputs=True)
 
     @app.post("/runs/{run_id}/requeue", response_model=ChatRunResponse)
     def requeue_run(run_id: str, _admin=Depends(_require_admin)):
@@ -960,7 +1034,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except RunRequeueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return _serialize_run(run)
+        return _serialize_run(run, include_normalized_inputs=True)
 
     @app.post("/chats/{chat_session_id}/messages", response_model=SendMessageResponse)
     def send_message(chat_session_id: str, request: MessageCreateRequest, current_user=Depends(_require_current_user)):

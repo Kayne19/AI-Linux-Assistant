@@ -61,7 +61,28 @@ def test_terminal_event_payload_prefers_durable_done_event():
         user_content="hello",
         assistant_role="model",
         assistant_content="world",
-        done_payload={"debug": {"state_trace": ["START", "DONE"], "tool_events": [{"type": "x"}]}},
+        done_payload={
+            "debug": {
+                "state_trace": ["START", "DONE"],
+                "tool_events": [{"type": "x"}],
+                "normalized_inputs": {
+                    "request_text": "hello",
+                    "conversation_summary_text": "Older summary",
+                    "recent_turns": [{"role": "user", "content": "Earlier"}],
+                    "memory_snapshot_text": "KNOWN SYSTEM PROFILE:\n- OS: Debian",
+                    "retrieval_query": "install package",
+                    "retrieved_context_text": "---\n[Source: guide.pdf (Page 4)]\napt install foo\n",
+                    "retrieved_context_blocks": [
+                        {
+                            "source": "guide.pdf",
+                            "pages": [4],
+                            "page_label": "Page 4",
+                            "text": "apt install foo",
+                        }
+                    ],
+                },
+            }
+        },
     )
 
     payload = _terminal_event_payload(run_store, run.id, run_store.get_run(run.id), _StubAppStore())
@@ -72,6 +93,7 @@ def test_terminal_event_payload_prefers_durable_done_event():
     assert payload["assistant_message"]["content"] == "world"
     assert payload["debug"]["state_trace"] == ["START", "DONE"]
     assert payload["debug"]["tool_events"] == [{"type": "x"}]
+    assert payload["debug"]["normalized_inputs"]["retrieved_context_blocks"][0]["source"] == "guide.pdf"
 
 
 def test_terminal_event_payload_prefers_durable_cancelled_event():

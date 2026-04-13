@@ -125,15 +125,30 @@ def merge_context_chunks(docs):
 
 
 def format_context_blocks(merged_results):
-    context_text = ""
-    sources = []
+    blocks = serialize_context_blocks(merged_results)
+    context_text = "".join(
+        f"---\n[Source: {block['source']} ({block['page_label']})]\n{block['text']}\n"
+        for block in blocks
+    )
+    sources = [f"{block['source']}:{block['page_label']}" for block in blocks]
+    return context_text, sources
+
+
+def serialize_context_blocks(merged_results):
+    blocks = []
     for item in merged_results:
         source_file = item["source"]
-        page_label = format_page_label(item["pages"])
+        pages = sorted(set(int(page) for page in item["pages"]))
+        page_label = format_page_label(pages)
         text = item["text"]
         if not text:
             continue
-
-        context_text += f"---\n[Source: {source_file} ({page_label})]\n{text}\n"
-        sources.append(f"{source_file}:{page_label}")
-    return context_text, sources
+        blocks.append(
+            {
+                "source": source_file,
+                "pages": pages,
+                "page_label": page_label,
+                "text": text,
+            }
+        )
+    return blocks

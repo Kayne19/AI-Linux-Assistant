@@ -132,6 +132,7 @@ export type ChatRun = {
   updated_at: string;
   final_user_message_id?: number | null;
   final_assistant_message_id?: number | null;
+  normalized_inputs?: NormalizedInputs | null;
 };
 
 export type ChatRunListResponse = {
@@ -142,12 +143,35 @@ export type ChatRunListResponse = {
   has_more: boolean;
 };
 
+export type NormalizedTurnEntry = {
+  role: string;
+  content: string;
+};
+
+export type RetrievedContextBlock = {
+  source: string;
+  pages: number[];
+  page_label: string;
+  text: string;
+};
+
+export type NormalizedInputs = {
+  request_text: string;
+  conversation_summary_text: string;
+  recent_turns: NormalizedTurnEntry[];
+  memory_snapshot_text: string;
+  retrieval_query: string;
+  retrieved_context_text: string;
+  retrieved_context_blocks: RetrievedContextBlock[];
+};
+
 export type AssistantDebug = {
   state_trace: string[];
   tool_events: Array<Record<string, unknown>>;
   retrieval_query: string;
   retrieved_sources: string[];
   auto_name_scheduled?: boolean;
+  normalized_inputs?: NormalizedInputs | null;
 };
 
 export type SendMessageResponse = {

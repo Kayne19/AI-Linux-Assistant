@@ -291,6 +291,89 @@
   white-space: pre-wrap;
 }
 
+.debug-inputs-grid,
+.debug-detail-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.debug-detail-card {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.016);
+  padding: 12px;
+}
+
+.debug-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.debug-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.debug-detail-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.debug-detail-list-item strong,
+.debug-detail-chip {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.debug-detail-text {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: var(--mono);
+}
+
+.debug-detail-text.compact {
+  font-size: 11px;
+}
+
+.debug-detail-text.collapsed {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+}
+
+.debug-detail-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.debug-detail-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+}
+
+.debug-detail-chip span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .debug-inline-error,
 .debug-error-banner {
   border: 1px solid rgba(251, 113, 133, 0.42);

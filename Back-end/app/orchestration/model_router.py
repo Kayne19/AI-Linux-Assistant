@@ -54,6 +54,7 @@ class TurnContext:
     suggested_search_labels: list = field(default_factory=list)
     retrieval_query: str = ""
     retrieved_docs: str = ""
+    retrieved_context_blocks: list = field(default_factory=list)
     summarized_retrieved_docs: str = ""
     response: str = ""
     memory_snapshot_text: str = ""
@@ -247,6 +248,7 @@ class ModelRouter:
         turn = TurnContext(
             user_question=str(pause_state.get("user_query") or ""),
             retrieved_docs=str(pause_state.get("retrieved_docs") or ""),
+            retrieved_context_blocks=list(pause_state.get("retrieved_context_blocks") or []),
             memory_snapshot_text=str(pause_state.get("memory_snapshot_text") or ""),
             summarized_conversation_history=PreparedHistory(
                 recent_turns=list(history_payload.get("recent_turns") or []),
@@ -814,14 +816,24 @@ class ModelRouter:
     def _decide_rag(self, turn):
         if self._should_skip_rag(turn.routing_labels):
             turn.retrieved_docs = ""
+            turn.retrieved_context_blocks = []
             return RouterState.GENERATE_RESPONSE
         return RouterState.REWRITE_QUERY
 
     def _retrieve_context(self, turn):
-        turn.retrieved_docs = self.database.retrieve_context(
-            turn.retrieval_query,
-            turn.suggested_search_labels,
-        )
+        if hasattr(self.database, "retrieve_context_result"):
+            retrieval_result = self.database.retrieve_context_result(
+                turn.retrieval_query,
+                turn.suggested_search_labels,
+            ) or {}
+            turn.retrieved_docs = str(retrieval_result.get("context_text") or "")
+            turn.retrieved_context_blocks = list(retrieval_result.get("merged_blocks") or [])
+        else:
+            turn.retrieved_docs = self.database.retrieve_context(
+                turn.retrieval_query,
+                turn.suggested_search_labels,
+            )
+            turn.retrieved_context_blocks = []
         return RouterState.GENERATE_RESPONSE
 
     def _summarize_retrieved_docs(self, turn):
@@ -909,6 +921,7 @@ class ModelRouter:
                     "preferences": len(extracted.get("preferences", [])),
                     "has_session_summary": bool((extracted.get("session_summary") or "").strip()),
                     "examples": self._summarize_extracted_memory(extracted),
+                    "items": extracted,
                 },
             )
         except Exception as exc:
@@ -925,7 +938,16 @@ class ModelRouter:
         try:
             snapshot = self.memory_store.load_snapshot()
             turn.memory_resolution = self.memory_resolver.resolve(turn.extracted_memory, snapshot=snapshot)
-            self._emit_event("memory_resolved", turn.memory_resolution.details())
+            self._emit_event(
+                "memory_resolved",
+                {
+                    **turn.memory_resolution.details(),
+                    "committed_full": turn.memory_resolution.committed,
+                    "candidates_full": list(turn.memory_resolution.candidates),
+                    "conflicts_full": list(turn.memory_resolution.conflicts),
+                    "session_summary": turn.memory_resolution.session_summary,
+                },
+            )
         except Exception as exc:
             turn.memory_resolution = None
             self._emit_event("memory_error", {"phase": "resolve", "error": str(exc)})
@@ -941,7 +963,16 @@ class ModelRouter:
                 user_question=turn.user_question,
                 assistant_response=turn.response,
             )
-            self._emit_event("memory_committed", turn.memory_resolution.details())
+            self._emit_event(
+                "memory_committed",
+                {
+                    **turn.memory_resolution.details(),
+                    "committed_full": turn.memory_resolution.committed,
+                    "candidates_full": list(turn.memory_resolution.candidates),
+                    "conflicts_full": list(turn.memory_resolution.conflicts),
+                    "session_summary": turn.memory_resolution.session_summary,
+                },
+            )
         except Exception as exc:
             self._emit_event("memory_error", {"phase": "commit", "error": str(exc)})
         return self._next_post_turn_state(turn)

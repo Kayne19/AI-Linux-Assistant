@@ -130,3 +130,6 @@ class VectorDB:
 
     def retrieve_context(self, query, sources):
         return self._search_pipeline.retrieve_context(query, sources)
+
+    def retrieve_context_result(self, query, sources):
+        return self._search_pipeline.retrieve_context_result(query, sources)

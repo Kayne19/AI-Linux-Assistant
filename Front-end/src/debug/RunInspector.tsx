@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { ChatRun, RunEvent } from "../types";
+import type { ChatRun, NormalizedInputs, RunEvent } from "../types";
 import { EventTimeline } from "./EventTimeline";
 import {
   computeTimings,
@@ -24,6 +24,19 @@ type RunInspectorProps = {
   runId: string;
   onHistoryRefresh?: () => Promise<void> | void;
 };
+
+const REFRESHING_STATE_CODES = new Set([
+  "SUMMARIZE_CONVERSATION_HISTORY",
+  "CLASSIFY",
+  "RETRIEVE_CONTEXT",
+  "GENERATE_RESPONSE",
+  "SUMMARIZE_RETRIEVED_DOCS",
+  "UPDATE_HISTORY",
+  "DECIDE_MEMORY",
+  "EXTRACT_MEMORY",
+  "RESOLVE_MEMORY",
+  "COMMIT_MEMORY",
+]);
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
@@ -81,12 +94,80 @@ function TimingBar({ run, events, nowMs }: { run: ChatRun; events: RunEvent[]; n
   );
 }
 
+function InputTextBlock({
+  label,
+  text,
+  collapsible = false,
+  collapsedLines = 6,
+}: {
+  label: string;
+  text: string;
+  collapsible?: boolean;
+  collapsedLines?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const shouldCollapse = collapsible && text.split("\n").length > collapsedLines;
+
+  return (
+    <div className="debug-detail-card">
+      <div className="debug-detail-header">
+        <span className="debug-request-label">{label}</span>
+        {shouldCollapse ? (
+          <button type="button" className="debug-inline-link" onClick={() => setExpanded((current) => !current)}>
+            {expanded ? "Collapse" : "Expand"}
+          </button>
+        ) : null}
+      </div>
+      <pre className={`debug-detail-text${shouldCollapse && !expanded ? " collapsed" : ""}`}>{text || "—"}</pre>
+    </div>
+  );
+}
+
+function RecentTurnsBlock({ inputs }: { inputs: NormalizedInputs }) {
+  if (inputs.recent_turns.length === 0) {
+    return null;
+  }
+  return (
+    <div className="debug-detail-card">
+      <span className="debug-request-label">recent turns</span>
+      <div className="debug-detail-list">
+        {inputs.recent_turns.map((turn, index) => (
+          <div key={`${turn.role}-${index}`} className="debug-detail-list-item">
+            <strong>{turn.role}</strong>
+            <pre className="debug-detail-text compact">{turn.content}</pre>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RetrievedBlocksPreview({ inputs }: { inputs: NormalizedInputs }) {
+  if (inputs.retrieved_context_blocks.length === 0) {
+    return null;
+  }
+  return (
+    <div className="debug-detail-card">
+      <span className="debug-request-label">retrieved blocks</span>
+      <div className="debug-detail-list">
+        {inputs.retrieved_context_blocks.map((block, index) => (
+          <div key={`${block.source}-${block.page_label}-${index}`} className="debug-detail-list-item">
+            <strong>{block.source} • {block.page_label}</strong>
+            <pre className="debug-detail-text compact">{block.text}</pre>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function RunInspector({ runId, onHistoryRefresh }: RunInspectorProps) {
   const { run, loading, error, refresh } = useRunSnapshot(runId);
   const { events, loading: eventsLoading, error: eventsError, highestSeqSeen, appendLiveEvent, backfill } = useRunEvents(runId);
   const [selectedTab, setSelectedTab] = useState<DebugTab>("Timeline");
   const [requestExpanded, setRequestExpanded] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const refreshTimerRef = useRef<number | null>(null);
   const isActive = run ? isActiveRunStatus(run.status) : false;
 
   useEffect(() => {
@@ -106,11 +187,34 @@ export function RunInspector({ runId, onHistoryRefresh }: RunInspectorProps) {
     };
   }, [run]);
 
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+    };
+  }, []);
+
+  function requestSnapshotRefresh() {
+    if (refreshTimerRef.current !== null) {
+      return;
+    }
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void refresh();
+    }, 120);
+  }
+
   useRunStream({
     runId,
     enabled: Boolean(runId && isActive),
     initialAfterSeq: highestSeqSeen,
-    onLiveEvent: appendLiveEvent,
+    onLiveEvent: (event) => {
+      appendLiveEvent(event);
+      if (event.type === "state" && REFRESHING_STATE_CODES.has(event.code)) {
+        requestSnapshotRefresh();
+      }
+    },
     onBackfill: backfill,
     onTerminal: async () => {
       void refresh();
@@ -148,6 +252,7 @@ export function RunInspector({ runId, onHistoryRefresh }: RunInspectorProps) {
   const requestText = requestExpanded || run.request_content.length <= 220
     ? run.request_content
     : `${run.request_content.slice(0, 220)}…`;
+  const normalizedInputs = run.normalized_inputs;
 
   return (
     <div className="debug-run-inspector">
@@ -190,6 +295,17 @@ export function RunInspector({ runId, onHistoryRefresh }: RunInspectorProps) {
             </button>
           ) : null}
         </div>
+
+        {normalizedInputs ? (
+          <div className="debug-inputs-grid">
+            <InputTextBlock label="conversation summary" text={normalizedInputs.conversation_summary_text || "No summary recorded."} collapsible />
+            <InputTextBlock label="memory snapshot" text={normalizedInputs.memory_snapshot_text || "No memory loaded for this turn."} collapsible />
+            <InputTextBlock label="retrieval query" text={normalizedInputs.retrieval_query || "No retrieval query recorded."} />
+            <InputTextBlock label="retrieved context" text={normalizedInputs.retrieved_context_text || "No retrieved context loaded."} collapsible />
+            <RecentTurnsBlock inputs={normalizedInputs} />
+            <RetrievedBlocksPreview inputs={normalizedInputs} />
+          </div>
+        ) : null}
       </div>
 
       {hasErrorBanner(run) ? (
@@ -218,7 +334,7 @@ export function RunInspector({ runId, onHistoryRefresh }: RunInspectorProps) {
       {eventsError ? <div className="debug-inline-error">{eventsError}</div> : null}
       {eventsLoading && events.length === 0 ? <div className="debug-empty-state">Loading event history…</div> : null}
 
-      <EventTimeline events={events} tab={selectedTab} />
+      <EventTimeline events={events} tab={selectedTab} run={run} />
     </div>
   );
 }

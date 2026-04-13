@@ -156,6 +156,7 @@ class ChatRun(Base):
     latest_state_code: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     latest_event_seq: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     partial_assistant_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    normalized_inputs_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     pause_state_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
     worker_id: Mapped[str] = mapped_column(String(120), default="", nullable=False)

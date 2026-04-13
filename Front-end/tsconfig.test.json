@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ES2020",
+    "moduleResolution": "bundler",
     "outDir": "./.test-dist",
     "rootDir": ".",
     "strict": true,
@@ -11,5 +11,5 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["src/apiAuth.ts", "src/authConfig.ts", "src/councilStreamLifecycle.ts", "src/runResume.ts"]
+  "include": ["src/apiAuth.ts", "src/authConfig.ts", "src/councilStreamLifecycle.ts", "src/runResume.ts", "src/debug/debugUtils.ts", "src/types.ts"]
 }

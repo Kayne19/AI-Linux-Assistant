@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from orchestration.normalized_inputs import empty_normalized_inputs
 from persistence.database import Base, get_engine, get_session_factory
 
 try:
@@ -116,6 +117,10 @@ class PostgresRunStore:
                 connection.exec_driver_sql(
                     "ALTER TABLE chat_runs ADD COLUMN run_kind VARCHAR(32) NOT NULL DEFAULT 'message'"
                 )
+            if "normalized_inputs_json" not in chat_run_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE chat_runs ADD COLUMN normalized_inputs_json JSON NULL"
+                )
             if "pause_state_json" not in chat_run_columns:
                 connection.exec_driver_sql(
                     "ALTER TABLE chat_runs ADD COLUMN pause_state_json JSON NULL"
@@ -213,6 +218,7 @@ class PostgresRunStore:
                 request_content=request_content,
                 magi=(magi or "off").strip() or "off",
                 client_request_id=client_request_id,
+                normalized_inputs_json=empty_normalized_inputs(request_content),
             )
             session.add(run)
             try:
@@ -443,6 +449,22 @@ class PostgresRunStore:
             session.refresh(event)
         self._publish(run_id, next_seq, event_type, code or "", payload, created_at=event.created_at)
         return event
+
+    def replace_normalized_inputs_for_worker(self, run_id, worker_id, normalized_inputs):
+        with self._session() as session:
+            run = self._load_run_for_update(
+                session,
+                run_id,
+                worker_id=worker_id,
+                require_active_owner=True,
+            )
+            normalized_inputs = dict(normalized_inputs or {})
+            if (run.normalized_inputs_json or {}) == normalized_inputs:
+                return dict(run.normalized_inputs_json or {})
+            run.normalized_inputs_json = normalized_inputs
+            session.commit()
+            session.refresh(run)
+            return dict(run.normalized_inputs_json or {})
 
     def _append_checkpoint_event(
         self,

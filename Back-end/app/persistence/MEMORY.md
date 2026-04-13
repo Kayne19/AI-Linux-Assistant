@@ -85,6 +85,11 @@ The router is the control plane. It should remain the place where another engine
 - whether anything was committed
 - why memory was skipped or failed
 
+Current debug ownership rule:
+
+- the loaded prompt-facing memory snapshot text belongs to the run-level `normalized_inputs` bundle
+- memory phase events should own the structured extraction / resolution / commit data for their phase instead of duplicating the same loaded snapshot text
+
 ### Memory Extractor
 
 [memory_extractor.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/memory_extractor.py)

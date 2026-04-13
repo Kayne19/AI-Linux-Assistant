@@ -3,6 +3,27 @@ import { api } from "../api";
 import type { RunEvent } from "../types";
 import { mergeRunEvents } from "./debugUtils";
 
+const EVENT_PAGE_SIZE = 1000;
+
+async function loadAllRunEvents(runId: string, afterSeq: number): Promise<RunEvent[]> {
+  const events: RunEvent[] = [];
+  let cursor = Math.max(0, afterSeq);
+
+  while (true) {
+    const nextPage = await api.listRunEvents(runId, { afterSeq: cursor, limit: EVENT_PAGE_SIZE });
+    if (nextPage.length === 0) {
+      break;
+    }
+    events.push(...nextPage);
+    cursor = nextPage[nextPage.length - 1].seq;
+    if (nextPage.length < EVENT_PAGE_SIZE) {
+      break;
+    }
+  }
+
+  return events;
+}
+
 export function useRunEvents(runId: string) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [loading, setLoading] = useState(false);
@@ -29,7 +50,7 @@ export function useRunEvents(runId: string) {
     setError("");
     setEvents([]);
 
-    void api.listRunEvents(runId, { afterSeq: 0 })
+    void loadAllRunEvents(runId, 0)
       .then((initialEvents) => {
         if (requestIdRef.current !== requestId) {
           return;
@@ -58,7 +79,7 @@ export function useRunEvents(runId: string) {
       return;
     }
     try {
-      const missingEvents = await api.listRunEvents(runId, { afterSeq });
+      const missingEvents = await loadAllRunEvents(runId, afterSeq);
       setEvents((current) => mergeRunEvents(current, missingEvents));
     } catch (err) {
       setError((err as Error).message);

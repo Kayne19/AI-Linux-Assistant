@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from config.settings import SETTINGS, load_effective_settings
+from orchestration.normalized_inputs import build_normalized_inputs
 from orchestration.model_router import ModelRouter, RouterExecutionError
 from orchestration.run_control import RunCancelledError, RunPausedError
 from persistence.postgres_app_store import PostgresAppStore
@@ -324,6 +325,17 @@ def _extract_sources(retrieved_docs):
     return sources
 
 
+def _turn_normalized_inputs(request_text, turn):
+    return build_normalized_inputs(
+        request_text=request_text,
+        summarized_conversation_history=getattr(turn, "summarized_conversation_history", None),
+        memory_snapshot_text=getattr(turn, "memory_snapshot_text", "") or "",
+        retrieval_query=getattr(turn, "retrieval_query", "") or "",
+        retrieved_docs=getattr(turn, "retrieved_docs", "") or "",
+        retrieved_context_blocks=list(getattr(turn, "retrieved_context_blocks", []) or []),
+    )
+
+
 class ChatRunWorkerService:
     def __init__(self, worker_id=None, settings=None, run_store=None):
         self.settings = settings or SETTINGS
@@ -396,6 +408,7 @@ class ChatRunWorkerService:
         )
 
     def _complete_run(self, run, claimed_worker_id, turn):
+        normalized_inputs = _turn_normalized_inputs(run.request_content, turn)
         done_payload = {
             "user_message": None,
             "assistant_message": None,
@@ -405,6 +418,7 @@ class ChatRunWorkerService:
                 "retrieval_query": getattr(turn, "retrieval_query", "") or "",
                 "retrieved_sources": _extract_sources(getattr(turn, "retrieved_docs", "") or ""),
                 "auto_name_scheduled": bool(getattr(turn, "schedule_auto_name", False)),
+                "normalized_inputs": normalized_inputs,
             },
         }
         user_message, assistant_message = self.run_store.complete_run_with_messages(
@@ -523,9 +537,24 @@ class ChatRunWorkerService:
         heartbeat_thread.start()
         try:
             router = self._build_router(run)
-            router.set_state_listener(
-                lambda state, turn: self._emit_state(run.id, claimed_worker_id, state, turn)
-            )
+            last_normalized_inputs = None
+
+            def _state_listener(state, turn):
+                nonlocal last_normalized_inputs
+                self._emit_state(run.id, claimed_worker_id, state, turn)
+                if (getattr(run, "run_kind", MESSAGE_RUN_KIND) or MESSAGE_RUN_KIND) != MESSAGE_RUN_KIND:
+                    return
+                normalized_inputs = _turn_normalized_inputs(run.request_content, turn)
+                if normalized_inputs == last_normalized_inputs:
+                    return
+                self.run_store.replace_normalized_inputs_for_worker(
+                    run.id,
+                    claimed_worker_id,
+                    normalized_inputs,
+                )
+                last_normalized_inputs = normalized_inputs
+
+            router.set_state_listener(_state_listener)
 
             def _event_listener(event_type, payload):
                 if event_type == "text_delta":

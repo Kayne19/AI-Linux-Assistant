@@ -229,9 +229,10 @@ Current notable fields:
 - `ChatMessageResponse.council_entries` carries persisted Magi deliberation entries when present.
 - `UserResponse` now includes `display_name`, `email`, `email_verified`, `avatar_url`, optional legacy `username`, and local `role`.
 - persisted council entries may now include `entry_kind="user_intervention"` plus `input_kind` for paused-run user intervention rows
-- `AssistantDebugResponse` includes `state_trace`, `tool_events`, `retrieval_query`, and `retrieved_sources`.
+- `AssistantDebugResponse` includes `state_trace`, `tool_events`, `retrieval_query`, `retrieved_sources`, and a terminal mirror of the canonical `normalized_inputs` bundle.
 - `ChatSessionResponse.active_run_id` / `active_run_status` expose only user-visible active `message` runs, not internal follow-up runs like `auto_name`.
 - `ChatRunResponse.run_kind` distinguishes normal `message` runs from internal follow-up runs such as `auto_name`.
+- `ChatRunResponse.normalized_inputs` is the canonical run-level debug bundle for prompt-facing inputs such as conversation summary, recent turns, loaded memory snapshot, retrieval query, and merged retrieved context blocks.
 - `ChatRunResponse.latest_*` fields are snapshot conveniences; `chat_run_events` remains the replay source of truth.
 - Run-event payloads returned by `/runs/{run_id}/events` and `/runs/{run_id}/events/stream` include durable `created_at` timestamps so the frontend can compute timing diagnostics from backend event time.
 - `GET /runs/{run_id}/events` supports `after_seq` plus `limit`, and serialized run events include `created_at` for operator/debug timing inspection.

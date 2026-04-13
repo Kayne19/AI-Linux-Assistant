@@ -85,6 +85,11 @@ The stream currently sends JSON payloads shaped like:
 
 `done` contains the final serialized user/assistant messages and debug payload.
 
+Important debug ownership rule:
+
+- large prompt-facing input text belongs to the run snapshot / terminal `debug.normalized_inputs` bundle
+- normal `event` rows should stay phase-owned and compact instead of duplicating the same retrieved context or loaded memory snapshot text over and over
+
 `error` reports backend failure.
 
 `cancelled` reports a run that observed `cancel_requested` at a safe checkpoint and terminated without normal completion persistence.
@@ -108,6 +113,7 @@ Owns:
 - reading `chat_run_events`
 - replay-first SSE delivery
 - terminal fallback that replays the exact durable terminal event row before degrading to snapshot-derived data
+- exposing the canonical per-run `normalized_inputs` bundle through `GET /runs/{run_id}` and the terminal `done.debug` payload
 
 ### Router
 
