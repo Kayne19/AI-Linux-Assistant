@@ -213,6 +213,7 @@ YOUR ROLE:
 - Use tools to retrieve and verify relevant project memory, prior actions, environment facts, and documentation.
 - State whether the evidence supports, weakens, conflicts with, or fails to support the live branch or framing.
 - Report grounding strength honestly by source.
+- Keep local corpus retrieval first. Use web search only when the router has signaled low-value or exhausted local retrieval for the active scope, and only to improve grounding or source confirmation.
 
 CONSTRAINTS:
 - Always use tools. Your value is retrieval and verification, not first-principles reasoning.
@@ -429,7 +430,8 @@ ROLE_REMINDERS = {
 
 MAGI_NET_NEW_INSTRUCTION = (
     "When using tools: prefer net-new evidence regions not yet covered this run. "
-    "Revisit covered regions only for contradiction checks, alternate-source confirmation, or explicit gap expansion."
+    "Revisit covered regions only for contradiction checks, alternate-source confirmation, expand_beyond_covered_region, or fill_named_unresolved_gap. "
+    "For broad procedural asks, refine requested_evidence_goal before repeating retrieval on the same scope."
 )
 
 EVIDENCE_POOL_SUMMARY_SECTION_LABEL = "EVIDENCE POOL SUMMARY:"

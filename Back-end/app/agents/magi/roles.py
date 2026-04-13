@@ -238,7 +238,16 @@ USER QUESTION:
                 return stream_fn
         return self.worker.generate_text
 
-    def opening_argument(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", event_listener=None, evidence_pool_summary=""):
+    def opening_argument(
+        self,
+        user_query,
+        retrieved_docs,
+        summarized_conversation_history=None,
+        memory_snapshot_text="",
+        event_listener=None,
+        evidence_pool_summary="",
+        enable_web_search=False,
+    ):
         listener = event_listener if event_listener is not None else self._forward_worker_event
         user_message = self._build_opening_message(
             user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text,
@@ -254,6 +263,7 @@ USER QUESTION:
             tools=self.tools,
             tool_handler=self.tool_handler,
             max_tool_rounds=self.max_tool_rounds,
+            enable_web_search=enable_web_search,
             event_listener=listener,
         )
         invoke_cancel_check(self.cancel_check, f"after_model_call:{self.role_name}:opening")
@@ -272,6 +282,7 @@ USER QUESTION:
         user_intervention_block="none",
         event_listener=None,
         evidence_pool_summary="",
+        enable_web_search=False,
     ):
         listener = event_listener if event_listener is not None else self._forward_worker_event
         if summarized_conversation_history is None:
@@ -305,6 +316,7 @@ USER QUESTION:
             tools=self.tools,
             tool_handler=self.tool_handler,
             max_tool_rounds=self.max_tool_rounds,
+            enable_web_search=enable_web_search,
             event_listener=listener,
         )
         invoke_cancel_check(self.cancel_check, f"after_model_call:{self.role_name}:discussion")

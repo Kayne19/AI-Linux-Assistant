@@ -185,20 +185,24 @@ Key rules:
 - classifier output is a search suggestion, not a hard prohibition
 - control labels like `no_rag` affect router prefetch, not tool-level retrieval rights
 - the router owns turn-scoped retrieval progression state, including duplicate suppression and unseen-only exclusions shared by prefetch and responder tool retrieval
-- the router's per-turn `EvidencePool` is the coordination layer that tracks queries, coverage, scope exhaustion, and gating decisions — the retrieval search pipeline executes search; the pool records what was found
+- the router's per-turn `EvidencePool` is the coordination layer that tracks queries, scopes, usefulness, coverage, exhaustion, and gating decisions — the retrieval search pipeline executes search; the pool records what was found
 
 Evidence pool responsibilities (router-owned):
 
 - fingerprint-based exact cache for turn-scoped repeat queries
+- derive run-scoped retrieval scopes from labels plus `requested_evidence_goal` / unresolved gap state instead of raw query text alone
 - track covered region keys so downstream calls exclude already-delivered pages
 - classify each retrieval outcome: `delivered_new_evidence`, `cache_hit`, `reused_known_evidence`, `no_new_evidence`, `search_exhausted_for_scope`
-- gate exhausted MAGI role scopes (blocks redundant search, emits `retrieval_gated`)
+- score usefulness of returned evidence as `high`, `medium`, `low`, or `zero`
+- track soft/hard scope exhaustion from repeated low-value outcomes
+- gate repeated same-scope retrieval for both the normal responder and MAGI via `allow`, `allow_net_new_only`, `require_reason`, or `block`
 - emit `evidence_pool_update` after every retrieval so the stream can reflect coverage state
 - build a short `EVIDENCE POOL SUMMARY` block injected into MAGI role prompts
 
 Retrieval pipeline responsibilities (search-pipeline-owned):
 
 - embed query, hybrid search, rerank, bundle, format
+- accept optional `requested_evidence_goal` hints for bounded anchor selection
 - accept `excluded_page_windows`, `excluded_block_keys` from the pool and apply them
 - return `delivered_region_keys`, `excluded_region_keys_seen`, `net_new_region_count` so the pool can update coverage
 

@@ -19,6 +19,7 @@ from prompting.magi_prompts import (
     MAGI_ARBITER_PROMPT,
     MAGI_EAGER_SYSTEM_PROMPT,
     MAGI_HISTORIAN_SYSTEM_PROMPT,
+    MAGI_REASONING_CONSTITUTION,
     MAGI_SKEPTIC_SYSTEM_PROMPT,
 )
 from prompting.prompts import CHATBOT_SYSTEM_PROMPT
@@ -47,6 +48,7 @@ class FakeMagiWorker:
             "user_message": user_message,
             "tools": tools,
             "tool_handler": tool_handler,
+            "kwargs": kwargs,
         })
         return self._next_response()
 
@@ -57,6 +59,7 @@ class FakeMagiWorker:
             "user_message": user_message,
             "tools": tools,
             "tool_handler": tool_handler,
+            "kwargs": kwargs,
         })
         response = self._next_response()
         if event_listener is not None:
@@ -268,6 +271,7 @@ def _build_magi(
     tools=None,
     tool_handler=None,
     pause_check=None,
+    historian_web_search_decider=None,
 ):
     eager_worker = FakeMagiWorker(eager_text)
     skeptic_worker = FakeMagiWorker(skeptic_text)
@@ -297,6 +301,7 @@ def _build_magi(
         state_listener=on_state,
         event_listener=on_event,
         pause_check=pause_check,
+        historian_web_search_decider=historian_web_search_decider,
     )
     return system, events, states, {
         "eager_worker": eager_worker,
@@ -1009,6 +1014,25 @@ def test_magi_role_prompts_include_reasoning_discipline_and_high_ambiguity_mode(
     assert "Treat weak, absent, or conflicted grounding as valid outcomes" in MAGI_HISTORIAN_SYSTEM_PROMPT
     assert "Judgment / interpersonal / high-ambiguity mode" in MAGI_EAGER_SYSTEM_PROMPT
     assert "preserve issue hierarchy" in MAGI_ARBITER_PROMPT.lower()
+    assert "Role integrity matters" in MAGI_REASONING_CONSTITUTION
+    assert "Objections survive until resolved" in MAGI_REASONING_CONSTITUTION
+
+
+def test_magi_historian_web_search_only_enables_when_router_allows_fallback():
+    system, _, _, workers = _build_magi(
+        eager_text=[_make_eager_response(), _make_eager_closing_response()],
+        skeptic_text=[_make_skeptic_response(), _make_skeptic_closing_response()],
+        historian_text=[_make_historian_response(), _make_historian_closing_response()],
+        arbiter_text=_make_arbiter_response(final_answer="final"),
+        max_discussion_rounds=0,
+        historian_web_search_decider=lambda **kwargs: kwargs.get("phase") == "opening_arguments",
+    )
+
+    system.call_api("question", "docs")
+
+    assert workers["historian_worker"].calls[0]["kwargs"]["enable_web_search"] is True
+    assert workers["eager_worker"].calls[0]["kwargs"]["enable_web_search"] is False
+    assert workers["skeptic_worker"].calls[0]["kwargs"]["enable_web_search"] is False
 
 
 def test_magi_closing_arguments_always_runs():
@@ -1256,11 +1280,14 @@ def test_magi_parser_fallbacks_normalize_optional_and_required_fields():
 # ---------------------------------------------------------------------------
 
 from orchestration.evidence_pool import (
+    GATE_REQUIRE_REASON,
+    NO_NEW_EVIDENCE_THRESHOLD,
     OUTCOME_CACHE_HIT,
     OUTCOME_EXHAUSTED,
     OUTCOME_NEW_EVIDENCE,
     OUTCOME_NO_NEW,
     OUTCOME_REUSED_KNOWN,
+    USEFULNESS_MEDIUM,
     EvidencePool,
 )
 
@@ -1356,7 +1383,6 @@ def test_evidence_pool_later_role_gets_net_new_for_uncovered_pages():
 
 def test_evidence_pool_repeated_no_progress_exhausts_scope():
     """After NO_NEW_EVIDENCE_THRESHOLD no-new-evidence results, scope is exhausted."""
-    from orchestration.evidence_pool import NO_NEW_EVIDENCE_THRESHOLD
 
     pool = EvidencePool()
     result = _make_result("Debian.pdf", 1, 5)
@@ -1385,38 +1411,42 @@ def test_evidence_pool_repeated_no_progress_exhausts_scope():
         },
     }
     # First empty: no_new_evidence (count = 1)
-    qe1 = pool.record_query("no results query 1", ["debian"], caller_role="eager")
+    qe1 = pool.record_query("no results query 1", ["debian"], caller_role="eager", requested_evidence_goal="verify_state")
     pool.record_evidence_from_result(empty_result, qe1)
     assert qe1.outcome == OUTCOME_NO_NEW
 
     # Second empty: no_new_evidence (count = 2)
-    qe2 = pool.record_query("no results query 2", ["debian"], caller_role="eager")
+    qe2 = pool.record_query("no results query 2", ["debian"], caller_role="eager", requested_evidence_goal="verify_state")
     pool.record_evidence_from_result(empty_result, qe2)
     assert qe2.outcome == OUTCOME_NO_NEW
 
     # Third empty: exhausted
-    qe3 = pool.record_query("no results query 3", ["debian"], caller_role="eager")
+    qe3 = pool.record_query("no results query 3", ["debian"], caller_role="eager", requested_evidence_goal="verify_state")
     pool.record_evidence_from_result(empty_result, qe3)
     assert qe3.outcome == OUTCOME_EXHAUSTED
-    assert any("eager" in sk for sk in pool.scope_state.exhausted_scope_keys)
+    assert "debian::verify_state" in pool.scope_state.hard_exhausted_scope_keys
 
 
 def test_evidence_pool_gate_blocks_exhausted_scope():
     """check_gate blocks retrieval on an exhausted MAGI role scope."""
     pool = EvidencePool()
     # Manually exhaust a scope
-    scope_key = "eager:debian"
+    scope_key = pool._scope_key("eager", ["debian"], normalized_query="some query")
+    pool.scope_state.hard_exhausted_scope_keys.add(scope_key)
     pool.scope_state.exhausted_scope_keys.add(scope_key)
 
     gate = pool.check_gate("some query", ["debian"], caller_role="eager")
     assert not gate.allow_search
     assert gate.scope_exhausted
+    assert gate.exhaustion_level == "hard"
 
 
 def test_evidence_pool_allowed_repeat_reason_bypasses_exhaustion():
     """A legitimate repeat reason bypasses exhaustion gating."""
     pool = EvidencePool()
-    pool.scope_state.exhausted_scope_keys.add("eager:debian")
+    scope_key = pool._scope_key("eager", ["debian"], normalized_query="some query")
+    pool.scope_state.hard_exhausted_scope_keys.add(scope_key)
+    pool.scope_state.exhausted_scope_keys.add(scope_key)
 
     gate = pool.check_gate(
         "some query",
@@ -1426,6 +1456,57 @@ def test_evidence_pool_allowed_repeat_reason_bypasses_exhaustion():
     )
     assert gate.allow_search
     assert gate.allow_overlap_for_reason == "contradiction_check"
+
+
+def test_evidence_pool_soft_exhaustion_requires_reason_for_magi_before_blocking():
+    pool = EvidencePool()
+    empty_result = {
+        "context_text": "",
+        "selected_sources": [],
+        "merged_blocks": [],
+        "bundle_summaries": [],
+        "retrieval_metadata": {
+            "delivered_bundle_keys": [],
+            "delivered_block_keys": [],
+            "delivered_page_windows": [],
+        },
+    }
+
+    q1 = pool.record_query("repeat me", ["debian"], caller_role="historian")
+    pool.record_evidence_from_result(empty_result, q1)
+    q2 = pool.record_query("repeat me", ["debian"], caller_role="historian")
+    pool.record_evidence_from_result(empty_result, q2)
+
+    gate = pool.check_gate("repeat me", ["debian"], caller_role="historian")
+    assert gate.action == GATE_REQUIRE_REASON
+    assert gate.requires_reason is True
+    assert gate.allow_search is False
+
+
+def test_evidence_pool_usefulness_can_be_goal_aligned_not_only_coverage():
+    pool = EvidencePool()
+    result = {
+        "context_text": "install component steps and install component verification",
+        "selected_sources": ["InstallGuide.md"],
+        "merged_blocks": [],
+        "bundle_summaries": [],
+        "retrieval_metadata": {
+            "delivered_bundle_keys": ["bundle:InstallGuide.md:singleton:row_1"],
+            "delivered_block_keys": ["block:InstallGuide.md:singleton:row_1"],
+            "delivered_page_windows": [],
+        },
+    }
+
+    record = pool.record_query(
+        "how do I proceed",
+        ["debian"],
+        caller_role="historian",
+        requested_evidence_goal="install_component",
+    )
+    pool.record_evidence_from_result(result, record)
+
+    assert record.usefulness in {USEFULNESS_MEDIUM, "high"}
+    assert "requested evidence goal" in record.usefulness_reason
 
 
 def test_evidence_pool_singleton_dedupe_by_exact_key():

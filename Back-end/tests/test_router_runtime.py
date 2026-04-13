@@ -522,36 +522,29 @@ def test_router_tool_search_emits_prompt_facing_retrieval_blocks_for_tool_result
 
     assert result == expected_text
     assert database.calls == [("install package", ("debian",))]
-    assert events[-1] == (
-        "tool_complete",
+    event_type, payload = events[-1]
+    assert event_type == "tool_complete"
+    assert payload["name"] == "search_rag_database"
+    assert payload["result_size"] == len(expected_text)
+    assert payload["result_text"] == expected_text
+    assert payload["result_blocks"] == [
         {
-            "name": "search_rag_database",
-            "result_size": len(expected_text),
-            "result_text": expected_text,
-            "result_blocks": [
-                {
-                    "source": "Debian.pdf",
-                    "pages": [4],
-                    "page_label": "Page 4",
-                    "text": "apt install foo",
-                }
-            ],
-            "selected_sources": ["Debian.pdf:Page 4"],
-            "cached": False,
-            "anchor_count": 0,
-            "anchor_pages": [],
-            "fetched_neighbor_pages": [],
-            "delivered_bundle_count": 0,
-            "excluded_seen_count": 0,
-            "skipped_bundle_count": 0,
-            "search_outcome": "no_new_evidence",
-            "covered_region_count": 0,
-            "scope_exhausted": False,
-            "caller_role": "",
-            "caller_phase": "",
-            "caller_round": 0,
-        },
-    )
+            "source": "Debian.pdf",
+            "pages": [4],
+            "page_label": "Page 4",
+            "text": "apt install foo",
+        }
+    ]
+    assert payload["selected_sources"] == ["Debian.pdf:Page 4"]
+    assert payload["cached"] is False
+    assert payload["gate_action"] == "allow"
+    assert payload["search_outcome"] == "no_new_evidence"
+    assert payload["usefulness"] == "zero"
+    assert payload["scope_key"] == "debian::install_component"
+    assert payload["requested_evidence_goal"] == "install_component"
+    assert payload["caller_role"] == ""
+    assert payload["caller_phase"] == ""
+    assert payload["caller_round"] == 0
 
 
 def test_router_tool_search_exact_duplicate_hits_cache_when_seen_state_is_unchanged():
@@ -610,29 +603,16 @@ def test_router_tool_search_exact_duplicate_hits_cache_when_seen_state_is_unchan
     assert first == ""
     assert second == ""
     assert len(database.calls) == 1
-    assert events[-1] == (
-        "tool_complete",
-        {
-            "name": "search_rag_database",
-            "result_size": 0,
-            "result_text": "",
-            "result_blocks": [],
-            "selected_sources": [],
-            "cached": True,
-            "anchor_count": 1,
-            "anchor_pages": [],
-            "fetched_neighbor_pages": [],
-            "delivered_bundle_count": 0,
-            "excluded_seen_count": 0,
-            "skipped_bundle_count": 0,
-            "search_outcome": "cache_hit",
-            "covered_region_count": 0,
-            "scope_exhausted": False,
-            "caller_role": "",
-            "caller_phase": "",
-            "caller_round": 0,
-        },
-    )
+    event_type, payload = events[-1]
+    assert event_type == "tool_complete"
+    assert payload["name"] == "search_rag_database"
+    assert payload["cached"] is True
+    assert payload["gate_action"] == "allow_net_new_only"
+    assert payload["search_outcome"] == "cache_hit"
+    assert payload["usefulness"] == "zero"
+    assert payload["scope_key"] == "debian::repeat_me"
+    assert payload["soft_exhausted_scope_keys"] == ["debian::repeat_me"]
+    assert payload["scope_exhausted"] is True
 
 
 def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
@@ -752,29 +732,121 @@ def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
             "page_end": 4,
         }
     ]
-    assert events[-1] == (
-        "tool_complete",
-        {
-            "name": "search_rag_database",
-            "result_size": 0,
-            "result_text": "",
-            "result_blocks": [],
-            "selected_sources": [],
-            "cached": False,
-            "anchor_count": 1,
-            "anchor_pages": [4],
-            "fetched_neighbor_pages": [],
-            "delivered_bundle_count": 0,
-            "excluded_seen_count": 1,
-            "skipped_bundle_count": 0,
-            "search_outcome": "no_new_evidence",
-            "covered_region_count": 1,
-            "scope_exhausted": False,
-            "caller_role": "",
-            "caller_phase": "",
-            "caller_round": 0,
-        },
+    event_type, payload = events[-1]
+    assert event_type == "tool_complete"
+    assert payload["name"] == "search_rag_database"
+    assert payload["cached"] is False
+    assert payload["gate_action"] == "allow"
+    assert payload["search_outcome"] == "no_new_evidence"
+    assert payload["usefulness"] == "zero"
+    assert payload["usefulness_reason"] == "retrieval only revisited already-covered regions"
+    assert payload["scope_key"] == "debian::install_component"
+    assert payload["covered_region_count"] == 1
+    assert payload["scope_exhausted"] is False
+
+
+def test_router_tool_search_soft_require_reason_is_visible_for_normal_chatbot():
+    class FakeEmptyDatabase(FakeDatabase):
+        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None):
+            self.calls.append((query, tuple(sources or [])))
+            return {
+                "context_text": "",
+                "selected_sources": [],
+                "merged_blocks": [],
+                "bundle_summaries": [],
+                "retrieval_metadata": {
+                    "anchor_count": 0,
+                    "anchor_pages": [],
+                    "fetched_neighbor_pages": [],
+                    "delivered_bundle_count": 0,
+                    "delivered_bundle_keys": [],
+                    "delivered_block_keys": [],
+                    "delivered_page_window_keys": [],
+                    "delivered_page_windows": [],
+                    "excluded_seen_count": 0,
+                    "skipped_bundle_count": 0,
+                },
+            }
+
+    database = FakeEmptyDatabase()
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
     )
+
+    first = router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "repeat me", "relevant_documents": ["debian"]},
+    )
+    second = router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "repeat me", "relevant_documents": ["debian"]},
+    )
+    third = router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "repeat me", "relevant_documents": ["debian"]},
+    )
+
+    assert first == ""
+    assert second == ""
+    assert "refining the retrieval" in third
+    assert len(database.calls) == 1
+
+
+def test_router_tool_search_requested_goal_changes_scope_for_same_query():
+    class FakeGoalDatabase(FakeDatabase):
+        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, requested_evidence_goal=None):
+            self.calls.append((query, tuple(sources or []), requested_evidence_goal))
+            return {
+                "context_text": "",
+                "selected_sources": [],
+                "merged_blocks": [],
+                "bundle_summaries": [],
+                "retrieval_metadata": {
+                    "anchor_count": 0,
+                    "anchor_pages": [],
+                    "fetched_neighbor_pages": [],
+                    "delivered_bundle_count": 0,
+                    "delivered_bundle_keys": [],
+                    "delivered_block_keys": [],
+                    "delivered_page_window_keys": [],
+                    "delivered_page_windows": [],
+                    "excluded_seen_count": 0,
+                    "skipped_bundle_count": 0,
+                },
+            }
+
+    database = FakeGoalDatabase()
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+
+    router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "same query", "relevant_documents": ["debian"], "requested_evidence_goal": "install_component"},
+    )
+    router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "same query", "relevant_documents": ["debian"], "requested_evidence_goal": "verify_state"},
+    )
+
+    assert database.calls == [
+        ("same query", ("debian",), "install_component"),
+        ("same query", ("debian",), "verify_state"),
+    ]
 
 
 def test_router_loads_and_persists_session_scoped_chat_history():

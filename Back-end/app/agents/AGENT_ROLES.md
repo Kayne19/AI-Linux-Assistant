@@ -49,14 +49,34 @@ The summary includes:
 
 - covered region keys (what evidence areas have already been retrieved this turn)
 - the latest retrieval outcome classification (`delivered_new_evidence`, `cache_hit`, `reused_known_evidence`, `no_new_evidence`, `search_exhausted_for_scope`)
+- the latest usefulness classification (`high`, `medium`, `low`, `zero`)
+- the active `requested_evidence_goal`, when one is in play
 - any unresolved evidence gap from the prior query
-- exhausted scope keys (scopes where the pool has blocked further retrieval)
+- soft exhausted scope keys (scopes where repeat retrieval now requires an explicit reason)
+- hard exhausted scope keys (scopes where repeat retrieval is blocked unless a recognized reason is supplied)
 
 An accompanying `MAGI_NET_NEW_INSTRUCTION` is also injected to guide tool use:
 
 > When using tools: prefer net-new evidence regions not yet covered this run. Revisit covered regions only for contradiction checks, alternate-source confirmation, or explicit gap expansion.
 
-Roles that attempt retrieval on an exhausted scope receive a `retrieval_gated` event and an empty result, rather than a real DB call. Roles can bypass gating by supplying a recognized `repeat_reason` (`contradiction_check`, `alternate_source_confirmation`, `gap_expansion`, `explicit_gap`).
+Roles that attempt retrieval on an exhausted scope receive a router-owned `retrieval_gated` decision rather than an unconditional DB call. Recognized `repeat_reason` values are:
+
+- `contradiction_check`
+- `alternate_source_confirmation`
+- `expand_beyond_covered_region`
+- `fill_named_unresolved_gap`
+
+Current MAGI rule:
+
+- soft exhaustion triggers `require_reason`
+- hard exhaustion triggers `block`
+- the normal responder uses the same evidence-pool machinery, but reaches `require_reason` more softly than MAGI
+
+Current Historian fallback rule:
+
+- Historian keeps local corpus retrieval first
+- provider-native web search may be enabled only for Historian opening/discussion rounds
+- that fallback is router-controlled and only appears after local low-usefulness or exhausted retrieval state
 
 ## Traceability
 

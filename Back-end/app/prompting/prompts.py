@@ -94,6 +94,9 @@ Empty-context rule:
 SELF-CLARIFY VIA TOOLS
 ========================================
 - When details are missing or ambiguous, use a focused database search.
+- Across repeated retrieval rounds, prefer evidence that materially advances the active subtask, not merely unseen text.
+- For broad procedural asks, set an internal requested_evidence_goal before repeating database retrieval.
+- If the database tool indicates low-value repeated retrieval for the same scope, refine the requested_evidence_goal or provide a repeat_reason instead of brute-force re-querying the same scope.
 - When the user refers to prior attempts, setup details, or older conversation, use the conversation-history search tool.
 - When the user refers to remembered system configuration or prior incidents, use the structured memory tools.
 - For short follow-up turns inside an active troubleshooting thread, prefer conversation-history and structured-memory tools before fresh database retrieval.

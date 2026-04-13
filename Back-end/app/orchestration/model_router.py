@@ -12,7 +12,15 @@ from agents.response_agent import ResponseAgent
 from orchestration.history_preparer import PreparedHistory
 from orchestration.routing_registry import get_allowed_labels, get_searchable_labels
 from orchestration.run_control import RunCancelledError, RunPausedError, invoke_cancel_check
-from orchestration.evidence_pool import EvidencePool
+from orchestration.evidence_pool import (
+    ALLOWED_REPEAT_REASONS,
+    GENERIC_EVIDENCE_GOALS,
+    GATE_BLOCK,
+    GATE_REQUIRE_REASON,
+    EvidencePool,
+    normalize_evidence_goal,
+    normalize_repeat_reason,
+)
 from config.settings import SETTINGS
 from agents.summarizers import ContextSummarizer, HistorySummarizer
 from retrieval.vectorDB import VectorDB
@@ -526,6 +534,7 @@ class ModelRouter:
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
             pause_check=self.pause_check,
+            historian_web_search_decider=self._should_enable_historian_web_search,
         )
 
     def _build_magi_lite_responder(self):
@@ -566,6 +575,7 @@ class ModelRouter:
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
             pause_check=self.pause_check,
+            historian_web_search_decider=self._should_enable_historian_web_search,
         )
 
     def _build_history_summarizer(self, history_summarizer):
@@ -609,6 +619,18 @@ class ModelRouter:
                                 "enum": allowed_labels,
                             },
                             "description": "Suggested domain labels to bias or narrow the search",
+                        },
+                        "repeat_reason": {
+                            "type": "string",
+                            "enum": sorted(ALLOWED_REPEAT_REASONS),
+                            "description": "Reason for repeating retrieval on the same scope after low-value or exhausted results",
+                        },
+                        "requested_evidence_goal": {
+                            "type": "string",
+                            "description": (
+                                "Optional internal evidence goal such as install_component, "
+                                "configure_access, verify_state, or troubleshoot_failure"
+                            ),
                         },
                     },
                     "required": ["query", "relevant_documents"],
@@ -713,7 +735,16 @@ class ModelRouter:
             return turn.evidence_pool
         return self._standalone_evidence_pool
 
-    def _database_retrieve_context_result(self, query, searchable_labels, *, excluded_page_windows, excluded_block_keys):
+    def _database_retrieve_context_result(
+        self,
+        query,
+        searchable_labels,
+        *,
+        excluded_page_windows,
+        excluded_block_keys,
+        covered_region_keys,
+        requested_evidence_goal,
+    ):
         if not hasattr(self.database, "retrieve_context_result"):
             return {
                 "context_text": self.database.retrieve_context(query, searchable_labels),
@@ -735,6 +766,10 @@ class ModelRouter:
                 kwargs["excluded_page_windows"] = excluded_page_windows
             if accepts_var_kwargs or "excluded_block_keys" in signature.parameters:
                 kwargs["excluded_block_keys"] = excluded_block_keys
+            if accepts_var_kwargs or "covered_region_keys" in signature.parameters:
+                kwargs["covered_region_keys"] = covered_region_keys
+            if accepts_var_kwargs or "requested_evidence_goal" in signature.parameters:
+                kwargs["requested_evidence_goal"] = requested_evidence_goal
         except (TypeError, ValueError):
             kwargs = {}
         return retrieve_context_result(query, searchable_labels, **kwargs) or {}
@@ -757,10 +792,11 @@ class ModelRouter:
             "source_profile_sample": getattr(config, "source_profile_sample", None),
         }
 
-    def _retrieval_fingerprint(self, query, searchable_labels, excluded_page_windows, excluded_block_keys):
+    def _retrieval_fingerprint(self, query, searchable_labels, excluded_page_windows, excluded_block_keys, *, requested_evidence_goal=""):
         payload = {
             "query": query,
             "searchable_labels": list(searchable_labels or []),
+            "requested_evidence_goal": requested_evidence_goal or "",
             "excluded_page_windows": [
                 {
                     "key": window.get("key"),
@@ -781,10 +817,92 @@ class ModelRouter:
             return dict(self._active_magi_caller)
         return {}
 
-    def _retrieve_with_pool(self, query, searchable_labels, *, repeat_reason: str = "", requested_evidence_goal: str = ""):
+    def _derive_requested_evidence_goal(self, query: str, *, repeat_reason: str = "", unresolved_issue: str = "") -> str:
+        canonical_repeat_reason = normalize_repeat_reason(repeat_reason)
+        if canonical_repeat_reason == "contradiction_check":
+            return "confirm_contradiction"
+        if canonical_repeat_reason == "alternate_source_confirmation":
+            return "gather_alternate_source"
+        if canonical_repeat_reason == "expand_beyond_covered_region":
+            return "expand_covered_region"
+        if canonical_repeat_reason == "fill_named_unresolved_gap":
+            return "fill_unresolved_gap"
+
+        lowered = f"{(query or '').lower()} {(unresolved_issue or '').lower()}".strip()
+        if not lowered:
+            return ""
+        if any(token in lowered for token in ("prereq", "prerequisite", "requirement", "before ")):
+            return "identify_prerequisites"
+        if any(token in lowered for token in ("create ", "provision", "deploy", "build ", "bring up", "spin up")):
+            return "create_target"
+        if any(token in lowered for token in ("configure", "set up", "setup", "enable", "expose", "connect", "reachability", "forward")):
+            return "configure_access"
+        if any(token in lowered for token in ("install", "add package", "add component", "download and install")):
+            return "install_component"
+        if any(token in lowered for token in ("verify", "validate", "confirm", "check whether", "check if")):
+            return "verify_state"
+        if any(token in lowered for token in ("error", "fail", "failure", "broken", "not working", "issue", "troubleshoot", "debug", "why ")):
+            return "troubleshoot_failure"
+        return ""
+
+    def _should_enable_historian_web_search(self, *, phase: str = "", round_number: int = 0, unresolved_issue: str = "") -> bool:
+        del phase, round_number, unresolved_issue
+        return self._active_evidence_pool().historian_web_fallback_allowed()
+
+    def _gate_message(self, gate, *, requested_evidence_goal: str = "", caller_role: str = "") -> str:
+        goal_note = requested_evidence_goal or "a clearer requested_evidence_goal"
+        if gate.action == GATE_REQUIRE_REASON:
+            if caller_role:
+                return (
+                    "Evidence pool requires an explicit repeat_reason for this MAGI scope before another retrieval. "
+                    f"Refine the evidence goal or supply one of the allowed reasons. Current goal: {goal_note}."
+                )
+            return (
+                "Evidence pool suggests refining the retrieval before repeating this scope. "
+                f"Try a narrower requested_evidence_goal or provide a repeat_reason. Current goal: {goal_note}."
+            )
+        if gate.action == GATE_BLOCK:
+            return (
+                "Evidence pool blocked another retrieval on this scope because it is hard exhausted. "
+                f"Refine the goal or change scope before retrying. Current goal: {goal_note}."
+            )
+        return ""
+
+    def _annotate_retrieval_result(self, retrieval_result, query_record, gate):
+        retrieval_metadata = dict(retrieval_result.get("retrieval_metadata") or {})
+        retrieval_metadata.update(
+            {
+                "gate_action": gate.action,
+                "scope_key": query_record.scope_key,
+                "usefulness": query_record.usefulness,
+                "usefulness_reason": query_record.usefulness_reason,
+                "search_outcome": query_record.outcome,
+                "requested_evidence_goal": query_record.requested_evidence_goal,
+                "repeat_reason": query_record.repeat_reason,
+                "soft_exhausted_scope_keys": sorted(self._active_evidence_pool().scope_state.soft_exhausted_scope_keys),
+                "hard_exhausted_scope_keys": sorted(self._active_evidence_pool().scope_state.hard_exhausted_scope_keys),
+            }
+        )
+        retrieval_result["retrieval_metadata"] = retrieval_metadata
+        return retrieval_result
+
+    def _retrieve_with_pool(
+        self,
+        query,
+        searchable_labels,
+        *,
+        repeat_reason: str = "",
+        requested_evidence_goal: str = "",
+    ):
         """Core retrieval entry point. Uses the EvidencePool for gating, caching, and outcome tracking."""
         pool = self._active_evidence_pool()
         caller = self._active_caller_metadata()
+        unresolved_issue = caller.get("unresolved_issue", "")
+        requested_evidence_goal = normalize_evidence_goal(requested_evidence_goal) or self._derive_requested_evidence_goal(
+            query,
+            repeat_reason=repeat_reason,
+            unresolved_issue=unresolved_issue,
+        )
 
         # --- Gate check ---
         gate = pool.check_gate(
@@ -793,19 +911,29 @@ class ModelRouter:
             caller_role=caller.get("caller_role", ""),
             repeat_reason=repeat_reason,
             requested_evidence_goal=requested_evidence_goal,
+            unresolved_issue=unresolved_issue,
         )
         if not gate.allow_search:
+            gated_message = self._gate_message(
+                gate,
+                requested_evidence_goal=requested_evidence_goal,
+                caller_role=caller.get("caller_role", ""),
+            )
             self._emit_event(
                 "retrieval_gated",
                 {
                     "query": query,
+                    "gate_action": gate.action,
+                    "scope_key": gate.scope_key,
                     "scope_exhausted": gate.scope_exhausted,
+                    "exhaustion_level": gate.exhaustion_level,
                     "blocked_reason": gate.blocked_reason,
+                    "requested_evidence_goal": requested_evidence_goal,
                     **caller,
                 },
             )
             empty_result = {
-                "context_text": "",
+                "context_text": gated_message,
                 "selected_sources": [],
                 "merged_blocks": [],
                 "bundle_summaries": [],
@@ -823,6 +951,10 @@ class ModelRouter:
                     "cached_hit": False,
                     "gated": True,
                     "gated_reason": gate.blocked_reason,
+                    "gate_action": gate.action,
+                    "gated_message": gated_message,
+                    "scope_key": gate.scope_key,
+                    "requested_evidence_goal": requested_evidence_goal,
                 },
             }
             return empty_result, False
@@ -837,6 +969,7 @@ class ModelRouter:
             searchable_labels,
             excluded_page_windows,
             excluded_block_keys,
+            requested_evidence_goal=requested_evidence_goal,
         )
         cached_result = pool._cache.get(fingerprint)
 
@@ -847,8 +980,9 @@ class ModelRouter:
             caller_role=caller.get("caller_role", ""),
             caller_phase=caller.get("caller_phase", ""),
             caller_round=int(caller.get("caller_round") or 0),
-            unresolved_issue=caller.get("unresolved_issue", ""),
+            unresolved_issue=unresolved_issue,
             requested_evidence_goal=requested_evidence_goal,
+            repeat_reason=repeat_reason,
         )
 
         if cached_result is not None:
@@ -857,6 +991,7 @@ class ModelRouter:
             retrieval_metadata["cached_hit"] = True
             retrieval_result["retrieval_metadata"] = retrieval_metadata
             pool.record_evidence_from_result(retrieval_result, q_record, is_cache_hit=True)
+            self._annotate_retrieval_result(retrieval_result, q_record, gate)
             self._emit_event(
                 "evidence_pool_update",
                 {**pool.summary_event_payload(), "query": query, **caller},
@@ -869,21 +1004,24 @@ class ModelRouter:
             searchable_labels,
             excluded_page_windows=excluded_page_windows,
             excluded_block_keys=excluded_block_keys,
+            covered_region_keys=pool.known_covered_region_keys(),
+            requested_evidence_goal=requested_evidence_goal,
         )
         retrieval_metadata = dict(retrieval_result.get("retrieval_metadata") or {})
         retrieval_metadata["cached_hit"] = False
         retrieval_result["retrieval_metadata"] = retrieval_metadata
         pool._cache[fingerprint] = deepcopy(retrieval_result)
         pool.record_evidence_from_result(retrieval_result, q_record, is_cache_hit=False)
+        self._annotate_retrieval_result(retrieval_result, q_record, gate)
         self._emit_event(
             "evidence_pool_update",
             {**pool.summary_event_payload(), "query": query, **caller},
         )
         return retrieval_result, False
 
-    def _retrieve_with_ledger(self, query, searchable_labels):
+    def _retrieve_with_ledger(self, query, searchable_labels, **kwargs):
         """Public-facing retrieval entry point (name kept for compatibility)."""
-        return self._retrieve_with_pool(query, searchable_labels)
+        return self._retrieve_with_pool(query, searchable_labels, **kwargs)
 
     def _handle_responder_tool_call(self, tool_name, tool_args):
         self._check_cancel(f"before_tool:{tool_name}")
@@ -899,12 +1037,20 @@ class ModelRouter:
                     tool_complete_payload = None
                 else:
                     searchable_labels = self._searchable_labels(relevant_documents)
+                    repeat_reason = normalize_repeat_reason(tool_args.get("repeat_reason", ""))
+                    requested_evidence_goal = normalize_evidence_goal(tool_args.get("requested_evidence_goal", "")) or self._derive_requested_evidence_goal(
+                        query,
+                        repeat_reason=repeat_reason,
+                        unresolved_issue=self._active_caller_metadata().get("unresolved_issue", ""),
+                    )
                     retrieval_result, cached_hit = self._retrieve_with_ledger(
                         query,
                         searchable_labels,
+                        repeat_reason=repeat_reason,
+                        requested_evidence_goal=requested_evidence_goal,
                     )
-                    result = str(retrieval_result.get("context_text") or "")
                     retrieval_metadata = retrieval_result.get("retrieval_metadata") or {}
+                    result = str(retrieval_result.get("context_text") or "")
                     pool = self._active_evidence_pool()
                     caller = self._active_caller_metadata()
                     tool_complete_payload = {
@@ -921,9 +1067,17 @@ class ModelRouter:
                         "excluded_seen_count": retrieval_metadata.get("excluded_seen_count", 0),
                         "skipped_bundle_count": retrieval_metadata.get("skipped_bundle_count", 0),
                         # Evidence pool fields
-                        "search_outcome": pool.last_query_outcome(),
+                        "gate_action": retrieval_metadata.get("gate_action", ""),
+                        "search_outcome": retrieval_metadata.get("search_outcome") or pool.last_query_outcome(),
+                        "usefulness": retrieval_metadata.get("usefulness") or pool.last_query_usefulness(),
+                        "usefulness_reason": retrieval_metadata.get("usefulness_reason", ""),
+                        "scope_key": retrieval_metadata.get("scope_key") or pool.last_query_scope_key(),
                         "covered_region_count": len(pool.known_covered_region_keys()),
                         "scope_exhausted": bool(pool.scope_state.exhausted_scope_keys),
+                        "soft_exhausted_scope_keys": sorted(pool.scope_state.soft_exhausted_scope_keys),
+                        "hard_exhausted_scope_keys": sorted(pool.scope_state.hard_exhausted_scope_keys),
+                        "requested_evidence_goal": retrieval_metadata.get("requested_evidence_goal", requested_evidence_goal),
+                        "repeat_reason": retrieval_metadata.get("repeat_reason", repeat_reason),
                         "caller_role": caller.get("caller_role", ""),
                         "caller_phase": caller.get("caller_phase", ""),
                         "caller_round": caller.get("caller_round", 0),
@@ -1076,12 +1230,21 @@ class ModelRouter:
         return RouterState.REWRITE_QUERY
 
     def _retrieve_context(self, turn):
+        requested_evidence_goal = self._derive_requested_evidence_goal(
+            turn.retrieval_query or turn.user_question,
+        )
         retrieval_result, _ = self._retrieve_with_ledger(
             turn.retrieval_query,
             turn.suggested_search_labels,
+            requested_evidence_goal=requested_evidence_goal,
         )
-        turn.retrieved_docs = str(retrieval_result.get("context_text") or "")
-        turn.retrieved_context_blocks = list(retrieval_result.get("merged_blocks") or [])
+        retrieval_metadata = retrieval_result.get("retrieval_metadata") or {}
+        if retrieval_metadata.get("gated"):
+            turn.retrieved_docs = ""
+            turn.retrieved_context_blocks = []
+        else:
+            turn.retrieved_docs = str(retrieval_result.get("context_text") or "")
+            turn.retrieved_context_blocks = list(retrieval_result.get("merged_blocks") or [])
         return RouterState.GENERATE_RESPONSE
 
     def _summarize_retrieved_docs(self, turn):
