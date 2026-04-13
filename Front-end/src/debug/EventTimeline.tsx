@@ -112,6 +112,33 @@ function DetailText({ text }: { text: string }) {
   return <pre className="debug-detail-text compact">{text || "—"}</pre>;
 }
 
+function ExpandableText({
+  text,
+  emptyText,
+  initiallyExpanded = false,
+  collapsedLines = 6,
+}: {
+  text: string;
+  emptyText: string;
+  initiallyExpanded?: boolean;
+  collapsedLines?: number;
+}) {
+  const [expanded, setExpanded] = useState(initiallyExpanded);
+  const lines = text.split("\n").length;
+  const canCollapse = Boolean(text) && lines > collapsedLines;
+
+  return (
+    <>
+      <pre className={`debug-detail-text compact${canCollapse && !expanded ? " collapsed" : ""}`}>{text || emptyText}</pre>
+      {canCollapse ? (
+        <button type="button" className="debug-inline-link" onClick={() => setExpanded((current) => !current)}>
+          {expanded ? "Hide" : "Show"}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
 function DetailCard({
   label,
   children,
@@ -136,9 +163,43 @@ function RetrievalBlockList({ blocks }: { blocks: RetrievedContextBlock[] }) {
       {blocks.map((block, index) => (
         <div key={`${block.source}-${block.page_label}-${index}`} className="debug-detail-list-item">
           <strong>{block.source} • {block.page_label}</strong>
-          <DetailText text={block.text} />
+          <ExpandableText text={block.text} emptyText="—" />
         </div>
       ))}
+    </div>
+  );
+}
+
+function ContextTab({ events, run }: { events: RunEvent[]; run?: ChatRun | null }) {
+  const inputs = run?.normalized_inputs;
+  const recentTurns = inputs?.recent_turns || [];
+
+  return (
+    <div className="debug-detail-stack">
+      <DetailCard label="conversation summary">
+        <ExpandableText
+          text={inputs?.conversation_summary_text || ""}
+          emptyText="No conversation summary recorded for this run."
+        />
+      </DetailCard>
+      <DetailCard label="recent turns">
+        {recentTurns.length === 0 ? <div className="debug-empty-state">No recent turns captured for this run.</div> : (
+          <div className="debug-detail-list">
+            {recentTurns.map((turn, index) => (
+              <div key={`${turn.role}-${index}`} className="debug-detail-list-item">
+                <strong>{turn.role}</strong>
+                <ExpandableText text={turn.content} emptyText="—" collapsedLines={4} />
+              </div>
+            ))}
+          </div>
+        )}
+      </DetailCard>
+      <div className="debug-timeline-list">
+        {events.length === 0 ? <div className="debug-empty-state">No context events for this run.</div> : null}
+        {events.map((event) => (
+          <GenericEventRow key={event.seq} event={event} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -151,7 +212,14 @@ function RetrievalTab({ events, run }: { events: RunEvent[]; run?: ChatRun | nul
         <DetailText text={inputs?.retrieval_query || "No retrieval query recorded."} />
       </DetailCard>
       <DetailCard label="merged context blocks">
-        <RetrievalBlockList blocks={inputs?.retrieved_context_blocks || []} />
+        {(inputs?.retrieved_context_blocks?.length || 0) > 0 ? (
+          <RetrievalBlockList blocks={inputs?.retrieved_context_blocks || []} />
+        ) : (
+          <ExpandableText
+            text={inputs?.retrieved_context_text || ""}
+            emptyText="No merged retrieval blocks recorded for this run."
+          />
+        )}
       </DetailCard>
       <div className="debug-timeline-list">
         {events.length === 0 ? <div className="debug-empty-state">No retrieval events for this run.</div> : null}
@@ -333,6 +401,10 @@ export function EventTimeline({ events, tab, run }: EventTimelineProps) {
         ))}
       </div>
     );
+  }
+
+  if (tab === "Context") {
+    return <ContextTab events={filteredEvents} run={run} />;
   }
 
   if (tab === "Retrieval") {

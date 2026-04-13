@@ -8,14 +8,25 @@ export const STREAMING_CODES = new Set([
   "magi_role_text_checkpoint",
 ]);
 export const SUBSYSTEM_STATE_CODES = new Set(["responder_state", "magi_state"]);
-export const DEBUG_TABS = ["Timeline", "States", "Retrieval", "Memory", "Streaming", "Raw"] as const;
+const CONTEXT_EVENT_CODES = new Set(["summarized_conversation_history", "summarized_retrieved_docs"]);
+const RETRIEVAL_TOOL_NAMES = new Set(["search_rag_database", "search_RAG_database"]);
+export const DEBUG_TABS = ["Timeline", "States", "Context", "Retrieval", "Memory", "Streaming", "Raw"] as const;
 
 export type DebugTab = (typeof DEBUG_TABS)[number];
+
+export function isRetrievalToolEvent(event: RunEvent): boolean {
+  if (event.type !== "event" || !event.code.startsWith("tool_") || !isObjectRecord(event.payload)) {
+    return false;
+  }
+  return typeof event.payload.name === "string" && RETRIEVAL_TOOL_NAMES.has(event.payload.name);
+}
 
 export const TAB_FILTERS: Record<DebugTab, (event: RunEvent) => boolean> = {
   Timeline: () => true,
   States: (event) => event.type === "state" || (event.type === "event" && !STREAMING_CODES.has(event.code)),
-  Retrieval: (event) => (event.type === "state" || event.type === "event") && event.code.startsWith("retrieval_"),
+  Context: (event) => event.type === "event" && CONTEXT_EVENT_CODES.has(event.code),
+  Retrieval: (event) =>
+    ((event.type === "state" || event.type === "event") && event.code.startsWith("retrieval_")) || isRetrievalToolEvent(event),
   Memory: (event) => (event.type === "state" || event.type === "event") && event.code.includes("memory"),
   Streaming: (event) => event.type === "event" && STREAMING_CODES.has(event.code),
   Raw: () => true,
@@ -95,6 +106,9 @@ function eventPhase(event: RunEvent): string {
   if (subsystem) {
     return subsystem.phase;
   }
+  if (isRetrievalToolEvent(event)) {
+    return "retrieval";
+  }
   if (event.code.startsWith("retrieval_")) {
     return "retrieval";
   }
@@ -149,16 +163,35 @@ function summarizeGenericEventPayload(event: RunEvent): string {
         ? `${payload.tool_rounds} tool round${payload.tool_rounds === 1 ? "" : "s"}`
         : "response complete";
     case "tool_start":
+      if (typeof payload.name === "string" && RETRIEVAL_TOOL_NAMES.has(payload.name)) {
+        const args = isObjectRecord(payload.args) ? payload.args : {};
+        return [
+          "retrieval tool start",
+          typeof args.query === "string" ? args.query : "",
+        ].filter(Boolean).join(" • ");
+      }
       return [
         typeof payload.name === "string" ? payload.name : "",
         isObjectRecord(payload.args) ? JSON.stringify(payload.args) : "",
       ].filter(Boolean).join(" • ");
     case "tool_complete":
+      if (typeof payload.name === "string" && RETRIEVAL_TOOL_NAMES.has(payload.name)) {
+        return [
+          "retrieval tool complete",
+          typeof payload.result_size === "number" ? `${payload.result_size} chars` : "",
+        ].filter(Boolean).join(" • ");
+      }
       return [
         typeof payload.name === "string" ? payload.name : "",
         typeof payload.result_size === "number" ? `${payload.result_size} chars` : "",
       ].filter(Boolean).join(" • ");
     case "tool_error":
+      if (typeof payload.name === "string" && RETRIEVAL_TOOL_NAMES.has(payload.name)) {
+        return [
+          "retrieval tool error",
+          typeof payload.error === "string" ? payload.error : "",
+        ].filter(Boolean).join(" • ");
+      }
       return [
         typeof payload.name === "string" ? payload.name : "",
         typeof payload.error === "string" ? payload.error : "",
@@ -495,6 +528,9 @@ export function eventTitle(event: RunEvent): string {
   if (subsystemState) {
     const prefix = subsystemState.phase === "magi" ? "Magi" : "Responder";
     return `${prefix}.${subsystemState.stateCode || "UNKNOWN"}`;
+  }
+  if (isRetrievalToolEvent(event) && event.type === "event" && isObjectRecord(event.payload)) {
+    return `retrieval_tool.${event.code.replace("tool_", "")}`;
   }
   if (event.type === "state") {
     return event.code;

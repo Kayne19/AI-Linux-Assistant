@@ -291,7 +291,6 @@
   white-space: pre-wrap;
 }
 
-.debug-inputs-grid,
 .debug-detail-stack {
   display: flex;
   flex-direction: column;
@@ -351,6 +350,12 @@
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 6;
+}
+
+.debug-detail-card .debug-inline-link,
+.debug-detail-list-item .debug-inline-link {
+  align-self: flex-start;
+  margin-top: 6px;
 }
 
 .debug-detail-chip-list {

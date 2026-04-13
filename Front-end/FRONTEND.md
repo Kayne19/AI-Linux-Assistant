@@ -170,9 +170,10 @@ Owns the dev/admin debug drawer:
 - timing calculations
 - live SSE attach/reconnect for active runs
 - client-side event tab filtering
-- one canonical run-level `normalized_inputs` view for request text, conversation summary, recent turns, loaded memory snapshot, retrieval query, and merged retrieved context blocks
+- one canonical run-level `normalized_inputs` view consumed inside the debug tabs rather than duplicated in the inspector header
 - grouped execution detail for responder, Magi, provider, tool, retrieval, memory, and naming events beneath top-level router states
 - rendering explicit Magi gating / round-summary / synthesis events, including discussion `discussion_mode` / `unresolved_issue` and Arbiter synthesis metadata, without recreating council policy in React
+- a dedicated `Context` tab for conversation-summary / recent-turn inputs plus a `Retrieval` tab that also surfaces retrieval tool calls alongside retrieval pipeline events
 
 Debug event loading currently works like this:
 
