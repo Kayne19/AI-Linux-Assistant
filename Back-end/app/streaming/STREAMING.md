@@ -194,16 +194,18 @@ Owns:
 Owns:
 
 - response request preparation
-- provider streaming handoff
+- provider step handoff for the regular chatbot protocol
 - maintaining responder-specific state transitions
 - emitting provider lifecycle events that the router/API can forward over SSE
 
 Important detail:
 
-- the normal responder suppresses raw provider `text_delta` chunks during streaming
-- once the streamed provider call completes, it emits one finalized assistant `text_delta` payload into the shared frontend pacing path
+- the normal responder now runs as a router-owned bounded mini-protocol rather than a provider-owned internal tool loop
+- provider adapters supply one model step at a time; the router decides whether another tool-bearing step is allowed or whether the responder must finalize with tools disabled
+- the normal responder still suppresses raw provider `text_delta` chunks during streaming-oriented runs
+- once the router-owned responder protocol finishes, it emits one finalized assistant `text_delta` payload into the shared frontend pacing path
 - this keeps normal chat streaming aligned with the Magi arbiter path and avoids partial-markdown or tool-round artifacts reaching the UI
-- responder sub-states such as `PREPARE_REQUEST`, `REQUEST_MODEL`, `PROCESS_TOOL_CALLS`, and `COMPLETE` are emitted as `responder_state` events with structured `phase/state/details` payloads
+- responder sub-states such as `PREPARE_REQUEST`, `REQUEST_MODEL`, `PROCESS_TOOL_CALLS`, `EVALUATE_TOOL_RESULT`, `FINALIZE_RESPONSE`, and `COMPLETE` are emitted as `responder_state` events with structured `phase/state/details` payloads
 - those sub-states are intentionally event-scoped rather than top-level router `state` rows, so the frontend can show them as nested execution detail under `GENERATE_RESPONSE`
 - other non-streaming execution events such as provider lifecycle, tool calls, retrieval activity, memory events, and naming events remain normal `event` rows and can be grouped beneath the active router state in debug views
 
@@ -240,8 +242,8 @@ Important detail:
 
 Owns:
 
-- transport-level streaming with the Responses API
-- text delta emission
+- transport-level request/response steps
+- provider-specific streaming when a caller explicitly uses a streaming path
 - provider-specific request/retry/caching behavior
 
 Providers should not own persistence or router state.

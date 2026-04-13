@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import providers.anthropic_caller as anthropic_module
 import providers.local_caller as local_module
 import providers.openAI_caller as openai_module
+from providers.step_protocol import ProviderToolCall
 
 
 class FakeAnthropicBlock:
@@ -163,6 +164,62 @@ def test_openai_worker_includes_native_web_search_and_emits_event():
     assert tool_calls == [("lookup", {"q": "one"})]
     assert worker.client.responses.calls[0]["tools"][-1]["type"] == "web_search"
     assert ("web_search_used", {"provider": "openai", "count": 1, "round": 0}) in events
+
+
+def test_openai_worker_start_text_step_returns_tool_calls_without_internal_loop():
+    worker = openai_module.OpenAICaller.__new__(openai_module.OpenAICaller)
+    worker.model = "fake-openai"
+    worker.reasoning_effort = "low"
+    worker.client = FakeOpenAIClient(
+        [
+            FakeOpenAIResponse(
+                output=[FakeOpenAIToolCall("lookup", "{\"q\":\"one\"}", "call_1")],
+                output_text="",
+            ),
+            FakeOpenAIResponse(output_text="should not be consumed"),
+        ]
+    )
+
+    events = []
+
+    step = worker.start_text_step(
+        system_prompt="sys",
+        user_message="user",
+        history=[],
+        tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+        event_listener=lambda event_type, payload: events.append((event_type, payload)),
+    )
+
+    assert [tool_call.name for tool_call in step.tool_calls] == ["lookup"]
+    assert step.tool_calls[0] == ProviderToolCall(name="lookup", arguments={"q": "one"}, call_id="call_1")
+    assert len(worker.client.responses.calls) == 1
+    assert ("request_submitted", {"round": 0}) in events
+
+
+def test_openai_worker_continue_text_step_submits_router_tool_results():
+    worker = openai_module.OpenAICaller.__new__(openai_module.OpenAICaller)
+    worker.model = "fake-openai"
+    worker.reasoning_effort = "low"
+    worker.client = FakeOpenAIClient(
+        [
+            FakeOpenAIResponse(output_text="final answer"),
+        ]
+    )
+
+    step = worker.continue_text_step(
+        system_prompt="sys",
+        session_state={"response_id": "resp_prev"},
+        tool_results=[{"call_id": "call_1", "name": "lookup", "arguments": {"q": "one"}, "output": "tool result"}],
+        tools=[],
+        enable_web_search=False,
+    )
+
+    assert step.output_text == "final answer"
+    assert step.tool_calls == []
+    assert worker.client.responses.calls[0]["previous_response_id"] == "resp_prev"
+    assert worker.client.responses.calls[0]["input"] == [
+        {"type": "function_call_output", "call_id": "call_1", "output": "tool result"}
+    ]
 
 
 def test_openai_worker_normalizes_optional_tool_fields_for_strict_schemas():

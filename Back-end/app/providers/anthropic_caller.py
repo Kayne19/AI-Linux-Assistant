@@ -3,6 +3,7 @@ import json
 import os
 
 from orchestration.run_control import invoke_cancel_check
+from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 try:
     from dotenv import load_dotenv
@@ -74,6 +75,23 @@ class AnthropicCaller:
                 )
         return tool_calls
 
+    def _normalize_tool_call(self, tool_call):
+        return ProviderToolCall(
+            name=tool_call.get("name", "unknown_tool"),
+            arguments=tool_call.get("input", {}) or {},
+            call_id=tool_call.get("id"),
+        )
+
+    def _step_result_from_response(self, response, messages):
+        return ProviderStepResult(
+            output_text=self._extract_text(response),
+            tool_calls=[self._normalize_tool_call(tool_call) for tool_call in self._extract_tool_calls(response)],
+            session_state={
+                "messages": list(messages or []),
+                "response": response,
+            },
+        )
+
     def _extract_text(self, response):
         text_parts = []
         for block in getattr(response, "content", []) or []:
@@ -104,6 +122,21 @@ class AnthropicCaller:
                     "type": "tool_result",
                     "tool_use_id": tool_call.get("id"),
                     "content": tool_result,
+                }
+            )
+        return {"role": "user", "content": content}
+
+    def _tool_result_message_from_results(self, tool_results):
+        content = []
+        for tool_result in tool_results or []:
+            output = tool_result.get("output", "")
+            if not isinstance(output, str):
+                output = json.dumps(output)
+            content.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_result.get("call_id"),
+                    "content": output,
                 }
             )
         return {"role": "user", "content": content}
@@ -205,6 +238,86 @@ class AnthropicCaller:
             if getattr(response, "stop_reason", None) != "pause_turn":
                 return response, messages
             messages = messages + [self._assistant_message_from_response(response)]
+
+    def start_text_step(
+        self,
+        system_prompt,
+        user_message,
+        history=None,
+        tools=None,
+        temperature=None,
+        max_output_tokens=None,
+        enable_web_search=False,
+        event_listener=None,
+        cancel_check=None,
+        cache_config=None,
+        round_number=0,
+    ):
+        del cache_config
+        translated_tools = self._maybe_append_native_web_search(
+            self._translate_tools(tools or []),
+            enable_web_search,
+        )
+        messages = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
+
+        invoke_cancel_check(cancel_check, "before_model_call")
+        if event_listener is not None:
+            event_listener("request_submitted", {"round": round_number})
+
+        response, messages = self._request_until_not_paused(
+            system_prompt,
+            translated_tools,
+            messages,
+            temperature,
+            max_output_tokens,
+            event_listener,
+            round_number,
+        )
+        invoke_cancel_check(cancel_check, "after_model_call")
+        return self._step_result_from_response(response, messages)
+
+    def continue_text_step(
+        self,
+        system_prompt,
+        session_state,
+        tool_results,
+        tools=None,
+        temperature=None,
+        max_output_tokens=None,
+        enable_web_search=False,
+        event_listener=None,
+        cancel_check=None,
+        cache_config=None,
+        round_number=1,
+    ):
+        del cache_config
+        translated_tools = self._maybe_append_native_web_search(
+            self._translate_tools(tools or []),
+            enable_web_search,
+        )
+        session_state = session_state or {}
+        prior_messages = list(session_state.get("messages") or [])
+        prior_response = session_state.get("response")
+        messages = prior_messages + [
+            self._assistant_message_from_response(prior_response),
+            self._tool_result_message_from_results(tool_results),
+        ]
+
+        invoke_cancel_check(cancel_check, "before_model_call")
+        if event_listener is not None:
+            event_listener("request_submitted", {"round": round_number})
+
+        response, messages = self._request_until_not_paused(
+            system_prompt,
+            translated_tools,
+            messages,
+            temperature,
+            max_output_tokens,
+            event_listener,
+            round_number,
+        )
+        invoke_cancel_check(cancel_check, "after_model_call")
+        return self._step_result_from_response(response, messages)
 
     def generate_text(
         self,

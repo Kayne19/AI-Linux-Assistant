@@ -11,7 +11,9 @@ class ResponseState(Enum):
     REQUEST_MODEL = auto()
     WEB_SEARCH = auto()
     PROCESS_TOOL_CALLS = auto()
+    EVALUATE_TOOL_RESULT = auto()
     SUBMIT_TOOL_RESULTS = auto()
+    FINALIZE_RESPONSE = auto()
     COMPLETE = auto()
     ERROR = auto()
 
@@ -62,7 +64,19 @@ class ResponseAgent:
             return
         self._handle_worker_event(event_type, payload)
 
-    def call_api(
+    def emit_state(self, state, payload=None):
+        self._set_state(state, payload)
+
+    def emit_final_text(self, response_text):
+        if response_text and self.event_listener is not None:
+            self.event_listener("text_delta", {"delta": response_text})
+
+    def supports_router_protocol(self):
+        return callable(getattr(self.worker, "start_text_step", None)) and callable(
+            getattr(self.worker, "continue_text_step", None)
+        )
+
+    def _build_turn_content(
         self,
         user_query,
         retrieved_docs,
@@ -72,7 +86,7 @@ class ResponseAgent:
         if summarized_conversation_history is None:
             summarized_conversation_history = PreparedHistory()
         history_summary_text = (summarized_conversation_history.summary_text or "").strip()
-        current_turn_content = f"""
+        return f"""
         PRIOR CONVERSATION SUMMARY:
         {history_summary_text}
 
@@ -85,6 +99,87 @@ class ResponseAgent:
         USER QUESTION:
         {user_query}
         """
+
+    def start_protocol_step(
+        self,
+        user_query,
+        retrieved_docs,
+        summarized_conversation_history=None,
+        memory_snapshot_text="",
+        *,
+        tools=None,
+        enable_web_search=None,
+        round_number=0,
+    ):
+        current_turn_content = self._build_turn_content(
+            user_query,
+            retrieved_docs,
+            summarized_conversation_history,
+            memory_snapshot_text,
+        )
+        self._set_state(ResponseState.PREPARE_REQUEST, {})
+        invoke_cancel_check(self.cancel_check, "before_model_call")
+        step_result = call_with_optional_cancel_check(
+            self.worker.start_text_step,
+            cancel_check=self.cancel_check,
+            system_prompt=self.chatbot_prompt,
+            user_message=current_turn_content,
+            history=summarized_conversation_history.recent_turns if summarized_conversation_history else [],
+            tools=self.tools if tools is None else tools,
+            enable_web_search=self.enable_native_web_search if enable_web_search is None else enable_web_search,
+            event_listener=self._handle_worker_event,
+            cache_config={
+                "enabled": True,
+                "scope": "chat_responder",
+            },
+            round_number=round_number,
+        )
+        invoke_cancel_check(self.cancel_check, "after_model_call")
+        return step_result
+
+    def continue_protocol_step(
+        self,
+        session_state,
+        tool_results,
+        *,
+        tools=None,
+        enable_web_search=None,
+        round_number=1,
+    ):
+        invoke_cancel_check(self.cancel_check, "before_model_call")
+        step_result = call_with_optional_cancel_check(
+            self.worker.continue_text_step,
+            cancel_check=self.cancel_check,
+            system_prompt=self.chatbot_prompt,
+            session_state=session_state,
+            tool_results=tool_results,
+            tools=self.tools if tools is None else tools,
+            enable_web_search=self.enable_native_web_search if enable_web_search is None else enable_web_search,
+            event_listener=self._handle_worker_event,
+            cache_config={
+                "enabled": True,
+                "scope": "chat_responder",
+            },
+            round_number=round_number,
+        )
+        invoke_cancel_check(self.cancel_check, "after_model_call")
+        return step_result
+
+    def call_api(
+        self,
+        user_query,
+        retrieved_docs,
+        summarized_conversation_history=None,
+        memory_snapshot_text="",
+    ):
+        if summarized_conversation_history is None:
+            summarized_conversation_history = PreparedHistory()
+        current_turn_content = self._build_turn_content(
+            user_query,
+            retrieved_docs,
+            summarized_conversation_history,
+            memory_snapshot_text,
+        )
         self._set_state(ResponseState.PREPARE_REQUEST, {})
         try:
             invoke_cancel_check(self.cancel_check, "before_model_call")
@@ -120,20 +215,12 @@ class ResponseAgent:
     ):
         if summarized_conversation_history is None:
             summarized_conversation_history = PreparedHistory()
-        history_summary_text = (summarized_conversation_history.summary_text or "").strip()
-        current_turn_content = f"""
-        PRIOR CONVERSATION SUMMARY:
-        {history_summary_text}
-
-        KNOWN SYSTEM MEMORY:
-        {memory_snapshot_text}
-
-        REFERENCE CONTEXT (Use this to answer, but do not memorize it):
-        {retrieved_docs}
-
-        USER QUESTION:
-        {user_query}
-        """
+        current_turn_content = self._build_turn_content(
+            user_query,
+            retrieved_docs,
+            summarized_conversation_history,
+            memory_snapshot_text,
+        )
         self._set_state(ResponseState.PREPARE_REQUEST, {})
         try:
             stream_method = getattr(self.worker, "generate_text_stream", None)

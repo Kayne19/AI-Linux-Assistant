@@ -41,6 +41,13 @@ It should not delegate workflow ownership to helpers or provider adapters.
 
 If a behavior materially changes the lifecycle of a turn, it belongs in the router or in a router-owned phase.
 
+Current regular-chat rule:
+
+- the normal responder now runs as a router-owned bounded protocol
+- provider adapters return a single model step at a time
+- the router decides whether tools stay visible, whether retrieval remains allowed, and when the responder must finalize with tools disabled
+- Magi remains separately bounded by its explicit deliberation phases and keeps the shared tool-result text contract unchanged
+
 ### 1a. Durable Run State Owns Concurrency Policy
 
 Durable chat-run state does not replace the router.
@@ -146,6 +153,12 @@ They should not own:
 - retrieval decisions
 
 Providers are adapters, not orchestrators.
+
+Current provider boundary for the responder:
+
+- providers may expose single-step transport methods for the responder protocol
+- providers must not own the regular responder's repeated tool-call loop as workflow
+- provider-owned looping helpers may remain as compatibility shims, but router-owned execution is the source of truth for bounded regular-chat behavior
 
 ### 5. Persistence Layers Stay Persistence-Only
 

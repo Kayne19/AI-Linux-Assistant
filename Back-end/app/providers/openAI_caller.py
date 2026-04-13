@@ -4,6 +4,7 @@ import re
 import time
 
 from orchestration.run_control import invoke_cancel_check
+from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 try:
     from dotenv import load_dotenv
@@ -122,6 +123,20 @@ class OpenAICaller:
                 tool_calls.append(item)
         return tool_calls
 
+    def _normalize_tool_call(self, tool_call):
+        return ProviderToolCall(
+            name=getattr(tool_call, "name", "unknown_tool"),
+            arguments=self._parse_tool_arguments(getattr(tool_call, "arguments", {})),
+            call_id=getattr(tool_call, "call_id", None),
+        )
+
+    def _step_result_from_response(self, response):
+        return ProviderStepResult(
+            output_text=response.output_text or "",
+            tool_calls=[self._normalize_tool_call(tool_call) for tool_call in self._extract_tool_calls(response)],
+            session_state={"response_id": getattr(response, "id", None)},
+        )
+
     def _extract_web_search_calls(self, response):
         web_search_calls = []
         for item in getattr(response, "output", []) or []:
@@ -158,6 +173,21 @@ class OpenAICaller:
                     "type": "function_call_output",
                     "call_id": tool_call.call_id,
                     "output": tool_result,
+                }
+            )
+        return outputs
+
+    def _translate_tool_results(self, tool_results):
+        outputs = []
+        for tool_result in tool_results or []:
+            output = tool_result.get("output", "")
+            if not isinstance(output, str):
+                output = json.dumps(output)
+            outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": tool_result.get("call_id"),
+                    "output": output,
                 }
             )
         return outputs
@@ -322,6 +352,117 @@ class OpenAICaller:
                         },
                     )
                 time.sleep(delay_seconds)
+
+    def start_text_step(
+        self,
+        system_prompt,
+        user_message,
+        history=None,
+        tools=None,
+        temperature=None,
+        max_output_tokens=None,
+        enable_web_search=False,
+        event_listener=None,
+        cancel_check=None,
+        cache_config=None,
+        round_number=0,
+    ):
+        translated_tools = self._maybe_append_native_web_search(
+            self._translate_tools(tools or []),
+            enable_web_search,
+        )
+        request_kwargs = self._build_request_kwargs(
+            system_prompt,
+            translated_tools,
+            temperature,
+            max_output_tokens,
+        )
+        request_kwargs.update(
+            self._build_prompt_cache_kwargs(
+                system_prompt,
+                translated_tools,
+                cache_config,
+            )
+        )
+        request_kwargs["input"] = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
+
+        invoke_cancel_check(cancel_check, "before_model_call")
+        if event_listener is not None:
+            event_listener("request_submitted", {"round": round_number})
+        response = self._create_response_with_retries(
+            request_kwargs,
+            event_listener=event_listener,
+            round_number=round_number,
+        )
+        invoke_cancel_check(cancel_check, "after_model_call")
+        self._emit_prompt_cache_metrics_if_present(response, event_listener, round_number)
+        web_search_calls = self._extract_web_search_calls(response)
+        if web_search_calls and event_listener is not None:
+            event_listener(
+                "web_search_used",
+                {
+                    "provider": "openai",
+                    "count": len(web_search_calls),
+                    "round": round_number,
+                },
+            )
+        return self._step_result_from_response(response)
+
+    def continue_text_step(
+        self,
+        system_prompt,
+        session_state,
+        tool_results,
+        tools=None,
+        temperature=None,
+        max_output_tokens=None,
+        enable_web_search=False,
+        event_listener=None,
+        cancel_check=None,
+        cache_config=None,
+        round_number=1,
+    ):
+        translated_tools = self._maybe_append_native_web_search(
+            self._translate_tools(tools or []),
+            enable_web_search,
+        )
+        request_kwargs = self._build_request_kwargs(
+            system_prompt,
+            translated_tools,
+            temperature,
+            max_output_tokens,
+        )
+        request_kwargs.update(
+            self._build_prompt_cache_kwargs(
+                system_prompt,
+                translated_tools,
+                cache_config,
+            )
+        )
+        request_kwargs["previous_response_id"] = (session_state or {}).get("response_id")
+        request_kwargs["input"] = self._translate_tool_results(tool_results)
+
+        invoke_cancel_check(cancel_check, "before_model_call")
+        if event_listener is not None:
+            event_listener("request_submitted", {"round": round_number})
+        response = self._create_response_with_retries(
+            request_kwargs,
+            event_listener=event_listener,
+            round_number=round_number,
+        )
+        invoke_cancel_check(cancel_check, "after_model_call")
+        self._emit_prompt_cache_metrics_if_present(response, event_listener, round_number)
+        web_search_calls = self._extract_web_search_calls(response)
+        if web_search_calls and event_listener is not None:
+            event_listener(
+                "web_search_used",
+                {
+                    "provider": "openai",
+                    "count": len(web_search_calls),
+                    "round": round_number,
+                },
+            )
+        return self._step_result_from_response(response)
 
     def generate_text(
         self,

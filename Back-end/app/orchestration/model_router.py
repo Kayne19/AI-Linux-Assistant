@@ -8,7 +8,7 @@ from providers.anthropic_caller import AnthropicWorker
 from providers.local_caller import LocalWorker
 from agents.context_agent import Contextualizer
 from providers.openAI_caller import OpenAIWorker
-from agents.response_agent import ResponseAgent
+from agents.response_agent import ResponseAgent, ResponseState
 from orchestration.history_preparer import PreparedHistory
 from orchestration.routing_registry import get_allowed_labels, get_searchable_labels
 from orchestration.run_control import RunCancelledError, RunPausedError, invoke_cancel_check
@@ -372,6 +372,116 @@ class ModelRouter:
                 "trace_marker": marker,
             },
         )
+
+    def _regular_responder_supports_router_protocol(self, responder):
+        return isinstance(responder, ResponseAgent) and responder.supports_router_protocol()
+
+    def _regular_responder_available_tools(self, responder):
+        tools = list(getattr(responder, "tools", []) or [])
+        pool = self._active_evidence_pool()
+        last_scope_key = pool.last_query_scope_key()
+        if (
+            not last_scope_key
+            or last_scope_key not in pool.scope_state.exhausted_scope_keys
+        ):
+            return tools
+        return [
+            tool for tool in tools
+            if tool.get("name") not in {"search_rag_database", "search_RAG_database"}
+        ]
+
+    def _run_regular_responder_protocol(self, responder, turn):
+        tool_rounds = 0
+        try:
+            step_result = responder.start_protocol_step(
+                turn.user_question,
+                turn.retrieved_docs,
+                turn.summarized_conversation_history,
+                turn.memory_snapshot_text,
+                tools=self._regular_responder_available_tools(responder),
+                enable_web_search=responder.enable_native_web_search,
+                round_number=0,
+            )
+
+            while step_result.tool_calls:
+                tool_rounds += 1
+                responder.emit_state(
+                    ResponseState.PROCESS_TOOL_CALLS,
+                    {
+                        "round": tool_rounds,
+                        "count": len(step_result.tool_calls),
+                        "names": [tool_call.name for tool_call in step_result.tool_calls],
+                    },
+                )
+                tool_results = []
+                for tool_call in step_result.tool_calls:
+                    tool_output = self._handle_responder_tool_call(tool_call.name, tool_call.arguments)
+                    tool_results.append(
+                        {
+                            "call_id": tool_call.call_id,
+                            "name": tool_call.name,
+                            "arguments": tool_call.arguments,
+                            "output": tool_output,
+                        }
+                    )
+
+                next_tools = []
+                finalize_reason = "tool_budget_exhausted"
+                if tool_rounds < self.response_tool_rounds:
+                    next_tools = self._regular_responder_available_tools(responder)
+                    if next_tools:
+                        finalize_reason = ""
+                    else:
+                        finalize_reason = "tool_surface_exhausted"
+
+                responder.emit_state(
+                    ResponseState.EVALUATE_TOOL_RESULT,
+                    {
+                        "round": tool_rounds,
+                        "result_count": len(tool_results),
+                        "available_tool_names": [tool.get("name", "unknown_tool") for tool in next_tools],
+                    },
+                )
+
+                if not next_tools:
+                    responder.emit_state(
+                        ResponseState.FINALIZE_RESPONSE,
+                        {
+                            "round": tool_rounds,
+                            "reason": finalize_reason,
+                        },
+                    )
+                    step_result = responder.continue_protocol_step(
+                        step_result.session_state,
+                        tool_results,
+                        tools=[],
+                        enable_web_search=False,
+                        round_number=tool_rounds,
+                    )
+                    break
+
+                responder.emit_state(
+                    ResponseState.SUBMIT_TOOL_RESULTS,
+                    {
+                        "round": tool_rounds,
+                        "tool_count": len(tool_results),
+                    },
+                )
+                step_result = responder.continue_protocol_step(
+                    step_result.session_state,
+                    tool_results,
+                    tools=next_tools,
+                    enable_web_search=responder.enable_native_web_search,
+                    round_number=tool_rounds,
+                )
+
+            responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": tool_rounds})
+            if self._stream_response_enabled:
+                responder.emit_final_text(step_result.output_text or "")
+            return step_result.output_text or ""
+        except Exception:
+            responder.emit_state(ResponseState.ERROR, {})
+            raise
 
     # Maps MagiState names to (role, phase) for caller metadata tagging
     _MAGI_STATE_TO_CALLER = {
@@ -1292,17 +1402,20 @@ class ModelRouter:
                 evidence_pool_summary=evidence_pool_summary,
             )
         else:
-            responder_method = responder.stream_api if self._stream_response_enabled else responder.call_api
-            kwargs = {}
-            if evidence_pool_summary:
-                kwargs["evidence_pool_summary"] = evidence_pool_summary
-            turn.response = responder_method(
-                turn.user_question,
-                turn.retrieved_docs,
-                turn.summarized_conversation_history,
-                turn.memory_snapshot_text,
-                **kwargs,
-            )
+            if self._regular_responder_supports_router_protocol(responder):
+                turn.response = self._run_regular_responder_protocol(responder, turn)
+            else:
+                responder_method = responder.stream_api if self._stream_response_enabled else responder.call_api
+                kwargs = {}
+                if evidence_pool_summary:
+                    kwargs["evidence_pool_summary"] = evidence_pool_summary
+                turn.response = responder_method(
+                    turn.user_question,
+                    turn.retrieved_docs,
+                    turn.summarized_conversation_history,
+                    turn.memory_snapshot_text,
+                    **kwargs,
+                )
         self._check_cancel("after_generate_response")
         turn.council_entries = list(getattr(responder, "last_council_entries", None) or [])
         if not (turn.retrieved_docs or "").strip():

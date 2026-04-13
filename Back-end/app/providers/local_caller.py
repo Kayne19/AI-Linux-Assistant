@@ -1,6 +1,7 @@
 import json
 
 from orchestration.run_control import invoke_cancel_check
+from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 try:
     import ollama
@@ -129,6 +130,94 @@ class LocalCaller:
         except Exception as e:
             raise RuntimeError(f"Ollama Error: {str(e)}") from e
 
+    def start_text_step(
+        self,
+        system_prompt,
+        user_message,
+        history=None,
+        tools=None,
+        temperature=None,
+        max_output_tokens=None,
+        enable_web_search=False,
+        event_listener=None,
+        cancel_check=None,
+        cache_config=None,
+        round_number=0,
+    ):
+        del max_output_tokens, enable_web_search, cache_config
+        system_message = {
+            "role": "system",
+            "content": system_prompt,
+        }
+        history_messages = self.translate_history(history or [])
+        messages = [system_message] + history_messages + [
+            {"role": "user", "content": user_message}
+        ]
+        translated_tools = self._translate_tools(tools or [])
+
+        if ollama is None:
+            raise RuntimeError("Ollama SDK is not installed. Install the 'ollama' package to use this provider.")
+        invoke_cancel_check(cancel_check, "before_model_call")
+        if event_listener is not None:
+            event_listener("request_submitted", {"round": round_number})
+        request_kwargs = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if translated_tools:
+            request_kwargs["tools"] = translated_tools
+        if temperature is not None:
+            request_kwargs["options"] = {"temperature": temperature}
+        response = ollama.chat(**request_kwargs)
+        invoke_cancel_check(cancel_check, "after_model_call")
+        return self._step_result_from_message(
+            response.get("message", {}),
+            messages,
+        )
+
+    def continue_text_step(
+        self,
+        system_prompt,
+        session_state,
+        tool_results,
+        tools=None,
+        temperature=None,
+        max_output_tokens=None,
+        enable_web_search=False,
+        event_listener=None,
+        cancel_check=None,
+        cache_config=None,
+        round_number=1,
+    ):
+        del system_prompt, max_output_tokens, enable_web_search, cache_config
+        if ollama is None:
+            raise RuntimeError("Ollama SDK is not installed. Install the 'ollama' package to use this provider.")
+        session_state = session_state or {}
+        messages = list(session_state.get("messages") or [])
+        assistant_message = dict(session_state.get("assistant_message") or {})
+        if assistant_message:
+            messages.append(assistant_message)
+        messages.extend(self._tool_messages_from_results(tool_results))
+
+        translated_tools = self._translate_tools(tools or [])
+        invoke_cancel_check(cancel_check, "before_model_call")
+        if event_listener is not None:
+            event_listener("request_submitted", {"round": round_number})
+        request_kwargs = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if translated_tools:
+            request_kwargs["tools"] = translated_tools
+        if temperature is not None:
+            request_kwargs["options"] = {"temperature": temperature}
+        response = ollama.chat(**request_kwargs)
+        invoke_cancel_check(cancel_check, "after_model_call")
+        return self._step_result_from_message(
+            response.get("message", {}),
+            messages,
+        )
+
     def translate_history(self, history):
         translated = []
         for item in history:
@@ -179,6 +268,48 @@ class LocalCaller:
             else:
                 normalized_tool_calls.append({"raw_tool_call": str(tool_call)})
         return normalized_tool_calls
+
+    def _normalize_provider_tool_call(self, tool_call):
+        function = tool_call.get("function", {})
+        return ProviderToolCall(
+            name=function.get("name", "unknown_tool"),
+            arguments=self._parse_tool_arguments(function.get("arguments", {})),
+            call_id=tool_call.get("id"),
+        )
+
+    def _step_result_from_message(self, message, messages):
+        normalized_tool_calls = self._normalize_tool_calls(message.get("tool_calls") or [])
+        assistant_message = {
+            "role": "assistant",
+            "content": message.get("content", ""),
+        }
+        if normalized_tool_calls:
+            assistant_message["tool_calls"] = normalized_tool_calls
+        return ProviderStepResult(
+            output_text=message.get("content", ""),
+            tool_calls=[self._normalize_provider_tool_call(tool_call) for tool_call in normalized_tool_calls],
+            session_state={
+                "messages": list(messages or []),
+                "assistant_message": assistant_message,
+            },
+        )
+
+    def _tool_messages_from_results(self, tool_results):
+        messages = []
+        for tool_result in tool_results or []:
+            output = tool_result.get("output", "")
+            if not isinstance(output, str):
+                output = json.dumps(output)
+            tool_message = {
+                "role": "tool",
+                "name": tool_result.get("name", "unknown_tool"),
+                "content": output,
+            }
+            tool_call_id = tool_result.get("call_id")
+            if tool_call_id:
+                tool_message["tool_call_id"] = tool_call_id
+            messages.append(tool_message)
+        return messages
 
     def _build_tool_message(self, tool_call):
         function = tool_call.get("function", {})

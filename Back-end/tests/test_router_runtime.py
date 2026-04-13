@@ -18,6 +18,7 @@ from agents.response_agent import ResponseAgent
 from agents.response_agent import ResponseState
 from config.settings import AppSettings, RoleModelSettings
 from agents.summarizers import HistorySummarizer
+from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 
 class FakeDatabase:
@@ -159,6 +160,66 @@ class FakeTitleWorker:
     def generate_text(self, *args, **kwargs):
         self.calls.append({"args": args, "kwargs": kwargs})
         return self.response_text
+
+
+class FakeProtocolWorker:
+    def __init__(self, start_result=None, continue_results=None):
+        self.start_result = start_result or ProviderStepResult(output_text="final answer")
+        self.continue_results = list(continue_results or [])
+        self.start_calls = []
+        self.continue_calls = []
+
+    def generate_text(self, *args, **kwargs):
+        return ""
+
+    def start_text_step(
+        self,
+        system_prompt,
+        user_message,
+        history=None,
+        tools=None,
+        enable_web_search=False,
+        event_listener=None,
+        round_number=0,
+        **kwargs,
+    ):
+        del system_prompt, kwargs
+        self.start_calls.append(
+            {
+                "user_message": user_message,
+                "history": list(history or []),
+                "tool_names": [tool.get("name", "unknown_tool") for tool in tools or []],
+                "enable_web_search": enable_web_search,
+                "round_number": round_number,
+            }
+        )
+        if event_listener is not None:
+            event_listener("request_submitted", {"round": round_number})
+        return self.start_result
+
+    def continue_text_step(
+        self,
+        system_prompt,
+        session_state,
+        tool_results,
+        tools=None,
+        enable_web_search=False,
+        event_listener=None,
+        round_number=1,
+        **kwargs,
+    ):
+        del system_prompt, session_state, kwargs
+        self.continue_calls.append(
+            {
+                "tool_results": list(tool_results or []),
+                "tool_names": [tool.get("name", "unknown_tool") for tool in tools or []],
+                "enable_web_search": enable_web_search,
+                "round_number": round_number,
+            }
+        )
+        if event_listener is not None:
+            event_listener("request_submitted", {"round": round_number})
+        return self.continue_results.pop(0)
 
 
 class FakeMemoryExtractor:
@@ -1244,6 +1305,129 @@ def test_router_responder_state_events_include_phase_and_details():
             "trace_marker": "RESPONDER_PROCESS_TOOL_CALLS",
         },
     }
+
+
+def test_router_regular_responder_protocol_removes_exhausted_search_tool():
+    class FakeEmptyDatabase:
+        def __init__(self):
+            self.calls = []
+
+        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, requested_evidence_goal=None):
+            self.calls.append(
+                {
+                    "query": query,
+                    "sources": tuple(sources or []),
+                    "excluded_page_windows": list(excluded_page_windows or []),
+                    "excluded_block_keys": list(excluded_block_keys or []),
+                    "requested_evidence_goal": requested_evidence_goal,
+                }
+            )
+            return {
+                "context_text": "",
+                "selected_sources": [],
+                "merged_blocks": [],
+                "bundle_summaries": [],
+                "retrieval_metadata": {
+                    "anchor_count": 0,
+                    "anchor_pages": [],
+                    "fetched_neighbor_pages": [],
+                    "delivered_bundle_count": 0,
+                    "delivered_bundle_keys": [],
+                    "delivered_block_keys": [],
+                    "delivered_page_window_keys": [],
+                    "delivered_page_windows": [],
+                    "excluded_seen_count": 0,
+                    "skipped_bundle_count": 0,
+                },
+            }
+
+    protocol_worker = FakeProtocolWorker(
+        start_result=ProviderStepResult(
+            tool_calls=[ProviderToolCall(name="search_rag_database", arguments={"query": "repeat me", "relevant_documents": ["debian"]}, call_id="call_1")],
+            session_state={"session": "start"},
+        ),
+        continue_results=[
+            ProviderStepResult(
+                tool_calls=[ProviderToolCall(name="search_rag_database", arguments={"query": "repeat me", "relevant_documents": ["debian"]}, call_id="call_2")],
+                session_state={"session": "repeat"},
+            ),
+            ProviderStepResult(output_text="final answer after bounded search", session_state={"session": "final"}),
+        ],
+    )
+    router = ModelRouter(
+        database=FakeEmptyDatabase(),
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=protocol_worker,
+        memory_store=None,
+    )
+
+    turn = router.run_turn("question", stream_response=False)
+
+    assert turn.response == "final answer after bounded search"
+    assert "search_rag_database" in protocol_worker.continue_calls[0]["tool_names"]
+    assert "search_rag_database" not in protocol_worker.continue_calls[1]["tool_names"]
+    assert any(name == "search_conversation_history" for name in protocol_worker.continue_calls[1]["tool_names"])
+    assert "RESPONDER_EVALUATE_TOOL_RESULT" in turn.state_trace
+
+
+def test_router_regular_responder_protocol_finalizes_when_tool_budget_is_spent():
+    class FakeSearchDatabase:
+        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, requested_evidence_goal=None):
+            del query, sources, excluded_page_windows, excluded_block_keys, requested_evidence_goal
+            return {
+                "context_text": "retrieved context",
+                "selected_sources": ["Debian.pdf"],
+                "merged_blocks": [],
+                "bundle_summaries": [],
+                "retrieval_metadata": {
+                    "anchor_count": 1,
+                    "anchor_pages": [4],
+                    "fetched_neighbor_pages": [],
+                    "delivered_bundle_count": 1,
+                    "delivered_bundle_keys": ["bundle:Debian.pdf:4-4:anchor:r1"],
+                    "delivered_block_keys": ["block:Debian.pdf:4-4"],
+                    "delivered_page_window_keys": ["window:Debian.pdf:4-4"],
+                    "delivered_page_windows": [{"key": "window:Debian.pdf:4-4", "source": "Debian.pdf", "page_start": 4, "page_end": 4}],
+                    "excluded_seen_count": 0,
+                    "skipped_bundle_count": 0,
+                },
+            }
+
+    protocol_worker = FakeProtocolWorker(
+        start_result=ProviderStepResult(
+            tool_calls=[ProviderToolCall(name="search_rag_database", arguments={"query": "install package", "relevant_documents": ["debian"]}, call_id="call_1")],
+            session_state={"session": "start"},
+        ),
+        continue_results=[
+            ProviderStepResult(output_text="final answer after forced finalize", session_state={"session": "final"}),
+        ],
+    )
+    router = ModelRouter(
+        database=FakeSearchDatabase(),
+        classifier=FakeClassifier(["debian"]),
+        context_agent=FakeContextAgent("install package"),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=protocol_worker,
+        response_tool_rounds=1,
+        memory_store=None,
+    )
+
+    turn = router.run_turn("How do I install it?", stream_response=False)
+
+    assert turn.response == "final answer after forced finalize"
+    assert protocol_worker.continue_calls[0]["tool_names"] == []
+    assert protocol_worker.continue_calls[0]["enable_web_search"] is False
+    assert any(
+        event["type"] == "responder_state"
+        and event["payload"]["state"] == "FINALIZE_RESPONSE"
+        and event["payload"]["details"]["reason"] == "tool_budget_exhausted"
+        for event in turn.tool_events
+    )
+    assert "RESPONDER_FINALIZE_RESPONSE" in turn.state_trace
 
 
 # ---------------------------------------------------------------------------
