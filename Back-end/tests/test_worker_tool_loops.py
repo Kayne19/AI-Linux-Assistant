@@ -164,6 +164,48 @@ def test_openai_worker_includes_native_web_search_and_emits_event():
     assert worker.client.responses.calls[0]["tools"][-1]["type"] == "web_search"
     assert ("web_search_used", {"provider": "openai", "count": 1, "round": 0}) in events
 
+
+def test_openai_worker_normalizes_optional_tool_fields_for_strict_schemas():
+    worker = openai_module.OpenAICaller.__new__(openai_module.OpenAICaller)
+    worker.model = "fake-openai"
+    worker.reasoning_effort = None
+
+    translated = worker._translate_tools(
+        [
+            {
+                "name": "search_rag_database",
+                "description": "test",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "query": {"type": "string"},
+                        "relevant_documents": {"type": "array", "items": {"type": "string"}},
+                        "repeat_reason": {"type": "string", "enum": ["contradiction_check"]},
+                        "requested_evidence_goal": {"type": "string"},
+                    },
+                    "required": ["query", "relevant_documents"],
+                },
+            }
+        ]
+    )
+
+    schema = translated[0]["parameters"]
+    assert translated[0]["strict"] is True
+    assert schema["required"] == [
+        "query",
+        "relevant_documents",
+        "repeat_reason",
+        "requested_evidence_goal",
+    ]
+    assert schema["properties"]["query"] == {"type": "string"}
+    assert schema["properties"]["repeat_reason"]["anyOf"][0] == {
+        "type": "string",
+        "enum": ["contradiction_check"],
+    }
+    assert schema["properties"]["repeat_reason"]["anyOf"][1] == {"type": "null"}
+    assert schema["properties"]["requested_evidence_goal"]["anyOf"][1] == {"type": "null"}
+
 def test_anthropic_worker_repeats_tool_rounds_until_completion():
     worker = anthropic_module.AnthropicCaller.__new__(anthropic_module.AnthropicCaller)
     worker.model = "fake-claude"

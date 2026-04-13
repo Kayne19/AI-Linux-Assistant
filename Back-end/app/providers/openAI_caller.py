@@ -43,16 +43,69 @@ class OpenAICaller:
             messages.append({"role": role, "content": content})
         return messages
 
+    def _schema_allows_null(self, schema):
+        if not isinstance(schema, dict):
+            return False
+        schema_type = schema.get("type")
+        if schema_type == "null":
+            return True
+        if isinstance(schema_type, list) and "null" in schema_type:
+            return True
+        if None in (schema.get("enum") or []):
+            return True
+        for variant_key in ("anyOf", "oneOf"):
+            variants = schema.get(variant_key) or []
+            if any(isinstance(variant, dict) and self._schema_allows_null(variant) for variant in variants):
+                return True
+        return False
+
+    def _make_schema_nullable(self, schema):
+        if self._schema_allows_null(schema):
+            return schema
+        return {"anyOf": [schema, {"type": "null"}]}
+
+    def _normalize_strict_schema(self, schema):
+        if isinstance(schema, list):
+            return [self._normalize_strict_schema(item) for item in schema]
+        if not isinstance(schema, dict):
+            return schema
+
+        normalized = {}
+        for key, value in schema.items():
+            if key in {"properties", "items", "anyOf", "oneOf", "allOf"}:
+                continue
+            normalized[key] = value
+
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            original_required = set(schema.get("required") or [])
+            normalized_properties = {}
+            for name, subschema in properties.items():
+                normalized_subschema = self._normalize_strict_schema(subschema)
+                if name not in original_required:
+                    normalized_subschema = self._make_schema_nullable(normalized_subschema)
+                normalized_properties[name] = normalized_subschema
+            normalized["properties"] = normalized_properties
+            normalized["required"] = list(properties.keys())
+
+        if "items" in schema:
+            normalized["items"] = self._normalize_strict_schema(schema["items"])
+        for variant_key in ("anyOf", "oneOf", "allOf"):
+            if variant_key in schema:
+                normalized[variant_key] = self._normalize_strict_schema(schema[variant_key])
+        return normalized
+
     def _translate_tools(self, tools):
         translated = []
         for tool in tools:
+            strict = tool.get("strict", True)
             translated.append(
                 {
                     "type": "function",
                     "name": tool["name"],
                     "description": tool["description"],
-                    "parameters": tool["parameters"],
-                    "strict": tool.get("strict", True),
+                    "parameters": self._normalize_strict_schema(tool["parameters"]) if strict else tool["parameters"],
+                    "strict": strict,
                 }
             )
         return translated
