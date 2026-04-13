@@ -207,6 +207,11 @@ This applies to:
 - conversation-history search
 - paused MAGI intervention and resume events
 
+Current retrieval debug rule:
+
+- the initial router-selected merged retrieval context belongs to the canonical run-level `normalized_inputs` bundle
+- a responder-triggered retrieval tool call owns its own returned prompt-facing text and merged blocks on that specific tool-completion event
+
 The goal is not only capability. The goal is auditable capability.
 
 ### 8. Scope Is Backend-Enforced

@@ -236,6 +236,7 @@ Current notable fields:
 - `ChatRunResponse.latest_*` fields are snapshot conveniences; `chat_run_events` remains the replay source of truth.
 - Run-event payloads returned by `/runs/{run_id}/events` and `/runs/{run_id}/events/stream` include durable `created_at` timestamps so the frontend can compute timing diagnostics from backend event time.
 - `GET /runs/{run_id}/events` supports `after_seq` plus `limit`, and serialized run events include `created_at` for operator/debug timing inspection.
+- retrieval tool-completion events for `search_rag_database` may include tool-owned `result_text`, `result_blocks`, and `selected_sources` so debug surfaces can inspect the exact prompt-facing context returned by that specific tool call
 - non-terminal stream-stop replay now also includes `type="paused"` for MAGI runs that paused at a safe checkpoint
 
 ## Important Rules

@@ -483,6 +483,64 @@ def test_router_tool_search_allows_broad_search_when_only_control_labels_are_pre
     assert database.calls == [("obscure package", ())]
 
 
+def test_router_tool_search_emits_prompt_facing_retrieval_blocks_for_tool_results():
+    class FakeRichDatabase(FakeDatabase):
+        def retrieve_context_result(self, query, sources):
+            self.calls.append((query, tuple(sources or [])))
+            return {
+                "context_text": "---\n[Source: Debian.pdf (Page 4)]\napt install foo\n",
+                "selected_sources": ["Debian.pdf:Page 4"],
+                "merged_blocks": [
+                    {
+                        "source": "Debian.pdf",
+                        "pages": [4],
+                        "page_label": "Page 4",
+                        "text": "apt install foo",
+                    }
+                ],
+            }
+
+    database = FakeRichDatabase()
+    router = ModelRouter(
+        database=database,
+        classifier=FakeClassifier(["no_rag"]),
+        context_agent=FakeContextAgent(""),
+        history_summarizer=FakeHistorySummarizer(),
+        context_summarizer=FakeContextSummarizer(summarized=False),
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
+    )
+    events = []
+    router.set_event_listener(lambda event_type, payload: events.append((event_type, payload)))
+    expected_text = "---\n[Source: Debian.pdf (Page 4)]\napt install foo\n"
+
+    result = router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "install package", "relevant_documents": ["debian"]},
+    )
+
+    assert result == expected_text
+    assert database.calls == [("install package", ("debian",))]
+    assert events[-1] == (
+        "tool_complete",
+        {
+            "name": "search_rag_database",
+            "result_size": len(expected_text),
+            "result_text": expected_text,
+            "result_blocks": [
+                {
+                    "source": "Debian.pdf",
+                    "pages": [4],
+                    "page_label": "Page 4",
+                    "text": "apt install foo",
+                }
+            ],
+            "selected_sources": ["Debian.pdf:Page 4"],
+        },
+    )
+
+
 def test_router_loads_and_persists_session_scoped_chat_history():
     chat_store = FakeChatStore(history=[("user", "old question"), ("model", "old answer")])
     router = ModelRouter(

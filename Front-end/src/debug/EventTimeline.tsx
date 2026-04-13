@@ -9,6 +9,7 @@ import {
   getRetrievalEvents,
   getLatencyTone,
   getStateRows,
+  isRetrievalToolEvent,
   isObjectRecord,
   summarizeNestedStateRows,
   TAB_FILTERS,
@@ -158,21 +159,28 @@ function DetailCard({
 function RetrievalBlockList({
   blocks,
   fallbackText,
+  showLabel,
+  hideLabel,
+  emptyText,
 }: {
   blocks: RetrievedContextBlock[];
   fallbackText: string;
+  showLabel?: string;
+  hideLabel?: string;
+  emptyText?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasBlocks = blocks.length > 0;
   const hasFallbackText = Boolean(fallbackText);
 
   if (!hasBlocks && !hasFallbackText) {
-    return <div className="debug-empty-state">No merged retrieval blocks recorded for this run.</div>;
+    return <div className="debug-empty-state">{emptyText || "No merged retrieval blocks recorded for this run."}</div>;
   }
 
-  const label = hasBlocks
+  const label = showLabel || (hasBlocks
     ? `Show merged blocks (${blocks.length})`
-    : "Show merged retrieval context";
+    : "Show merged retrieval context");
+  const collapseLabel = hideLabel || (hasBlocks ? "Hide merged blocks" : "Hide merged retrieval context");
 
   if (!expanded) {
     return (
@@ -186,7 +194,7 @@ function RetrievalBlockList({
     return (
       <>
         <button type="button" className="debug-inline-link" onClick={() => setExpanded(false)}>
-          Hide merged retrieval context
+          {collapseLabel}
         </button>
         <DetailText text={fallbackText} />
       </>
@@ -196,7 +204,7 @@ function RetrievalBlockList({
   return (
     <>
       <button type="button" className="debug-inline-link" onClick={() => setExpanded(false)}>
-        Hide merged blocks
+        {collapseLabel}
       </button>
       <div className="debug-detail-list">
         {blocks.map((block, index) => (
@@ -207,6 +215,56 @@ function RetrievalBlockList({
         ))}
       </div>
     </>
+  );
+}
+
+function normalizeRetrievedBlocks(value: unknown): RetrievedContextBlock[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter(isObjectRecord)
+    .map((block) => ({
+      source: typeof block.source === "string" ? block.source : "Unknown",
+      pages: Array.isArray(block.pages) ? block.pages.map((page) => Number(page)).filter(Number.isFinite) : [],
+      page_label: typeof block.page_label === "string" ? block.page_label : "Page ?",
+      text: typeof block.text === "string" ? block.text : "",
+    }))
+    .filter((block) => Boolean(block.text));
+}
+
+function RetrievalEventRow({ event }: { event: RunEvent }) {
+  if (event.type !== "event" || !isObjectRecord(event.payload) || !isRetrievalToolEvent(event)) {
+    return <GenericEventRow event={event} />;
+  }
+
+  const payload = event.payload;
+  const resultBlocks = normalizeRetrievedBlocks(payload.result_blocks);
+  const resultText = typeof payload.result_text === "string" ? payload.result_text : "";
+
+  return (
+    <div className="debug-event-row">
+      <div className="debug-event-meta">
+        <span className="debug-event-seq">#{event.seq}</span>
+        <EventBadge event={event} />
+        <span className="debug-event-time">{formatTimestamp(event.created_at)}</span>
+      </div>
+      <div className="debug-event-body">
+        <strong>{eventTitle(event)}</strong>
+        <span className="debug-event-summary">{eventSummary(event)}</span>
+        {event.code === "tool_complete" && (resultBlocks.length > 0 || resultText) ? (
+          <div className="debug-detail-list">
+            <RetrievalBlockList
+              blocks={resultBlocks}
+              fallbackText={resultText}
+              showLabel={resultBlocks.length > 0 ? `Show tool call chunks (${resultBlocks.length})` : "Show tool call retrieval context"}
+              hideLabel={resultBlocks.length > 0 ? "Hide tool call chunks" : "Hide tool call retrieval context"}
+              emptyText="No retrieval text recorded for this tool call."
+            />
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -260,7 +318,7 @@ function RetrievalTab({ events, run }: { events: RunEvent[]; run?: ChatRun | nul
       <div className="debug-timeline-list">
         {events.length === 0 ? <div className="debug-empty-state">No retrieval events for this run.</div> : null}
         {events.map((event) => (
-          <GenericEventRow key={event.seq} event={event} />
+          <RetrievalEventRow key={event.seq} event={event} />
         ))}
       </div>
     </div>

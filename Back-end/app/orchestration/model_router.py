@@ -674,33 +674,60 @@ class ModelRouter:
                 relevant_documents = tool_args.get("relevant_documents")
                 if query is None or relevant_documents is None:
                     result = {"error": "missing required arguments"}
+                    tool_complete_payload = None
                 else:
-                    result = self.database.retrieve_context(
-                        query,
-                        self._searchable_labels(relevant_documents),
-                    )
+                    searchable_labels = self._searchable_labels(relevant_documents)
+                    if hasattr(self.database, "retrieve_context_result"):
+                        retrieval_result = self.database.retrieve_context_result(
+                            query,
+                            searchable_labels,
+                        ) or {}
+                        result = str(retrieval_result.get("context_text") or "")
+                        tool_complete_payload = {
+                            "name": tool_name,
+                            "result_size": len(result),
+                            "result_text": result,
+                            "result_blocks": list(retrieval_result.get("merged_blocks") or []),
+                            "selected_sources": list(retrieval_result.get("selected_sources") or []),
+                        }
+                    else:
+                        result = self.database.retrieve_context(
+                            query,
+                            searchable_labels,
+                        )
+                        tool_complete_payload = {
+                            "name": tool_name,
+                            "result_size": len(result) if isinstance(result, str) else len(str(result)),
+                            "result_text": str(result or ""),
+                        }
             elif tool_name == "search_conversation_history":
                 self._append_trace_marker("TOOL_SEARCH_HISTORY")
                 result = self._search_conversation_history(
                     tool_args.get("query", ""),
                     tool_args.get("max_results", 5),
                 )
+                tool_complete_payload = None
             elif tool_name == "get_system_profile":
                 result = self.memory_store.format_system_profile()
+                tool_complete_payload = None
             elif tool_name == "search_memory_issues":
                 result = self.memory_store.search_issues(
                     tool_args.get("query", ""),
                     tool_args.get("max_results", 5),
                 )
+                tool_complete_payload = None
             elif tool_name == "search_attempt_log":
                 result = self.memory_store.search_attempts(
                     tool_args.get("query", ""),
                     tool_args.get("max_results", 5),
                 )
+                tool_complete_payload = None
             else:
                 result = {"error": f"unknown tool '{tool_name}'"}
+                tool_complete_payload = None
         except Exception as exc:
             result = {"error": str(exc)}
+            tool_complete_payload = None
 
         result_size = len(result) if isinstance(result, str) else len(str(result))
         if isinstance(result, dict) and "error" in result:
@@ -711,7 +738,7 @@ class ModelRouter:
         else:
             self._emit_event(
                 "tool_complete",
-                {"name": tool_name, "result_size": result_size},
+                tool_complete_payload or {"name": tool_name, "result_size": result_size},
             )
         self._check_cancel(f"after_tool:{tool_name}")
         return result

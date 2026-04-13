@@ -172,6 +172,7 @@ Current debug ownership rule:
 
 - the full merged chunk text that the responder reads belongs to the run-level `normalized_inputs` bundle
 - retrieval events should stay lightweight and report search/rerank/selection progress plus source metadata, not duplicate the same merged text in every event payload
+- responder-triggered retrieval tool calls are separate: the `tool_complete` event for that retrieval call may carry the returned prompt-facing text and merged blocks because that event owns that tool result
 
 ## Ingestion Boundary
 

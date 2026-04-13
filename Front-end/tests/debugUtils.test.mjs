@@ -54,6 +54,25 @@ test("routes retrieval tool calls into the retrieval tab", () => {
   assert.equal(TAB_FILTERS.Retrieval(event), true);
 });
 
+test("summarizes retrieval tool completion with chunk count", () => {
+  const summary = eventSummary({
+    type: "event",
+    seq: 10,
+    code: "tool_complete",
+    created_at: "2026-04-12T12:00:00Z",
+    payload: {
+      name: "search_rag_database",
+      result_size: 84,
+      result_blocks: [
+        { source: "guide.pdf", pages: [4], page_label: "Page 4", text: "apt install foo" },
+        { source: "guide.pdf", pages: [5], page_label: "Page 5", text: "systemctl restart ssh" },
+      ],
+    },
+  });
+
+  assert.equal(summary, "retrieval tool complete • 2 blocks • 84 chars");
+});
+
 test("keeps retrieval provider round events with retrieval tool calls", () => {
   const events = [
     {

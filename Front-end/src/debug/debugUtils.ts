@@ -223,6 +223,7 @@ function summarizeGenericEventPayload(event: RunEvent): string {
       if (typeof payload.name === "string" && RETRIEVAL_TOOL_NAMES.has(payload.name)) {
         return [
           "retrieval tool complete",
+          Array.isArray(payload.result_blocks) ? `${payload.result_blocks.length} block${payload.result_blocks.length === 1 ? "" : "s"}` : "",
           typeof payload.result_size === "number" ? `${payload.result_size} chars` : "",
         ].filter(Boolean).join(" • ");
       }
