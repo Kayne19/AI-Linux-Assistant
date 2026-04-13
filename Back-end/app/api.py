@@ -232,6 +232,18 @@ _SETTINGS_COMPONENT_NAMES = [
     "history_summarizer", "context_summarizer", "memory_extractor",
     "registry_updater", "ingest_enricher", "chat_namer",
 ]
+_RETRIEVAL_SETTINGS_FIELDS = {
+    "initial_fetch": "retrieval_initial_fetch",
+    "final_top_k": "retrieval_final_top_k",
+    "neighbor_pages": "retrieval_neighbor_pages",
+    "max_expanded": "retrieval_max_expanded",
+    "source_profile_sample": "retrieval_source_profile_sample",
+}
+_HISTORY_CONTEXT_FIELDS = {
+    "max_recent_turns": "history_max_recent_turns",
+    "summarize_turn_threshold": "history_summarize_turn_threshold",
+    "summarize_char_threshold": "history_summarize_char_threshold",
+}
 
 
 class ComponentSettingsResponse(BaseModel):
@@ -239,6 +251,25 @@ class ComponentSettingsResponse(BaseModel):
     model: str
     reasoning_effort: str
     is_default: bool
+
+
+class ScalarSettingResponse(BaseModel):
+    value: int
+    is_default: bool
+
+
+class RetrievalSettingsResponse(BaseModel):
+    initial_fetch: ScalarSettingResponse
+    final_top_k: ScalarSettingResponse
+    neighbor_pages: ScalarSettingResponse
+    max_expanded: ScalarSettingResponse
+    source_profile_sample: ScalarSettingResponse
+
+
+class HistoryContextSettingsResponse(BaseModel):
+    max_recent_turns: ScalarSettingResponse
+    summarize_turn_threshold: ScalarSettingResponse
+    summarize_char_threshold: ScalarSettingResponse
 
 
 class AppSettingsResponse(BaseModel):
@@ -259,12 +290,28 @@ class AppSettingsResponse(BaseModel):
     registry_updater: ComponentSettingsResponse
     ingest_enricher: ComponentSettingsResponse
     chat_namer: ComponentSettingsResponse
+    retrieval: RetrievalSettingsResponse
+    history_context: HistoryContextSettingsResponse
 
 
 class ComponentSettingsPatch(BaseModel):
     provider: Literal["openai", "anthropic", "local"] | None = None
     model: str | None = None
     reasoning_effort: Literal["", "low", "medium", "high"] | None = None
+
+
+class RetrievalSettingsPatch(BaseModel):
+    initial_fetch: int | None = Field(None, ge=1)
+    final_top_k: int | None = Field(None, ge=1)
+    neighbor_pages: int | None = Field(None, ge=0)
+    max_expanded: int | None = Field(None, ge=1)
+    source_profile_sample: int | None = Field(None, ge=1)
+
+
+class HistoryContextSettingsPatch(BaseModel):
+    max_recent_turns: int | None = Field(None, ge=1)
+    summarize_turn_threshold: int | None = Field(None, ge=1)
+    summarize_char_threshold: int | None = Field(None, ge=1)
 
 
 class AppSettingsPatch(BaseModel):
@@ -285,6 +332,40 @@ class AppSettingsPatch(BaseModel):
     registry_updater: ComponentSettingsPatch | None = None
     ingest_enricher: ComponentSettingsPatch | None = None
     chat_namer: ComponentSettingsPatch | None = None
+    retrieval: RetrievalSettingsPatch | None = None
+    history_context: HistoryContextSettingsPatch | None = None
+
+
+def _build_scalar_settings_response(db_row, effective, fields: dict[str, str], response_model):
+    payload = {}
+    for api_name, attr_name in fields.items():
+        payload[api_name] = ScalarSettingResponse(
+            value=getattr(effective, attr_name),
+            is_default=db_row is None or getattr(db_row, attr_name, None) is None,
+        )
+    return response_model(**payload)
+
+
+def _apply_scalar_settings_patch(row, patch_model, fields: dict[str, str]):
+    if patch_model is None:
+        return
+    for api_name, attr_name in fields.items():
+        value = getattr(patch_model, api_name, None)
+        if value is not None:
+            setattr(row, attr_name, value)
+
+
+def _validate_retrieval_settings(effective_settings):
+    if effective_settings.retrieval_final_top_k > effective_settings.retrieval_initial_fetch:
+        raise HTTPException(
+            status_code=422,
+            detail="retrieval.final_top_k must be less than or equal to retrieval.initial_fetch.",
+        )
+    if effective_settings.retrieval_max_expanded < effective_settings.retrieval_final_top_k:
+        raise HTTPException(
+            status_code=422,
+            detail="retrieval.max_expanded must be greater than or equal to retrieval.final_top_k.",
+        )
 
 
 def _iso(value):
@@ -1073,7 +1154,20 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                 is_default=is_default,
             )
 
-        return AppSettingsResponse(**{name: _comp(name) for name in _SETTINGS_COMPONENT_NAMES})
+        payload = {name: _comp(name) for name in _SETTINGS_COMPONENT_NAMES}
+        payload["retrieval"] = _build_scalar_settings_response(
+            db_row,
+            effective,
+            _RETRIEVAL_SETTINGS_FIELDS,
+            RetrievalSettingsResponse,
+        )
+        payload["history_context"] = _build_scalar_settings_response(
+            db_row,
+            effective,
+            _HISTORY_CONTEXT_FIELDS,
+            HistoryContextSettingsResponse,
+        )
+        return AppSettingsResponse(**payload)
 
     @app.get("/admin/settings", response_model=AppSettingsResponse)
     def get_admin_settings(_admin=Depends(_require_admin)):
@@ -1107,6 +1201,10 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                     setattr(row, f"{comp_name}_model", comp_patch.model)
                 if comp_patch.reasoning_effort is not None:
                     setattr(row, f"{comp_name}_reasoning_effort", comp_patch.reasoning_effort)
+
+            _apply_scalar_settings_patch(row, patch.retrieval, _RETRIEVAL_SETTINGS_FIELDS)
+            _apply_scalar_settings_patch(row, patch.history_context, _HISTORY_CONTEXT_FIELDS)
+            _validate_retrieval_settings(_apply_db_overrides(SETTINGS, row))
 
             row.updated_at = datetime.now(timezone.utc)
             row.updated_by = current_user.id

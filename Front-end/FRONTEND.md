@@ -79,12 +79,15 @@ Owns presentational UI surfaces:
   - pause is exposed during opening arguments and discussion, but queued opening-argument pauses are only consumed once discussion reaches a safe checkpoint
 - `dialogs/`
   - project/chat dialog shells
+  - `SettingsDialog.tsx`
+    - admin settings editor for model-role, retrieval, and history-context runtime settings
 
 ### `src/types.ts`
 
 Owns shared frontend types:
 
 - user/project/chat/run API shapes
+- admin settings response/patch shapes for model-role settings plus retrieval/history-context tuning
 - streaming event types
 - shared UI run state and optimistic batch types
 - council entry shapes for persisted data and live UI rendering
@@ -116,6 +119,7 @@ Owns API access:
 - run-event streaming and replay attach
 - SSE parsing
 - authenticated app bootstrap calls
+- admin settings fetch/save calls for `/admin/settings`
 
 Auth helpers:
 

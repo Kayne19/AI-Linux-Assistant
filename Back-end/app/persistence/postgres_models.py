@@ -323,7 +323,7 @@ class ProjectState(Base):
 
 
 class AppSettingsModel(Base):
-    """Singleton table (always exactly one row, id=1) for runtime model configuration.
+    """Singleton table (always exactly one row, id=1) for runtime configuration.
 
     NULL column = use the default from settings.py / .env.
     Empty string reasoning_effort = explicitly no reasoning effort.
@@ -392,6 +392,16 @@ class AppSettingsModel(Base):
     chat_namer_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
     chat_namer_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     chat_namer_reasoning_effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Retrieval and context tuning
+    retrieval_initial_fetch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retrieval_final_top_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retrieval_neighbor_pages: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retrieval_max_expanded: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retrieval_source_profile_sample: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    history_max_recent_turns: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    history_summarize_turn_threshold: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    history_summarize_char_threshold: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Metadata
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

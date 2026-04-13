@@ -270,6 +270,51 @@ export type ComponentSettingsPatch = {
   reasoning_effort?: string;
 };
 
-export type AppSettingsConfig = Record<ComponentKey, ComponentSettings>;
+// ---------------------------------------------------------------------------
+// Numeric settings — retrieval and history context
+// ---------------------------------------------------------------------------
 
-export type AppSettingsPatch = Partial<Record<ComponentKey, ComponentSettingsPatch>>;
+export type NumericSetting = {
+  value: number;
+  is_default: boolean;
+};
+
+export type RetrievalSettings = {
+  initial_fetch: NumericSetting;
+  final_top_k: NumericSetting;
+  neighbor_pages: NumericSetting;
+  max_expanded: NumericSetting;
+  source_profile_sample: NumericSetting;
+};
+
+export type HistoryContextSettings = {
+  max_recent_turns: NumericSetting;
+  summarize_turn_threshold: NumericSetting;
+  summarize_char_threshold: NumericSetting;
+};
+
+export type RetrievalSettingsPatch = {
+  initial_fetch?: number;
+  final_top_k?: number;
+  neighbor_pages?: number;
+  max_expanded?: number;
+  source_profile_sample?: number;
+};
+
+export type HistoryContextSettingsPatch = {
+  max_recent_turns?: number;
+  summarize_turn_threshold?: number;
+  summarize_char_threshold?: number;
+};
+
+export type AppSettingsConfig = {
+  [K in ComponentKey]: ComponentSettings;
+} & {
+  retrieval: RetrievalSettings;
+  history_context: HistoryContextSettings;
+};
+
+export type AppSettingsPatch = Partial<Record<ComponentKey, ComponentSettingsPatch>> & {
+  retrieval?: RetrievalSettingsPatch;
+  history_context?: HistoryContextSettingsPatch;
+};

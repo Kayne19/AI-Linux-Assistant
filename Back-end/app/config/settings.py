@@ -35,6 +35,11 @@ class AppSettings:
     classifier_temperature: float = 0.0
     contextualizer_temperature: float = 0.0
     history_summarizer_temperature: float = 0.1
+    retrieval_initial_fetch: int = 40
+    retrieval_final_top_k: int = 20
+    retrieval_neighbor_pages: int = 2
+    retrieval_max_expanded: int = 40
+    retrieval_source_profile_sample: int = 5000
     history_max_recent_turns: int = 4
     history_summarize_turn_threshold: int = 16
     history_summarize_char_threshold: int = 3600
@@ -182,6 +187,11 @@ def load_settings():
         classifier_temperature=_get_float_env("CLASSIFIER_TEMPERATURE", 0.0),
         contextualizer_temperature=_get_float_env("CONTEXTUALIZER_TEMPERATURE", 0.0),
         history_summarizer_temperature=_get_float_env("HISTORY_SUMMARIZER_TEMPERATURE", 0.1),
+        retrieval_initial_fetch=_get_int_env("RETRIEVAL_INITIAL_FETCH", 40),
+        retrieval_final_top_k=_get_int_env("RETRIEVAL_FINAL_TOP_K", 20),
+        retrieval_neighbor_pages=_get_int_env("RETRIEVAL_NEIGHBOR_PAGES", 2),
+        retrieval_max_expanded=_get_int_env("RETRIEVAL_MAX_EXPANDED", 40),
+        retrieval_source_profile_sample=_get_int_env("RETRIEVAL_SOURCE_PROFILE_SAMPLE", 5000),
         history_max_recent_turns=_get_int_env("HISTORY_MAX_RECENT_TURNS", 4),
         history_summarize_turn_threshold=_get_int_env("HISTORY_SUMMARIZE_TURN_THRESHOLD", 16),
         history_summarize_char_threshold=_get_int_env("HISTORY_SUMMARIZE_CHAR_THRESHOLD", 3600),
@@ -263,10 +273,17 @@ def _load_settings_row():
         session_factory = get_session_factory()
         with session_factory() as session:
             return session.get(AppSettingsModel, 1)
-    except Exception:
-        logging.getLogger(__name__).warning(
-            "Failed to load app_settings row from DB.", exc_info=True
-        )
+    except Exception as exc:
+        logger = logging.getLogger(__name__)
+        message = str(exc)
+        if "column app_settings." in message and "does not exist" in message:
+            logger.warning(
+                "app_settings schema is older than the running code; using defaults until migrations are applied."
+            )
+        else:
+            logger.warning(
+                "Failed to load app_settings row from DB.", exc_info=True
+            )
         return None
 
 
@@ -287,6 +304,10 @@ def _apply_db_overrides(base: AppSettings, row) -> AppSettings:
         effort_raw = getattr(row, f"{prefix}_reasoning_effort", None)
         effort = effort_raw if effort_raw is not None else base_role.reasoning_effort
         return RoleModelSettings(provider=provider, model=model, reasoning_effort=effort)
+
+    def _int_value(base_value: int, attr_name: str) -> int:
+        raw_value = getattr(row, attr_name, None)
+        return raw_value if raw_value is not None else base_value
 
     return AppSettings(
         provider_defaults=base.provider_defaults,
@@ -312,9 +333,23 @@ def _apply_db_overrides(base: AppSettings, row) -> AppSettings:
         classifier_temperature=base.classifier_temperature,
         contextualizer_temperature=base.contextualizer_temperature,
         history_summarizer_temperature=base.history_summarizer_temperature,
-        history_max_recent_turns=base.history_max_recent_turns,
-        history_summarize_turn_threshold=base.history_summarize_turn_threshold,
-        history_summarize_char_threshold=base.history_summarize_char_threshold,
+        retrieval_initial_fetch=_int_value(base.retrieval_initial_fetch, "retrieval_initial_fetch"),
+        retrieval_final_top_k=_int_value(base.retrieval_final_top_k, "retrieval_final_top_k"),
+        retrieval_neighbor_pages=_int_value(base.retrieval_neighbor_pages, "retrieval_neighbor_pages"),
+        retrieval_max_expanded=_int_value(base.retrieval_max_expanded, "retrieval_max_expanded"),
+        retrieval_source_profile_sample=_int_value(
+            base.retrieval_source_profile_sample,
+            "retrieval_source_profile_sample",
+        ),
+        history_max_recent_turns=_int_value(base.history_max_recent_turns, "history_max_recent_turns"),
+        history_summarize_turn_threshold=_int_value(
+            base.history_summarize_turn_threshold,
+            "history_summarize_turn_threshold",
+        ),
+        history_summarize_char_threshold=_int_value(
+            base.history_summarize_char_threshold,
+            "history_summarize_char_threshold",
+        ),
         magi_max_discussion_rounds=base.magi_max_discussion_rounds,
         magi_lite_max_discussion_rounds=base.magi_lite_max_discussion_rounds,
         max_active_runs_per_user_default=base.max_active_runs_per_user_default,

@@ -2248,6 +2248,41 @@ textarea:focus {
   border-color: var(--border-mid);
 }
 
+.settings-numeric-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 120px;
+  gap: 5px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(37, 37, 50, 0.55);
+}
+
+.settings-numeric-row:last-child {
+  border-bottom: none;
+}
+
+.settings-numeric-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface2);
+  color: var(--text);
+  padding: 0.38rem 0.55rem;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: right;
+}
+
+.settings-numeric-input:focus {
+  outline: none;
+  border-color: rgba(123, 104, 238, 0.44);
+  box-shadow: 0 0 0 1px rgba(123, 104, 238, 0.16);
+}
+
+.settings-numeric-input:hover {
+  border-color: var(--border-mid);
+}
+
 .settings-loading {
   color: var(--muted);
   font-size: 13px;
@@ -2301,5 +2336,9 @@ textarea:focus {
 
   .settings-model-field {
     grid-column: 1 / -1;
+  }
+
+  .settings-numeric-row {
+    grid-template-columns: 1fr;
   }
 }

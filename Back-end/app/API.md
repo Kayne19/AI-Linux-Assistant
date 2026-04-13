@@ -120,6 +120,48 @@ Current response body:
 - `page_size: int`
 - `has_more: bool`
 
+### Admin Settings
+
+- `GET /admin/settings`
+- `PUT /admin/settings`
+
+Admin-only runtime settings surface for:
+
+- model-role configuration
+- retrieval runtime tuning
+- conversation-history tuning
+
+Current response shape includes:
+
+- top-level model-role entries such as `classifier`, `responder`, and `chat_namer`
+- `retrieval`
+  - `initial_fetch`
+  - `final_top_k`
+  - `neighbor_pages`
+  - `max_expanded`
+  - `source_profile_sample`
+- `history_context`
+  - `max_recent_turns`
+  - `summarize_turn_threshold`
+  - `summarize_char_threshold`
+
+Each retrieval/history field is returned as:
+
+- `value: int`
+- `is_default: bool`
+
+Current validation rules:
+
+- retrieval/history scalar values must be positive integers except `neighbor_pages`, which allows `0`
+- `retrieval.final_top_k <= retrieval.initial_fetch`
+- `retrieval.max_expanded >= retrieval.final_top_k`
+
+Current override rule:
+
+- DB `NULL` means "use env/code default"
+- admin writes persist explicit override values
+- reset-to-default is not exposed by the API yet
+
 ## Backend Ownership
 
 ### App Store

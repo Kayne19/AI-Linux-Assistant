@@ -1,6 +1,17 @@
 import { useEffect, useState } from "react";
 import { useSettings } from "../../hooks/useSettings";
-import type { AppSettingsConfig, AppSettingsPatch, ComponentKey, ComponentSettings, ComponentSettingsPatch } from "../../types";
+import type {
+  AppSettingsConfig,
+  AppSettingsPatch,
+  ComponentKey,
+  ComponentSettings,
+  ComponentSettingsPatch,
+  HistoryContextSettings,
+  HistoryContextSettingsPatch,
+  NumericSetting,
+  RetrievalSettings,
+  RetrievalSettingsPatch,
+} from "../../types";
 import { COMPONENT_KEYS } from "../../types";
 
 const MODEL_OPTIONS: Record<string, string[]> = {
@@ -61,6 +72,8 @@ function computePatch(
   draft: AppSettingsConfig,
 ): AppSettingsPatch {
   const patch: AppSettingsPatch = {};
+
+  // Model component settings
   for (const key of COMPONENT_KEYS) {
     const orig = original[key];
     const next = draft[key];
@@ -73,6 +86,43 @@ function computePatch(
       patch[key] = compPatch;
     }
   }
+
+  // Retrieval numeric settings
+  if (original.retrieval && draft.retrieval) {
+    const retrievalPatch: RetrievalSettingsPatch = {};
+    let changed = false;
+    const keys: (keyof RetrievalSettings)[] = [
+      "initial_fetch", "final_top_k", "neighbor_pages", "max_expanded", "source_profile_sample",
+    ];
+    for (const key of keys) {
+      if (draft.retrieval[key].value !== original.retrieval[key].value) {
+        retrievalPatch[key] = draft.retrieval[key].value;
+        changed = true;
+      }
+    }
+    if (changed) {
+      patch.retrieval = retrievalPatch;
+    }
+  }
+
+  // History context numeric settings
+  if (original.history_context && draft.history_context) {
+    const historyPatch: HistoryContextSettingsPatch = {};
+    let changed = false;
+    const keys: (keyof HistoryContextSettings)[] = [
+      "max_recent_turns", "summarize_turn_threshold", "summarize_char_threshold",
+    ];
+    for (const key of keys) {
+      if (draft.history_context[key].value !== original.history_context[key].value) {
+        historyPatch[key] = draft.history_context[key].value;
+        changed = true;
+      }
+    }
+    if (changed) {
+      patch.history_context = historyPatch;
+    }
+  }
+
   return patch;
 }
 
@@ -133,6 +183,32 @@ function ComponentRow({ compKey, value, onChange }: ComponentRowProps) {
   );
 }
 
+type NumericRowProps = {
+  label: string;
+  value: NumericSetting;
+  min?: number;
+  onChange: (value: number) => void;
+};
+
+function NumericRow({ label, value, min = 0, onChange }: NumericRowProps) {
+  return (
+    <div className="settings-numeric-row">
+      <span className="settings-component-label">
+        {label}
+        {value.is_default ? <span className="settings-default-badge">default</span> : null}
+      </span>
+      <input
+        type="number"
+        className="settings-numeric-input"
+        value={value.value}
+        min={min}
+        onChange={(e) => onChange(Math.max(min, parseInt(e.target.value, 10) || 0))}
+        aria-label={label}
+      />
+    </div>
+  );
+}
+
 type SettingsDialogProps = {
   onClose: () => void;
 };
@@ -140,7 +216,7 @@ type SettingsDialogProps = {
 export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const { settings, loading, saving, error: hookError, fetchSettings, saveSettings } = useSettings();
   const [draft, setDraft] = useState<AppSettingsConfig | null>(null);
-  const [tab, setTab] = useState<"core" | "advanced">("core");
+  const [tab, setTab] = useState<"core" | "advanced" | "retrieval">("core");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -159,6 +235,27 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       if (!current) return current;
       return { ...current, [key]: { ...current[key], ...patch, is_default: false } };
     });
+    setSaveSuccess(false);
+  }
+
+  function updateDraftRetrieval(key: keyof RetrievalSettings, value: number) {
+    setDraft((current) => (
+      current
+        ? { ...current, retrieval: { ...current.retrieval, [key]: { value, is_default: false } } }
+        : current
+    ));
+    setSaveSuccess(false);
+  }
+
+  function updateDraftHistoryContext(key: keyof HistoryContextSettings, value: number) {
+    setDraft((current) => (
+      current
+        ? {
+            ...current,
+            history_context: { ...current.history_context, [key]: { value, is_default: false } },
+          }
+        : current
+    ));
     setSaveSuccess(false);
   }
 
@@ -200,7 +297,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
         <div className="dialog-header">
           <div>
             <p className="eyebrow">Admin</p>
-            <h2 id="settings-dialog-title">Model settings</h2>
+            <h2 id="settings-dialog-title">Admin settings</h2>
           </div>
           <button type="button" className="icon-button" aria-label="Close settings" onClick={onClose}>
             ×
@@ -221,6 +318,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             onClick={() => setTab("advanced")}
           >
             Advanced
+          </button>
+          <button
+            type="button"
+            className={`settings-tab${tab === "retrieval" ? " active" : ""}`}
+            onClick={() => setTab("retrieval")}
+          >
+            Retrieval &amp; Context
           </button>
         </div>
 
@@ -244,11 +348,28 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 {renderComponentGroup(COUNCIL_LITE_KEYS)}
               </section>
             </>
-          ) : (
+          ) : tab === "advanced" ? (
             <section className="settings-section">
               <h3 className="settings-section-title">Utility</h3>
               {renderComponentGroup(ADVANCED_KEYS)}
             </section>
+          ) : (
+            <>
+              <section className="settings-section">
+                <h3 className="settings-section-title">Retrieval</h3>
+                <NumericRow label="Initial fetch" value={draft.retrieval.initial_fetch} min={1} onChange={(v) => updateDraftRetrieval("initial_fetch", v)} />
+                <NumericRow label="Final top-k" value={draft.retrieval.final_top_k} min={1} onChange={(v) => updateDraftRetrieval("final_top_k", v)} />
+                <NumericRow label="Neighbor pages" value={draft.retrieval.neighbor_pages} min={0} onChange={(v) => updateDraftRetrieval("neighbor_pages", v)} />
+                <NumericRow label="Max expanded" value={draft.retrieval.max_expanded} min={1} onChange={(v) => updateDraftRetrieval("max_expanded", v)} />
+                <NumericRow label="Source profile sample" value={draft.retrieval.source_profile_sample} min={1} onChange={(v) => updateDraftRetrieval("source_profile_sample", v)} />
+              </section>
+              <section className="settings-section">
+                <h3 className="settings-section-title">History context</h3>
+                <NumericRow label="Max recent turns" value={draft.history_context.max_recent_turns} min={1} onChange={(v) => updateDraftHistoryContext("max_recent_turns", v)} />
+                <NumericRow label="Summarize turn threshold" value={draft.history_context.summarize_turn_threshold} min={1} onChange={(v) => updateDraftHistoryContext("summarize_turn_threshold", v)} />
+                <NumericRow label="Summarize char threshold" value={draft.history_context.summarize_char_threshold} min={1} onChange={(v) => updateDraftHistoryContext("summarize_char_threshold", v)} />
+              </section>
+            </>
           )}
         </div>
 

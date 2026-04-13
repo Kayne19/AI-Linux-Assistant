@@ -1,6 +1,8 @@
 import os
 from dataclasses import dataclass
 
+from config.settings import load_effective_settings
+
 
 @dataclass(frozen=True)
 class RetrievalConfig:
@@ -36,6 +38,7 @@ def _parse_optional_int(raw_value):
 
 
 def load_retrieval_config() -> RetrievalConfig:
+    settings = load_effective_settings()
     return RetrievalConfig(
         db_path="lancedb_data",
         table_name="debian_manual",
@@ -45,11 +48,11 @@ def load_retrieval_config() -> RetrievalConfig:
         rerank_provider_name=os.getenv("VECTORDB_RERANK_PROVIDER", "voyage").strip() or "voyage",
         rerank_model_name=os.getenv("VECTORDB_RERANK_MODEL", "rerank-2.5-lite").strip()
         or "rerank-2.5-lite",
-        initial_fetch=40,
-        final_top_k=20,
-        neighbor_pages=2,
-        max_expanded=40,
-        source_profile_sample=5000,
+        initial_fetch=settings.retrieval_initial_fetch,
+        final_top_k=settings.retrieval_final_top_k,
+        neighbor_pages=settings.retrieval_neighbor_pages,
+        max_expanded=settings.retrieval_max_expanded,
+        source_profile_sample=settings.retrieval_source_profile_sample,
         embed_device=os.getenv("VECTORDB_EMBED_DEVICE", "").strip() or None,
         rerank_device=os.getenv("VECTORDB_RERANK_DEVICE", "cuda").strip() or "cuda",
         voyage_output_dimension=_parse_optional_int(os.getenv("VECTORDB_VOYAGE_OUTPUT_DIMENSION", "")),

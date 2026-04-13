@@ -599,9 +599,9 @@ def test_settings_provider_override_uses_provider_default_model():
             classifier_temperature=0.0,
             contextualizer_temperature=0.0,
             history_summarizer_temperature=0.1,
-            history_max_recent_turns=4,
-            history_summarize_turn_threshold=16,
-            history_summarize_char_threshold=3600,
+            history_max_recent_turns=6,
+            history_summarize_turn_threshold=20,
+            history_summarize_char_threshold=4200,
         )
 
         router = ModelRouter(
@@ -614,6 +614,10 @@ def test_settings_provider_override_uses_provider_default_model():
         assert isinstance(router.responder, ResponseAgent)
         assert router.responder.worker.model == "local-default"
         assert router.response_tool_rounds == 5
+        assert isinstance(router.history_summarizer, HistorySummarizer)
+        assert router.history_summarizer.max_recent_turns == 6
+        assert router.history_summarizer.summarize_turn_threshold == 20
+        assert router.history_summarizer.summarize_char_threshold == 4200
     finally:
         ModelRouter.WORKER_TYPES = original_worker_types
 

@@ -24,6 +24,17 @@ class FakeRow:
             setattr(self, f"{comp}_provider", None)
             setattr(self, f"{comp}_model", None)
             setattr(self, f"{comp}_reasoning_effort", None)
+        for attr_name in (
+            "retrieval_initial_fetch",
+            "retrieval_final_top_k",
+            "retrieval_neighbor_pages",
+            "retrieval_max_expanded",
+            "retrieval_source_profile_sample",
+            "history_max_recent_turns",
+            "history_summarize_turn_threshold",
+            "history_summarize_char_threshold",
+        ):
+            setattr(self, attr_name, None)
         # Apply any overrides passed via kwargs
         for key, value in kwargs.items():
             setattr(self, key, value)
@@ -39,6 +50,8 @@ def test_all_null_returns_base_settings():
     assert result.magi_eager == SETTINGS.magi_eager
     assert result.magi_lite_arbiter == SETTINGS.magi_lite_arbiter
     assert result.response_tool_rounds == SETTINGS.response_tool_rounds
+    assert result.retrieval_initial_fetch == SETTINGS.retrieval_initial_fetch
+    assert result.history_max_recent_turns == SETTINGS.history_max_recent_turns
 
 
 def test_provider_and_model_override():
@@ -85,6 +98,29 @@ def test_magi_lite_override():
     assert result.magi_lite_skeptic == RoleModelSettings("local", "qwen2.5:7b", "high")
     assert result.magi_lite_eager == SETTINGS.magi_lite_eager
     assert result.magi_lite_historian == SETTINGS.magi_lite_historian
+
+
+def test_retrieval_and_history_scalar_overrides():
+    row = FakeRow(
+        retrieval_initial_fetch=48,
+        retrieval_final_top_k=16,
+        retrieval_neighbor_pages=1,
+        retrieval_max_expanded=32,
+        retrieval_source_profile_sample=6400,
+        history_max_recent_turns=6,
+        history_summarize_turn_threshold=22,
+        history_summarize_char_threshold=5000,
+    )
+    result = _apply_db_overrides(SETTINGS, row)
+
+    assert result.retrieval_initial_fetch == 48
+    assert result.retrieval_final_top_k == 16
+    assert result.retrieval_neighbor_pages == 1
+    assert result.retrieval_max_expanded == 32
+    assert result.retrieval_source_profile_sample == 6400
+    assert result.history_max_recent_turns == 6
+    assert result.history_summarize_turn_threshold == 22
+    assert result.history_summarize_char_threshold == 5000
 
 
 def test_db_error_fallback(monkeypatch):

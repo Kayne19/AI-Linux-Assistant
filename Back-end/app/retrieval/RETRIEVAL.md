@@ -54,6 +54,17 @@ Owns retrieval configuration:
 
 This is the single source of truth for retrieval runtime configuration.
 
+Current runtime resolution rule:
+
+- embedder/reranker provider-model settings still come from retrieval env/config
+- retrieval numeric runtime knobs now resolve through effective app settings, so admin DB overrides can tune:
+  - `initial_fetch`
+  - `final_top_k`
+  - `neighbor_pages`
+  - `max_expanded`
+  - `source_profile_sample`
+- if the DB schema is older than the running code, retrieval falls back to env/code defaults until migrations are applied
+
 ### `app/retrieval/factory.py`
 
 Owns retrieval composition:
@@ -140,6 +151,7 @@ Runtime config rule:
 - the facade must build its store/metadata/search components from one coherent runtime config
 - compatibility helpers must read the same configured path/table metadata that runtime retrieval uses
 - compatibility overrides are runtime composition only, not ingestion/indexing behavior
+- admin-tunable retrieval settings are runtime-only and must not mutate ingestion/index metadata policy
 
 ## Runtime Flow
 
