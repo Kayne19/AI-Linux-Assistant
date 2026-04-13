@@ -10,6 +10,7 @@ try:
         DateTime,
         Float,
         ForeignKey,
+        Index,
         Integer,
         String,
         Text,
@@ -33,6 +34,10 @@ except ImportError:  # pragma: no cover - optional until SQLAlchemy is installed
             pass
 
     class UniqueConstraint:  # type: ignore[override]
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class Index:  # type: ignore[override]
         def __init__(self, *args, **kwargs):
             pass
 
@@ -284,13 +289,7 @@ class ProjectPreference(Base):
 class ProjectMemoryCandidate(Base):
     __tablename__ = "project_memory_candidates"
     __table_args__ = (
-        UniqueConstraint(
-            "project_id",
-            "item_type",
-            "item_key",
-            "status",
-            name="uq_project_memory_candidate_key",
-        ),
+        Index("ix_project_memory_candidates_project_status_key", "project_id", "status", "item_key"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -303,6 +302,7 @@ class ProjectMemoryCandidate(Base):
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
     source_ref: Mapped[str] = mapped_column(Text, nullable=False)
     value_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False
     )

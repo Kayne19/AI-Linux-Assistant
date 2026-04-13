@@ -281,7 +281,7 @@ class InMemoryMemoryStore:
     def list_candidates(self, max_results=25):
         rows = sorted(
             self._shared_state["candidates"],
-            key=lambda item: item.get("updated_at") or "",
+            key=lambda item: (item.get("updated_at") or "", item.get("created_at") or ""),
             reverse=True,
         )[:max_results]
         return [
@@ -294,10 +294,70 @@ class InMemoryMemoryStore:
                 "source_type": row["source_type"],
                 "source_ref": row["source_ref"],
                 "payload": row["payload"],
+                "created_at": _iso(row.get("created_at")),
                 "updated_at": _iso(row["updated_at"]),
             }
             for row in rows
         ]
+
+    def _replace_active_candidates(self, items):
+        preserved_history = [
+            row for row in self._shared_state["candidates"]
+            if row.get("status") == "superseded"
+        ]
+        now = _utc_now()
+        active_rows = [
+            {
+                "item_type": item.get("item_type", "unknown"),
+                "item_key": item.get("item_key", ""),
+                "status": item.get("status", "candidate"),
+                "reason": item.get("reason", ""),
+                "confidence": float(item.get("confidence", 0.5) or 0.5),
+                "source_type": item.get("source_type", "model"),
+                "source_ref": item.get("source_ref", "conversation"),
+                "payload": item.get("payload", {}),
+                "created_at": now,
+                "updated_at": now,
+            }
+            for item in items
+        ]
+        self._shared_state["candidates"] = preserved_history + active_rows
+
+    def _upsert_superseded_history(self, items):
+        for item in items:
+            payload = item.get("payload", {}) or {}
+            matching_row = next(
+                (
+                    row for row in self._shared_state["candidates"]
+                    if row.get("status") == "superseded"
+                    and row.get("item_type", "unknown") == item.get("item_type", "unknown")
+                    and row.get("item_key", "") == item.get("item_key", "")
+                    and row.get("reason", "") == item.get("reason", "")
+                    and float(row.get("confidence", 0.5) or 0.5) == float(item.get("confidence", 0.5) or 0.5)
+                    and row.get("source_type", "model") == item.get("source_type", "model")
+                    and row.get("source_ref", "conversation") == item.get("source_ref", "conversation")
+                    and row.get("payload", {}) == payload
+                ),
+                None,
+            )
+            if matching_row is not None:
+                matching_row["updated_at"] = _utc_now()
+                continue
+            now = _utc_now()
+            self._shared_state["candidates"].append(
+                {
+                    "item_type": item.get("item_type", "unknown"),
+                    "item_key": item.get("item_key", ""),
+                    "status": "superseded",
+                    "reason": item.get("reason", ""),
+                    "confidence": float(item.get("confidence", 0.5) or 0.5),
+                    "source_type": item.get("source_type", "model"),
+                    "source_ref": item.get("source_ref", "conversation"),
+                    "payload": payload,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
 
     def format_debug_dump(self, query="system profile attempts issues preferences", max_candidates=20):
         sections = []
@@ -537,18 +597,8 @@ class InMemoryMemoryStore:
                     }
                 )
 
-        self._shared_state["candidates"] = [
-            {
-                "item_type": item.get("item_type", "unknown"),
-                "item_key": item.get("item_key", ""),
-                "status": item.get("status", "candidate"),
-                "reason": item.get("reason", ""),
-                "confidence": float(item.get("confidence", 0.5) or 0.5),
-                "source_type": item.get("source_type", "model"),
-                "source_ref": item.get("source_ref", "conversation"),
-                "payload": item.get("payload", {}),
-                "updated_at": _utc_now(),
-            }
-            for item in candidates + conflicts
-        ]
+        active_candidate_items = [item for item in candidates + conflicts if item.get("status") != "superseded"]
+        superseded_items = [item for item in conflicts if item.get("status") == "superseded"]
+        self._replace_active_candidates(active_candidate_items)
+        self._upsert_superseded_history(superseded_items)
         self._write_state("session_summary", getattr(resolution, "session_summary", "") or "")

@@ -1,3 +1,5 @@
+import json
+
 from providers.openAI_caller import OpenAIWorker
 from utils.debug_utils import debug_print
 from orchestration.history_preparer import PreparedHistory
@@ -18,16 +20,29 @@ class Classifier:
     def _parse_labels(self, output):
         if not output:
             return []
-        line = output.strip().splitlines()[0]
-        label_part = None
-        for part in line.split(","):
-            part = part.strip()
-            if part.startswith("labels="):
-                label_part = part[len("labels="):].strip()
-                break
-        if label_part is None:
-            return []
-        labels = [label.strip() for label in label_part.split("|") if label.strip()]
+        raw = output.strip()
+        labels = []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            raw_labels = parsed.get("labels", [])
+            if isinstance(raw_labels, str):
+                labels = [label.strip() for label in raw_labels.split("|") if label.strip()]
+            elif isinstance(raw_labels, list):
+                labels = [str(label).strip() for label in raw_labels if str(label).strip()]
+        if not labels:
+            line = raw.splitlines()[0]
+            label_part = None
+            for part in line.split(","):
+                part = part.strip()
+                if part.startswith("labels="):
+                    label_part = part[len("labels="):].strip()
+                    break
+            if label_part is None:
+                return []
+            labels = [label.strip() for label in label_part.split("|") if label.strip()]
         allowed = set(get_allowed_labels())
         labels = [label for label in labels if label in allowed]
         return labels

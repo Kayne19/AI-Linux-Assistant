@@ -1,3 +1,6 @@
+export type RunMode = "off" | "lite" | "full";
+export type RunResumeInputKind = "fact" | "correction" | "constraint" | "goal_clarification";
+
 export type User = {
   id: string;
   username?: string | null;
@@ -35,7 +38,7 @@ export type CouncilEntry = {
   round?: number | null;
   text: string;
   entry_kind?: "role" | "user_intervention" | string;
-  input_kind?: "fact" | "correction" | "constraint" | "goal_clarification" | string;
+  input_kind?: RunResumeInputKind | string;
 };
 
 export type UICouncilEntry = {
@@ -48,7 +51,7 @@ export type UICouncilEntry = {
   streamBuffer?: string;
   streamPreview?: string;
   entryKind?: "role" | "user_intervention" | string;
-  inputKind?: "fact" | "correction" | "constraint" | "goal_clarification" | string;
+  inputKind?: RunResumeInputKind | string;
 };
 
 export type ChatRunUIState = {
@@ -114,7 +117,7 @@ export type ChatRun = {
   status: string;
   run_kind: string;
   request_content: string;
-  magi: string;
+  magi: RunMode;
   client_request_id: string;
   latest_state_code: string;
   latest_event_seq: number;

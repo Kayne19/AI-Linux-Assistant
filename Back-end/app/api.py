@@ -1,3 +1,4 @@
+import logging
 import json
 import time
 import uuid
@@ -25,7 +26,7 @@ from streaming.event_serializer import serialize_run_event
 from streaming.redis_events import get_shared_client as _get_redis_client
 
 try:
-    from fastapi import Depends, FastAPI, HTTPException
+    from fastapi import Depends, FastAPI, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import StreamingResponse
     from pydantic import BaseModel, Field
@@ -33,6 +34,7 @@ except ImportError:  # pragma: no cover - optional until FastAPI is installed
     Depends = None
     FastAPI = None
     HTTPException = Exception
+    Query = None
     CORSMiddleware = None
     StreamingResponse = None
 
@@ -42,6 +44,15 @@ except ImportError:  # pragma: no cover - optional until FastAPI is installed
     def Field(default=None, **kwargs):  # type: ignore[override]
         del kwargs
         return default
+
+    def Query(default=None, **kwargs):  # type: ignore[override]
+        del kwargs
+        return default
+
+
+logger = logging.getLogger(__name__)
+RunMagiMode = Literal["off", "lite", "full"]
+RunResumeInputKind = Literal["fact", "correction", "constraint", "goal_clarification"]
 
 
 def _require_fastapi():
@@ -74,9 +85,9 @@ class ChatUpdateRequest(BaseModel):
 
 
 class RunCreateRequest(BaseModel):
-    content: str = Field(..., min_length=1)
-    magi: str = "off"
-    client_request_id: str = ""
+    content: str = Field(..., min_length=1, max_length=20000)
+    magi: RunMagiMode = "off"
+    client_request_id: str = Field("", max_length=120)
 
 
 class MessageCreateRequest(RunCreateRequest):
@@ -85,7 +96,7 @@ class MessageCreateRequest(RunCreateRequest):
 
 class RunResumeRequest(BaseModel):
     input_text: str = ""
-    input_kind: str = "fact"
+    input_kind: RunResumeInputKind = "fact"
 
 
 class UserResponse(BaseModel):
@@ -413,6 +424,14 @@ def _stream_stop_payload(run_store, run_id, run, app_store):
     return _terminal_event_payload(run_store, run_id, run, app_store)
 
 
+def _parse_redis_stream_payload(raw_data, run_id):
+    try:
+        return json.loads(raw_data)
+    except (TypeError, json.JSONDecodeError):
+        logger.warning("Skipping malformed Redis stream payload for run %s.", run_id, exc_info=True)
+        return None
+
+
 def _wait_for_terminal_run(run_store, run_id, timeout_seconds=1800):
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -624,7 +643,9 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                     continue
                 if msg["type"] != "message":
                     continue
-                data = json.loads(msg["data"])
+                data = _parse_redis_stream_payload(msg.get("data"), run_id)
+                if data is None:
+                    continue
                 seq = int(data.get("seq", 0) or 0)
                 if seq > 0 and seq <= current_seq:
                     continue  # already sent via backlog
@@ -854,27 +875,25 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
     @app.get("/chats/{chat_session_id}/runs", response_model=ChatRunListResponse)
     def list_chat_runs(
         chat_session_id: str,
-        page: int = 1,
-        page_size: int = 20,
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=100),
         status: str | None = None,
         current_user=Depends(_require_current_user),
     ):
         _chat_context_or_404(chat_session_id, current_user.id)
-        normalized_page = max(1, int(page))
-        normalized_page_size = min(100, max(1, int(page_size)))
         runs, total = run_store.list_runs_for_chat_for_user(
             chat_session_id,
             current_user.id,
-            page=normalized_page,
-            page_size=normalized_page_size,
+            page=page,
+            page_size=page_size,
             status=status,
         )
         return ChatRunListResponse(
             runs=[_serialize_run(run) for run in runs],
             total=total,
-            page=normalized_page,
-            page_size=normalized_page_size,
-            has_more=(normalized_page * normalized_page_size) < total,
+            page=page,
+            page_size=page_size,
+            has_more=(page * page_size) < total,
         )
 
     @app.post("/chats/{chat_session_id}/runs", response_model=ChatRunResponse)
@@ -890,12 +909,16 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         return _serialize_run(run)
 
     @app.get("/runs/{run_id}/events")
-    def list_run_events(run_id: str, after_seq: int = 0, limit: int = 200, current_user=Depends(_require_current_user)):
+    def list_run_events(
+        run_id: str,
+        after_seq: int = Query(0, ge=0),
+        limit: int = Query(200, ge=1, le=1000),
+        current_user=Depends(_require_current_user),
+    ):
         run = run_store.get_run_for_user(run_id, current_user.id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found.")
-        normalized_limit = min(1000, max(1, int(limit)))
-        events = run_store.list_events_after(run_id, after_seq=after_seq, limit=normalized_limit)
+        events = run_store.list_events_after(run_id, after_seq=after_seq, limit=limit)
         return [_serialize_event_row(event) for event in events]
 
     @app.get("/runs/{run_id}/events/stream")
@@ -942,7 +965,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
     @app.post("/chats/{chat_session_id}/messages", response_model=SendMessageResponse)
     def send_message(chat_session_id: str, request: MessageCreateRequest, current_user=Depends(_require_current_user)):
         run = _create_or_reuse_run(chat_session_id, request, current_user.id)
-        terminal_run = _wait_for_terminal_run(run_store, run.id)
+        terminal_run = _wait_for_terminal_run(run_store, run.id, timeout_seconds=settings.chat_run_wait_timeout_seconds)
         return _run_result_or_error(terminal_run)
 
     @app.post("/chats/{chat_session_id}/messages/stream")

@@ -8,7 +8,7 @@ from agents.context_agent import Contextualizer
 from providers.openAI_caller import OpenAIWorker
 from agents.response_agent import ResponseAgent
 from orchestration.history_preparer import PreparedHistory
-from orchestration.routing_registry import get_allowed_labels, get_searchable_labels, get_skip_rag_labels
+from orchestration.routing_registry import get_allowed_labels, get_searchable_labels
 from orchestration.run_control import RunCancelledError, RunPausedError, invoke_cancel_check
 from config.settings import SETTINGS
 from agents.summarizers import ContextSummarizer, HistorySummarizer

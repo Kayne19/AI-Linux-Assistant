@@ -90,9 +90,9 @@ Compatibility wrappers over the durable run system.
 
 Current request body:
 
-- `content: str`
+- `content: str` with `1..20000` characters
 - `magi: "off" | "lite" | "full"` (defaults to `"off"`)
-- `client_request_id: str` for idempotent create-run semantics
+- `client_request_id: str` with max length `120` for idempotent create-run semantics
 
 Resume request body:
 
@@ -108,8 +108,8 @@ Pause semantics:
 
 Current query params:
 
-- `page: int = 1`
-- `page_size: int = 20`
+- `page: int = 1` with `page >= 1`
+- `page_size: int = 20` with `1 <= page_size <= 100`
 - `status: str | None = None`
 
 Current response body:
@@ -201,6 +201,12 @@ Auth rule for streaming:
 
 - the browser stream path stays `fetch`/`ReadableStream`, not native `EventSource`
 - bearer tokens are sent in the `Authorization` header, never in query params
+- malformed live Redis payloads are skipped with a warning instead of terminating the client stream
+
+Blocking wait timeout rule:
+
+- the compatibility `POST /chats/{chat_session_id}/messages` path waits for terminal completion using `CHAT_RUN_WAIT_TIMEOUT_SECONDS`
+- default is `1800` seconds
 
 ## Data Models
 

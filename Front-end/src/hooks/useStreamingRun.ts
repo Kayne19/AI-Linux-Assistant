@@ -8,10 +8,11 @@ import type {
   ChatRunUIState,
   ChatSession,
   PendingDonePayload,
+  RunResumeInputKind,
   StreamStatusEvent,
   UICouncilEntry,
 } from "../types";
-import { optimisticIdsForRun } from "../utils";
+import { AUTO_NAME_REFRESH_DELAYS_MS, optimisticIdsForRun } from "../utils";
 
 type TextDeltaController = {
   queueTextDelta: (chatId: string, assistantId: number, delta: string) => void;
@@ -187,7 +188,7 @@ export function useStreamingRun({
 
   async function handleResumeActiveRun(
     inputText = "",
-    inputKind?: "fact" | "correction" | "constraint" | "goal_clarification",
+    inputKind?: RunResumeInputKind,
   ): Promise<boolean> {
     const runId = selectedChat?.active_run_id || selectedRunUi?.runId;
     if (!runId || !selectedChatId) {
@@ -211,7 +212,7 @@ export function useStreamingRun({
   }
 
   function scheduleAutoNameRefreshes(projectId: string) {
-    [800, 1800, 3200].forEach((delayMs) => {
+    AUTO_NAME_REFRESH_DELAYS_MS.forEach((delayMs) => {
       window.setTimeout(() => {
         void reloadChatsRef.current(projectId).catch(() => undefined);
       }, delayMs);

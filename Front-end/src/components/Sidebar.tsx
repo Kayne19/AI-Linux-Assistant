@@ -64,6 +64,7 @@ export function Sidebar({
   const dragStateRef = useRef<{ active: boolean; width: number }>({ active: false, width: sidebarWidth });
   const previousTitlesRef = useRef<Record<string, string>>({});
   const titleAnimationTimersRef = useRef<Record<string, number>>({});
+  const titleCleanupTimeoutsRef = useRef<Record<string, number>>({});
   const [animatedTitles, setAnimatedTitles] = useState<Record<string, string>>({});
   const [openMenuChatId, setOpenMenuChatId] = useState<string | null>(null);
 
@@ -73,6 +74,10 @@ export function Sidebar({
         window.clearInterval(timerId);
       });
       titleAnimationTimersRef.current = {};
+      Object.values(titleCleanupTimeoutsRef.current).forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      titleCleanupTimeoutsRef.current = {};
     },
     [],
   );
@@ -95,6 +100,7 @@ export function Sidebar({
       }
 
       window.clearInterval(titleAnimationTimersRef.current[chatId]);
+      window.clearTimeout(titleCleanupTimeoutsRef.current[chatId]);
       let visibleChars = 0;
       setAnimatedTitles((current) => ({ ...current, [chatId]: "" }));
       titleAnimationTimersRef.current[chatId] = window.setInterval(() => {
@@ -104,7 +110,7 @@ export function Sidebar({
         if (visibleChars >= nextTitle.length) {
           window.clearInterval(titleAnimationTimersRef.current[chatId]);
           delete titleAnimationTimersRef.current[chatId];
-          window.setTimeout(() => {
+          titleCleanupTimeoutsRef.current[chatId] = window.setTimeout(() => {
             setAnimatedTitles((current) => {
               if (current[chatId] !== nextTitle) {
                 return current;
@@ -113,6 +119,7 @@ export function Sidebar({
               delete next[chatId];
               return next;
             });
+            delete titleCleanupTimeoutsRef.current[chatId];
           }, 250);
         }
       }, 18);

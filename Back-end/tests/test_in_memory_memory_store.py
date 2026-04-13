@@ -66,13 +66,26 @@ def test_in_memory_store_commits_superseded_fact_and_preserves_candidate_audit()
         assistant_response="",
     )
 
+    store.commit_resolution(
+        MemoryResolution(
+            committed={
+                "facts": [],
+                "issues": [],
+                "attempts": [],
+                "constraints": [],
+                "preferences": [],
+            }
+        )
+    )
+
     snapshot = store.load_snapshot()
     candidates = store.list_candidates()
 
     assert snapshot["profile"]["os.distribution"] == "Ubuntu 24.04"
-    assert candidates[0]["status"] == "superseded"
-    assert candidates[0]["payload"]["fact_value"] == "Debian 12"
-    assert candidates[0]["payload"]["replaced_by"] == "Ubuntu 24.04"
+    superseded = [item for item in candidates if item["status"] == "superseded"]
+    assert len(superseded) == 1
+    assert superseded[0]["payload"]["fact_value"] == "Debian 12"
+    assert superseded[0]["payload"]["replaced_by"] == "Ubuntu 24.04"
 
 
 def test_in_memory_store_persists_issue_attempt_and_session_summary():

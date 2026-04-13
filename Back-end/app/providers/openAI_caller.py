@@ -500,4 +500,3 @@ class OpenAICaller:
 
 
 OpenAIWorker = OpenAICaller
-openAICaller = OpenAICaller

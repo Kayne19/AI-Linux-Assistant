@@ -45,7 +45,7 @@ class AppSettings:
         default_factory=lambda: RoleModelSettings("openai", "gpt-5.4", "high")
     )
     magi_historian: RoleModelSettings = field(
-        default_factory=lambda: RoleModelSettings("anthropic", "claude-sonnet-4-6", "medium")
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4", "medium")
     )
     magi_arbiter: RoleModelSettings = field(
         default_factory=lambda: RoleModelSettings("openai", "gpt-5.4", "high")
@@ -66,6 +66,7 @@ class AppSettings:
     magi_lite_max_discussion_rounds: int = 2
     max_active_runs_per_user_default: int = 3
     chat_run_lease_seconds: int = 30
+    chat_run_wait_timeout_seconds: int = 1800
     chat_run_stream_poll_ms: int = 500
     chat_run_worker_poll_ms: int = 50
     chat_run_worker_concurrency: int = 3
@@ -228,6 +229,7 @@ def load_settings():
         magi_lite_max_discussion_rounds=_get_int_env("MAGI_LITE_MAX_DISCUSSION_ROUNDS", 2),
         max_active_runs_per_user_default=_get_int_env("MAX_ACTIVE_RUNS_PER_USER_DEFAULT", 3),
         chat_run_lease_seconds=_get_int_env("CHAT_RUN_LEASE_SECONDS", 30),
+        chat_run_wait_timeout_seconds=_get_int_env("CHAT_RUN_WAIT_TIMEOUT_SECONDS", 1800),
         chat_run_stream_poll_ms=_get_int_env("CHAT_RUN_STREAM_POLL_MS", 500),
         chat_run_worker_poll_ms=_get_int_env("CHAT_RUN_WORKER_POLL_MS", 50),
         chat_run_worker_concurrency=_get_int_env("CHAT_RUN_WORKER_CONCURRENCY", 3),
@@ -317,6 +319,7 @@ def _apply_db_overrides(base: AppSettings, row) -> AppSettings:
         magi_lite_max_discussion_rounds=base.magi_lite_max_discussion_rounds,
         max_active_runs_per_user_default=base.max_active_runs_per_user_default,
         chat_run_lease_seconds=base.chat_run_lease_seconds,
+        chat_run_wait_timeout_seconds=base.chat_run_wait_timeout_seconds,
         chat_run_stream_poll_ms=base.chat_run_stream_poll_ms,
         chat_run_worker_poll_ms=base.chat_run_worker_poll_ms,
         chat_run_worker_concurrency=base.chat_run_worker_concurrency,

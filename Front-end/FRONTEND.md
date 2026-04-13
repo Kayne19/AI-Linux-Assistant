@@ -33,6 +33,14 @@ It currently owns:
 
 It should stay thin and should not absorb subsystem logic again.
 
+### `src/main.tsx`
+
+Owns the root bootstrap:
+
+- React mount
+- Auth0 provider wiring
+- the app-shell `AppErrorBoundary` so a render failure does not blank the entire UI without a fallback
+
 ### `src/hooks/`
 
 Owns stateful frontend behavior, split by responsibility:
@@ -62,6 +70,7 @@ These hooks are the main stateful frontend surfaces.
 Owns presentational UI surfaces:
 
 - `LoginScreen.tsx`
+- `AppErrorBoundary.tsx`
 - `Sidebar.tsx`
 - `ChatView.tsx`
 - `MessageComposer.tsx`
@@ -88,6 +97,7 @@ Owns pure frontend helpers:
 - council phase display formatting
 - streaming preview text extraction
 - optimistic run-id derivation
+- shared auto-name refresh timing constants
 - text delta pacing constants
 
 ### `src/councilStreamLifecycle.ts`
@@ -220,6 +230,7 @@ For live assistant rendering:
 
 - live assistant text continues rendering through the normal message formatter while `text_delta` drains
 - if the backend schedules a first-turn auto-name follow-up run, the frontend performs a few delayed chat-list refreshes after `done` so the sidebar picks up the final title without keeping the main response run open
+- those delayed refresh intervals now live in `src/utils.ts` instead of as an inline magic array inside `useStreamingRun.ts`
 - the frontend receives the final title as normal chat-list data; any title reveal polish remains frontend-owned and does not require backend token streaming for the title itself
 
 For live council rendering:

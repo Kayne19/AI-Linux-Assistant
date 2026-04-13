@@ -4,11 +4,13 @@ import type {
   AppSettingsConfig,
   AppSettingsPatch,
   ChatMessage,
-  ChatRunListResponse,
   ChatRun,
+  ChatRunListResponse,
   ChatSession,
   Project,
   RunEvent,
+  RunMode,
+  RunResumeInputKind,
   SendMessageResponse,
   User,
 } from "./types";
@@ -236,7 +238,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ content, client_request_id: clientRequestId || "" }),
     }),
-  createRun: (chatId: string, content: string, options: { magi?: string; clientRequestId?: string } = {}) =>
+  createRun: (chatId: string, content: string, options: { magi?: RunMode; clientRequestId?: string } = {}) =>
     request<ChatRun>(`/chats/${chatId}/runs`, {
       method: "POST",
       body: JSON.stringify({
@@ -262,7 +264,7 @@ export const api = {
     }),
   resumeRun: (
     runId: string,
-    payload: { inputText?: string; inputKind?: "fact" | "correction" | "constraint" | "goal_clarification" } = {},
+    payload: { inputText?: string; inputKind?: RunResumeInputKind } = {},
   ) =>
     request<ChatRun>(`/runs/${runId}/resume`, {
       method: "POST",
@@ -280,7 +282,7 @@ export const api = {
     chatId: string,
     content: string,
     handlers: StreamHandlers = {},
-    magi: string = "off",
+    magi: RunMode = "off",
     clientRequestId?: string,
     signal?: AbortSignal,
   ) => {

@@ -146,6 +146,11 @@ Own:
 - persisting committed facts/issues/attempts/constraints/preferences
 - storing memory candidates and project state
 
+Current candidate-history rule:
+
+- `candidate` and `conflicted` entries represent the latest unresolved working set and are replaced on each commit
+- `superseded` fact entries are retained as append-only history so project fact changes remain auditable across later turns
+
 They should not own extraction policy or commit policy.
 
 ### Shared Memory Formatting / Helpers
@@ -288,7 +293,8 @@ Current limitations worth knowing before changing the subsystem:
 1. The system is still optimized for technical/project memory, not broad personal memory.
 2. Project-scoped memory is powerful, but it makes prompt policy important; if the responder ignores remembered environment context, answers can be technically correct but operationally wrong.
 3. Candidate/conflict handling exists, but the operator UX around reviewing candidates is still minimal.
-4. The system does not yet have a separate "general conversation memory mode" versus "technical project memory mode".
+4. Unresolved candidates are still a latest-state queue, not a full historical workflow log.
+5. The system does not yet have a separate "general conversation memory mode" versus "technical project memory mode".
 
 ## Safe Change Guidelines
 

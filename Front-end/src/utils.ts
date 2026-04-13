@@ -1,6 +1,7 @@
 const TEXT_DELTA_CHARS_PER_MS = 0.035;
 const TEXT_DELTA_MIN_CHARS_PER_FRAME = 1;
 const TEXT_DELTA_MAX_CHARS_PER_FRAME = 4;
+const AUTO_NAME_REFRESH_DELAYS_MS = [800, 1800, 3200] as const;
 
 function formatChatTimestamp(value: string) {
   if (!value) {
@@ -58,6 +59,7 @@ function optimisticIdsForRun(runId: string) {
 }
 
 export {
+  AUTO_NAME_REFRESH_DELAYS_MS,
   TEXT_DELTA_CHARS_PER_MS,
   TEXT_DELTA_MAX_CHARS_PER_FRAME,
   TEXT_DELTA_MIN_CHARS_PER_FRAME,

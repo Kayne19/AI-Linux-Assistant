@@ -358,7 +358,7 @@ class PostgresMemoryStore:
             stmt = (
                 select(ProjectMemoryCandidate)
                 .where(ProjectMemoryCandidate.project_id == self.project_id)
-                .order_by(ProjectMemoryCandidate.updated_at.desc())
+                .order_by(ProjectMemoryCandidate.updated_at.desc(), ProjectMemoryCandidate.created_at.desc())
                 .limit(max_results)
             )
             rows = list(session.scalars(stmt))
@@ -372,10 +372,78 @@ class PostgresMemoryStore:
                 "source_type": row.source_type,
                 "source_ref": row.source_ref,
                 "payload": row.value_json or {},
+                "created_at": _iso(row.created_at),
                 "updated_at": _iso(row.updated_at),
             }
             for row in rows
         ]
+
+    def _replace_active_candidates(self, session, items):
+        session.query(ProjectMemoryCandidate).where(
+            ProjectMemoryCandidate.project_id == self.project_id,
+            ProjectMemoryCandidate.status.in_(("candidate", "conflicted")),
+        ).delete(synchronize_session=False)
+        now = _utc_now()
+        for item in items:
+            session.add(
+                ProjectMemoryCandidate(
+                    project_id=self.project_id,
+                    item_type=item.get("item_type", "unknown"),
+                    item_key=item.get("item_key", ""),
+                    status=item.get("status", "candidate"),
+                    reason=item.get("reason", ""),
+                    confidence=float(item.get("confidence", 0.5) or 0.5),
+                    source_type=item.get("source_type", "model"),
+                    source_ref=item.get("source_ref", "conversation"),
+                    value_json=item.get("payload", {}),
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+    def _upsert_superseded_history(self, session, items):
+        for item in items:
+            payload = item.get("payload", {}) or {}
+            existing_rows = list(
+                session.scalars(
+                    select(ProjectMemoryCandidate).where(
+                        ProjectMemoryCandidate.project_id == self.project_id,
+                        ProjectMemoryCandidate.item_type == item.get("item_type", "unknown"),
+                        ProjectMemoryCandidate.item_key == item.get("item_key", ""),
+                        ProjectMemoryCandidate.status == "superseded",
+                    )
+                )
+            )
+            matching_row = next(
+                (
+                    row for row in existing_rows
+                    if (row.reason or "") == item.get("reason", "")
+                    and float(row.confidence or 0.5) == float(item.get("confidence", 0.5) or 0.5)
+                    and (row.source_type or "") == item.get("source_type", "model")
+                    and (row.source_ref or "") == item.get("source_ref", "conversation")
+                    and (row.value_json or {}) == payload
+                ),
+                None,
+            )
+            if matching_row is not None:
+                matching_row.updated_at = _utc_now()
+                continue
+            now = _utc_now()
+            session.add(
+                ProjectMemoryCandidate(
+                    project_id=self.project_id,
+                    item_type=item.get("item_type", "unknown"),
+                    item_key=item.get("item_key", ""),
+                    status="superseded",
+                    reason=item.get("reason", ""),
+                    confidence=float(item.get("confidence", 0.5) or 0.5),
+                    source_type=item.get("source_type", "model"),
+                    source_ref=item.get("source_ref", "conversation"),
+                    value_json=payload,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
 
     def format_debug_dump(self, query="system profile attempts issues preferences", max_candidates=20):
         sections = []
@@ -625,26 +693,10 @@ class PostgresMemoryStore:
                     row.source_ref = preference.get("source_ref", row.source_ref)
                     row.last_seen_at = _utc_now()
 
-            session.execute(
-                ProjectMemoryCandidate.__table__.delete().where(
-                    ProjectMemoryCandidate.project_id == self.project_id
-                )
-            )
-            for item in candidates + conflicts:
-                session.add(
-                    ProjectMemoryCandidate(
-                        project_id=self.project_id,
-                        item_type=item.get("item_type", "unknown"),
-                        item_key=item.get("item_key", ""),
-                        status=item.get("status", "candidate"),
-                        reason=item.get("reason", ""),
-                        confidence=float(item.get("confidence", 0.5) or 0.5),
-                        source_type=item.get("source_type", "model"),
-                        source_ref=item.get("source_ref", "conversation"),
-                        value_json=item.get("payload", {}),
-                        updated_at=_utc_now(),
-                    )
-                )
+            active_candidate_items = [item for item in candidates + conflicts if item.get("status") != "superseded"]
+            superseded_items = [item for item in conflicts if item.get("status") == "superseded"]
+            self._replace_active_candidates(session, active_candidate_items)
+            self._upsert_superseded_history(session, superseded_items)
 
             self._write_state(session, "session_summary", getattr(resolution, "session_summary", "") or "")
             session.commit()
