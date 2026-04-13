@@ -545,6 +545,22 @@
   border-left: 1px solid rgba(169, 158, 245, 0.22);
 }
 
+.debug-raw-event-wrapper {
+  position: relative;
+}
+
+.debug-raw-event-wrapper .debug-copy-button {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.debug-raw-event-wrapper:hover .debug-copy-button {
+  opacity: 1;
+}
+
 .debug-raw-event {
   margin: 0;
   padding: 12px;
@@ -557,6 +573,13 @@
   color: var(--text);
   font-size: 11px;
   font-family: var(--mono);
+}
+
+.debug-text-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
 }
 
 @media (max-width: 1080px) {

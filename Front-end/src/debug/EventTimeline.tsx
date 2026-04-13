@@ -17,6 +17,26 @@ import {
   type StateRow,
 } from "./debugUtils";
 
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 900);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <button type="button" className="debug-copy-button" onClick={handleCopy}>
+      {copied ? "copied" : "copy"}
+    </button>
+  );
+}
+
 type EventTimelineProps = {
   events: RunEvent[];
   tab: DebugTab;
@@ -132,10 +152,15 @@ function ExpandableText({
   return (
     <>
       <pre className={`debug-detail-text compact${canCollapse && !expanded ? " collapsed" : ""}`}>{text || emptyText}</pre>
-      {canCollapse ? (
-        <button type="button" className="debug-inline-link" onClick={() => setExpanded((current) => !current)}>
-          {expanded ? "Hide" : "Show"}
-        </button>
+      {(canCollapse || text) ? (
+        <div className="debug-text-controls">
+          {canCollapse ? (
+            <button type="button" className="debug-inline-link" onClick={() => setExpanded((current) => !current)}>
+              {expanded ? "Hide" : "Show"}
+            </button>
+          ) : null}
+          {text ? <CopyButton value={text} /> : null}
+        </div>
       ) : null}
     </>
   );
@@ -474,11 +499,15 @@ export function EventTimeline({ events, tab, run }: EventTimelineProps) {
   if (tab === "Raw") {
     return (
       <div className="debug-timeline-list raw">
-        {filteredEvents.map((event) => (
-          <pre key={event.seq} className="debug-raw-event">
-            {JSON.stringify(event, null, 2)}
-          </pre>
-        ))}
+        {filteredEvents.map((event) => {
+          const json = JSON.stringify(event, null, 2);
+          return (
+            <div key={event.seq} className="debug-raw-event-wrapper">
+              <pre className="debug-raw-event">{json}</pre>
+              <CopyButton value={json} />
+            </div>
+          );
+        })}
       </div>
     );
   }
