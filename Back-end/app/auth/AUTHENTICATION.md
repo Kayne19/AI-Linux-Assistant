@@ -86,6 +86,12 @@ Identity mapping rules:
 - local `role` is still the authorization source for admin/debug actions
 - existing fake-auth users are not auto-linked
 
+Eval-harness note:
+
+- the harness can call the public backend API with copied Auth0 user access tokens
+- those tokens are still sent as normal `Authorization: Bearer ...` headers
+- this is preferable to enabling the legacy bootstrap path on a public deployment
+
 ## Protected Routes
 
 Normal authenticated routes:
@@ -162,6 +168,11 @@ Recommended local-dev split:
 - `Back-end/.env` for backend env vars
 - `Front-end/.env` or `Front-end/.env.local` for Vite env vars
 
+Recommended public API additions:
+
+- keep `ENABLE_LEGACY_BOOTSTRAP_AUTH=false`
+- include both `http://localhost:5173` and `https://app.<your-domain>` in `FRONTEND_ORIGINS` if you plan to expose the frontend later
+
 ## Auth0 Dashboard Setup
 
 You need:
@@ -203,6 +214,11 @@ For remote development:
 
 - use SSH port forwarding and open the app at `http://localhost:5173`
 - or expose the frontend through HTTPS, such as a Cloudflare Tunnel
+
+For a public API-only deployment:
+
+- expose the backend separately at `https://api.<your-domain>`
+- do not expose the frontend until `https://app.<your-domain>` is ready and registered in Auth0
 
 ## Auth0 Dashboard Branding
 

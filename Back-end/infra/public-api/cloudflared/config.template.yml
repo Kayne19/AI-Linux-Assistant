@@ -1,0 +1,9 @@
+tunnel: <CLOUDFLARE_TUNNEL_ID>
+credentials-file: /etc/cloudflared/<CLOUDFLARE_TUNNEL_ID>.json
+
+ingress:
+  - hostname: api.<your-domain>
+    service: http://127.0.0.1:8000
+  - hostname: app.<your-domain>
+    service: http_status:404
+  - service: http_status:404

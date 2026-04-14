@@ -1,0 +1,19 @@
+[Unit]
+Description=AI Linux Assistant Chat Worker
+After=network-online.target ai-linux-assistant-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<DEPLOY_USER>
+WorkingDirectory=<REPO_ROOT>/Back-end
+Environment=PYTHONPATH=app
+EnvironmentFile=<REPO_ROOT>/Back-end/.env
+Environment=CHAT_RUN_WORKER_ID=public-worker
+Environment=CHAT_RUN_WORKER_CONCURRENCY=2
+ExecStart=<CONDA_PYTHON> app/chat_run_worker.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

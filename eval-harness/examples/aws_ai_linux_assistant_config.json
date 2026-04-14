@@ -4,13 +4,13 @@
   },
   "backend": {
     "type": "aws_ec2",
-    "region": "us-west-2",
-    "subnet_id": "subnet-REPLACE_ME",
+    "region": "env:EVAL_HARNESS_AWS_REGION",
+    "subnet_id": "env:EVAL_HARNESS_SUBNET_ID",
     "security_group_ids": [
-      "sg-REPLACE_ME"
+      "env:EVAL_HARNESS_SECURITY_GROUP_ID"
     ],
-    "instance_profile_name": "eval-harness-ssm",
-    "golden_ami_id": "ami-REPLACE_ME",
+    "instance_profile_name": "env:EVAL_HARNESS_INSTANCE_PROFILE_NAME",
+    "golden_ami_id": "env:EVAL_HARNESS_GOLDEN_AMI_ID",
     "instance_type": "t3.small",
     "default_tags": {
       "Project": "eval-harness",
@@ -21,7 +21,7 @@
     "type": "openclaw",
     "token": "env:EVAL_HARNESS_OPENCLAW_TOKEN",
     "default_session_key_prefix": "eval-harness",
-    "aws_region": "us-west-2",
+    "aws_region": "env:EVAL_HARNESS_AWS_REGION",
     "remote_port": 8080,
     "request_timeout_seconds": 60
   },
@@ -42,7 +42,7 @@
   "subject_adapters": {
     "ai_linux_assistant_http": {
       "type": "ai_linux_assistant_http",
-      "base_url": "https://eval-api.example.com",
+      "base_url": "env:EVAL_HARNESS_AI_API_BASE_URL",
       "request_timeout_seconds": 30,
       "poll_interval_seconds": 1,
       "poll_timeout_seconds": 1800,
@@ -51,11 +51,6 @@
         "regular": "env:EVAL_HARNESS_REGULAR_TOKEN",
         "magi-lite": "env:EVAL_HARNESS_MAGI_LITE_TOKEN",
         "magi-full": "env:EVAL_HARNESS_MAGI_FULL_TOKEN"
-      },
-      "legacy_bootstrap_usernames_by_subject": {
-        "regular": "eval-regular",
-        "magi-lite": "eval-magi-lite",
-        "magi-full": "eval-magi-full"
       }
     }
   },
@@ -91,6 +86,4 @@
       "is_active": true
     }
   ]
-}
-  }
 }

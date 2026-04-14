@@ -1,0 +1,17 @@
+[Unit]
+Description=AI Linux Assistant API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<DEPLOY_USER>
+WorkingDirectory=<REPO_ROOT>/Back-end
+Environment=PYTHONPATH=app
+EnvironmentFile=<REPO_ROOT>/Back-end/.env
+ExecStart=<CONDA_PYTHON> -m uvicorn api:create_app --factory --app-dir app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

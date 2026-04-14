@@ -49,6 +49,12 @@ Current web auth is Auth0-backed.
 - `GET /app/bootstrap` returns the authenticated user plus the initial owned project/chat tree used by the web app
 - legacy `POST /auth/login` and `POST /auth/bootstrap` remain dev-only behind `ENABLE_LEGACY_BOOTSTRAP_AUTH`
 
+Public eval-harness note:
+
+- the eval harness talks to this backend API directly
+- it does not need the React frontend to be exposed
+- the supported public path is normal bearer-token auth against the existing protected routes
+
 ### Projects
 
 - `GET /projects`
@@ -163,6 +169,20 @@ Current override rule:
 - reset-to-default is not exposed by the API yet
 
 ## Backend Ownership
+
+### Public Deployment Note
+
+For a public deployment on an existing host:
+
+- run the API as its own long-lived service
+- run `chat_run_worker.py` as a separate long-lived service
+- keep the API bound to loopback and put Cloudflare Tunnel in front of it
+
+Deployment artifacts live in:
+
+- [Back-end/infra/public-api/README.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/infra/public-api/README.md)
+- [ai-linux-assistant-api.service](/home/kayne19/projects/AI-Linux-Assistant/Back-end/infra/public-api/systemd/ai-linux-assistant-api.service)
+- [ai-linux-assistant-worker.service](/home/kayne19/projects/AI-Linux-Assistant/Back-end/infra/public-api/systemd/ai-linux-assistant-worker.service)
 
 ### App Store
 

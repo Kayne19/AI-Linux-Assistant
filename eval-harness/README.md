@@ -89,6 +89,18 @@ eval-harness/
 
 ## CLI
 
+Place env vars in:
+
+- [eval-harness/.env](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/.env)
+
+The CLI autoloads that file from the harness root.
+
+For the public AI Linux Assistant API path:
+
+- point `EVAL_HARNESS_AI_API_BASE_URL` at the public backend hostname, for example `https://api.<your-domain>`
+- use copied Auth0 user access tokens in `bearer_tokens_by_subject` or `default_bearer_token`
+- do not rely on `legacy_bootstrap_usernames_by_subject` against a public deployment
+
 Initialize the eval-harness schema:
 
 ```bash
@@ -157,6 +169,12 @@ The main config now uses these top-level sections:
 - `subjects`
 
 String values may reference environment variables with `env:VAR_NAME`.
+
+For the `ai_linux_assistant_http` subject adapter:
+
+- the harness talks to the backend API only, not the React frontend
+- the minimum public flow is create project, create chat, create run, poll run, and poll run events
+- bearer-token auth is the recommended public path
 
 See:
 - [aws_ai_linux_assistant_config.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/aws_ai_linux_assistant_config.json)

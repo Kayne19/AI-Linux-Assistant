@@ -65,6 +65,18 @@ Start with these docs:
 
 - [Front-end/FRONTEND.md](Front-end/FRONTEND.md)
 
+## Public API Deployment
+
+For internet exposure of the backend API on an existing host, use:
+
+- [Back-end/infra/public-api/README.md](Back-end/infra/public-api/README.md)
+
+That deployment bundle includes:
+
+- systemd units for the API and chat worker
+- a Cloudflare Tunnel config template
+- the recommended split-hostname shape for `api.<domain>` now and `app.<domain>` later
+
 ## Important Product Model
 
 The application is organized around:
