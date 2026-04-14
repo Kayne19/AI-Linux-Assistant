@@ -1,32 +1,27 @@
-from .artifacts import ArtifactPack, VariantArtifact
+"""Standalone eval harness scaffold."""
+
 from .models import (
-    CheckPhase,
-    CheckStatus,
+    ArtifactPack,
+    CleanupRecord,
     GraderOutput,
-    RunStatus,
+    ScenarioSpec,
+    VariantArtifact,
+    VariantLifecycle,
+    VariantSpec,
     VerificationCheck,
     VerificationResult,
-)
-from .scenario import (
-    ScenarioSpec,
-    ScenarioValidationError,
-    collect_scenario_validation_errors,
-    is_runnable_scenario,
-    validate_scenario,
+    default_variants,
 )
 
 __all__ = [
     "ArtifactPack",
-    "CheckPhase",
-    "CheckStatus",
+    "CleanupRecord",
     "GraderOutput",
-    "RunStatus",
     "ScenarioSpec",
-    "ScenarioValidationError",
     "VariantArtifact",
+    "VariantLifecycle",
+    "VariantSpec",
     "VerificationCheck",
     "VerificationResult",
-    "collect_scenario_validation_errors",
-    "is_runnable_scenario",
-    "validate_scenario",
+    "default_variants",
 ]

@@ -1,0 +1,41 @@
+{
+  "scenario_id": "svc-nginx-001",
+  "title": "Nginx service fails after a bad override",
+  "summary": "The setup agent installs nginx, writes a bad systemd override, and leaves the service inactive.",
+  "target_image": "debian-12-openclaw-golden",
+  "setup_steps": [
+    "Install nginx, write a broken systemd override for the nginx service, and leave nginx stopped."
+  ],
+  "broken_state_checks": [
+    {
+      "name": "nginx-is-broken",
+      "command": "systemctl is-active nginx || true",
+      "expected_substrings": [
+        "inactive",
+        "failed"
+      ],
+      "match_mode": "any",
+      "timeout_seconds": 30
+    }
+  ],
+  "resolution_checks": [
+    {
+      "name": "nginx-is-active",
+      "command": "systemctl is-active nginx",
+      "expected_substrings": [
+        "active"
+      ],
+      "match_mode": "all",
+      "timeout_seconds": 30
+    }
+  ],
+  "opening_user_message": "nginx stopped working after I changed the service configuration. Please fix it.",
+  "turn_budget": 6,
+  "metadata": {
+    "terminal_markers": [
+      "that should fix it",
+      "nginx should be running now",
+      "try the service again"
+    ]
+  }
+}

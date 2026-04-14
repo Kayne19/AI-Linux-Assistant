@@ -5,13 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "eval-harness"
 version = "0.1.0"
-description = "Standalone, generic evaluation harness contracts and plugin interfaces."
+description = "AWS-first standalone evaluation harness scaffold for environment-grounded assistant testing."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "requests>=2.31.0",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+aws = ["boto3>=1.34.0"]
+test = ["pytest>=8.0.0"]
+
+[project.scripts]
+eval-harness = "eval_harness.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -20,5 +26,4 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
 testpaths = ["tests"]

@@ -1,68 +1,76 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+import json
+from pathlib import Path
 
-from .models import VerificationCheck
-
-
-@dataclass(slots=True)
-class ScenarioSpec:
-    scenario_id: str
-    title: str
-    opening_message: str
-    setup_steps: list[str] = field(default_factory=list)
-    broken_state_checks: list[VerificationCheck] = field(default_factory=list)
-    resolution_checks: list[VerificationCheck] = field(default_factory=list)
-    turn_budget: int = 12
-    description: str | None = None
-    context_seed: dict[str, Any] | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def validate(self, *, require_runnable: bool = True) -> None:
-        validate_scenario(self, require_runnable=require_runnable)
+from .models import ScenarioSpec
 
 
 class ScenarioValidationError(ValueError):
-    def __init__(self, errors: list[str]) -> None:
-        self.errors = errors
-        super().__init__("; ".join(errors))
+    """Raised when a scenario is not runnable."""
 
 
-def collect_scenario_validation_errors(
-    spec: ScenarioSpec, *, require_runnable: bool = True
-) -> list[str]:
+def validate_scenario(spec: ScenarioSpec) -> None:
     errors: list[str] = []
-
-    if not spec.scenario_id.strip():
-        errors.append("scenario_id must not be empty")
-    if not spec.title.strip():
-        errors.append("title must not be empty")
-    if not spec.opening_message.strip():
-        errors.append("opening_message must not be empty")
+    if not spec.scenario_id:
+        errors.append("scenario_id is required")
+    if not spec.title:
+        errors.append("title is required")
+    if not spec.target_image:
+        errors.append("target_image is required")
+    if not spec.setup_steps:
+        errors.append("at least one setup step is required")
+    if not spec.broken_state_checks:
+        errors.append("at least one broken_state_check is required")
+    if not spec.resolution_checks:
+        errors.append("at least one resolution_check is required")
+    if not spec.opening_user_message:
+        errors.append("opening_user_message is required")
     if spec.turn_budget <= 0:
-        errors.append("turn_budget must be greater than zero")
+        errors.append("turn_budget must be greater than 0")
+    if not spec.variants:
+        errors.append("at least one variant is required")
 
-    if require_runnable and len(spec.broken_state_checks) == 0:
-        errors.append(
-            "runnable scenarios require at least one broken-state verification check"
-        )
-    if require_runnable and len(spec.resolution_checks) == 0:
-        errors.append(
-            "runnable scenarios require at least one resolution verification check"
-        )
+    for index, step in enumerate(spec.setup_steps, start=1):
+        if not step.strip():
+            errors.append(f"setup_steps[{index}] must not be empty")
 
-    return errors
+    for label, checks in (
+        ("broken_state_checks", spec.broken_state_checks),
+        ("resolution_checks", spec.resolution_checks),
+    ):
+        for index, check in enumerate(checks, start=1):
+            if not check.name:
+                errors.append(f"{label}[{index}].name is required")
+            if not check.command:
+                errors.append(f"{label}[{index}].command is required")
+            if check.timeout_seconds <= 0:
+                errors.append(f"{label}[{index}].timeout_seconds must be greater than 0")
 
+    seen_variants: set[str] = set()
+    for index, variant in enumerate(spec.variants, start=1):
+        if not variant.name:
+            errors.append(f"variants[{index}].name is required")
+            continue
+        if variant.name in seen_variants:
+            errors.append(f"variants[{index}].name must be unique")
+        seen_variants.add(variant.name)
 
-def validate_scenario(spec: ScenarioSpec, *, require_runnable: bool = True) -> None:
-    errors = collect_scenario_validation_errors(
-        spec,
-        require_runnable=require_runnable,
-    )
     if errors:
-        raise ScenarioValidationError(errors)
+        raise ScenarioValidationError("; ".join(errors))
 
 
-def is_runnable_scenario(spec: ScenarioSpec) -> bool:
-    return len(collect_scenario_validation_errors(spec, require_runnable=True)) == 0
+def load_scenario(path: str | Path) -> ScenarioSpec:
+    scenario_path = Path(path)
+    payload = json.loads(scenario_path.read_text(encoding="utf-8"))
+    spec = ScenarioSpec.from_dict(payload)
+    validate_scenario(spec)
+    return spec
+
+
+def write_scenario(path: str | Path, spec: ScenarioSpec) -> Path:
+    validate_scenario(spec)
+    scenario_path = Path(path)
+    scenario_path.parent.mkdir(parents=True, exist_ok=True)
+    scenario_path.write_text(json.dumps(spec.to_dict(), indent=2), encoding="utf-8")
+    return scenario_path

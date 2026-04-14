@@ -1,0 +1,351 @@
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Any
+from uuid import uuid4
+
+import requests
+
+from .base import AdapterError, SolverAdapter, SolverSession
+from ..models import AdapterTurnResult, RunEvent, RunEventType, ScenarioSpec, TurnSeed, VariantSpec
+
+TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+
+def _normalize_magi_mode(raw_mode: str | None) -> str:
+    mode = (raw_mode or "").strip().lower()
+    if mode in {"", "regular", "off"}:
+        return "off"
+    if mode in {"lite", "full"}:
+        return mode
+    raise AdapterError(f"Unsupported MAGI mode {raw_mode!r}.")
+
+
+def _extract_message_text(message_payload: dict[str, Any]) -> str:
+    content = message_payload.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text_parts.append(str(item.get("text", "")))
+        return "".join(text_parts)
+    return str(content)
+
+
+def _event_code(payload: dict[str, Any], event_type: RunEventType) -> str:
+    if event_type == RunEventType.DONE:
+        return "done"
+    return str(payload.get("code", "")).strip() or event_type.value
+
+
+def _event_payload(payload: dict[str, Any], event_type: RunEventType) -> dict[str, Any]:
+    if event_type == RunEventType.STATE:
+        return {}
+    if event_type == RunEventType.EVENT:
+        return dict(payload.get("payload", {}) or {})
+    copied = dict(payload)
+    copied.pop("type", None)
+    copied.pop("seq", None)
+    copied.pop("code", None)
+    copied.pop("created_at", None)
+    return copied
+
+
+@dataclass(frozen=True)
+class AILinuxAssistantHttpConfig:
+    base_url: str
+    request_timeout_seconds: float = 30.0
+    poll_interval_seconds: float = 1.0
+    poll_timeout_seconds: float = 1800.0
+    project_name_prefix: str = "eval-harness"
+    default_bearer_token: str | None = None
+    bearer_tokens_by_variant: dict[str, str] = field(default_factory=dict)
+    legacy_bootstrap_usernames_by_variant: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        base_url = self.base_url.strip().rstrip("/")
+        object.__setattr__(self, "base_url", base_url)
+        if not base_url:
+            raise ValueError("base_url is required")
+        if self.request_timeout_seconds <= 0:
+            raise ValueError("request_timeout_seconds must be greater than 0")
+        if self.poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be greater than 0")
+        if self.poll_timeout_seconds <= 0:
+            raise ValueError("poll_timeout_seconds must be greater than 0")
+        cleaned_default_token = (self.default_bearer_token or "").strip() or None
+        object.__setattr__(self, "default_bearer_token", cleaned_default_token)
+        object.__setattr__(
+            self,
+            "bearer_tokens_by_variant",
+            {
+                str(key).strip(): str(value).strip()
+                for key, value in self.bearer_tokens_by_variant.items()
+                if str(key).strip() and str(value).strip()
+            },
+        )
+        object.__setattr__(
+            self,
+            "legacy_bootstrap_usernames_by_variant",
+            {
+                str(key).strip(): str(value).strip()
+                for key, value in self.legacy_bootstrap_usernames_by_variant.items()
+                if str(key).strip() and str(value).strip()
+            },
+        )
+
+
+@dataclass(frozen=True)
+class _VariantAuth:
+    bearer_token: str | None
+    legacy_bootstrap_username: str | None
+
+
+class AILinuxAssistantHttpSession(SolverSession):
+    def __init__(
+        self,
+        *,
+        client: requests.Session,
+        config: AILinuxAssistantHttpConfig,
+        scenario: ScenarioSpec,
+        group_id: str,
+        variant: VariantSpec,
+    ):
+        self.client = client
+        self.config = config
+        self.scenario = scenario
+        self.group_id = group_id
+        self.variant = variant
+        self.project_id = ""
+        self.chat_id = ""
+        self.turn_counter = 0
+        self.pending_context_seed: tuple[TurnSeed, ...] = ()
+        self.seed_strategy = "none"
+        self.latest_run_id = ""
+        self.auth = self._resolve_auth()
+        self._ensure_workspace()
+
+    def _resolve_auth(self) -> _VariantAuth:
+        variant_metadata = dict(self.variant.metadata or {})
+        bearer_token = variant_metadata.get(
+            "bearer_token",
+            self.config.bearer_tokens_by_variant.get(self.variant.name, self.config.default_bearer_token),
+        )
+        legacy_bootstrap_username = variant_metadata.get(
+            "legacy_bootstrap_username",
+            self.config.legacy_bootstrap_usernames_by_variant.get(self.variant.name),
+        )
+        return _VariantAuth(
+            bearer_token=(bearer_token or "").strip() or None,
+            legacy_bootstrap_username=(legacy_bootstrap_username or "").strip() or None,
+        )
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.auth.bearer_token:
+            headers["Authorization"] = f"Bearer {self.auth.bearer_token}"
+        return headers
+
+    def _request_json(self, method: str, path: str, *, payload: dict[str, Any] | None = None) -> Any:
+        url = f"{self.config.base_url}/{path.lstrip('/')}"
+        try:
+            response = self.client.request(
+                method.upper(),
+                url,
+                json=payload,
+                headers=self._headers(),
+                timeout=self.config.request_timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise AdapterError(f"Request failed for {method.upper()} {path}: {exc}") from exc
+
+        if response.status_code >= 400:
+            detail = response.text.strip()
+            if (
+                response.status_code == 503
+                and self.auth.legacy_bootstrap_username
+                and not self.auth.bearer_token
+            ):
+                raise AdapterError(
+                    "Legacy bootstrap succeeded, but authenticated routes still require bearer auth on this deployment."
+                )
+            raise AdapterError(f"HTTP {response.status_code} for {method.upper()} {path}: {detail}")
+
+        if not response.text.strip():
+            return {}
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise AdapterError(f"Expected JSON from {method.upper()} {path}, got {response.text[:200]!r}") from exc
+
+    def _ensure_workspace(self) -> None:
+        if self.auth.legacy_bootstrap_username:
+            self._request_json(
+                "POST",
+                "/auth/bootstrap",
+                payload={"username": self.auth.legacy_bootstrap_username},
+            )
+
+        project_payload = self._request_json(
+            "POST",
+            "/projects",
+            payload={
+                "name": f"{self.config.project_name_prefix}-{self.group_id}-{self.variant.name}"[:200],
+                "description": f"Eval harness scenario {self.scenario.scenario_id}",
+            },
+        )
+        self.project_id = str(project_payload.get("id", "")).strip()
+        if not self.project_id:
+            raise AdapterError("Project creation did not return an id.")
+
+        chat_payload = self._request_json(
+            "POST",
+            f"/projects/{self.project_id}/chats",
+            payload={"title": f"{self.scenario.scenario_id}-{self.variant.name}"[:255]},
+        )
+        self.chat_id = str(chat_payload.get("id", "")).strip()
+        if not self.chat_id:
+            raise AdapterError("Chat creation did not return an id.")
+
+    def seed_context(self, context_seed: tuple[TurnSeed, ...]) -> None:
+        self.pending_context_seed = tuple(context_seed)
+        self.seed_strategy = "message_preamble" if self.pending_context_seed else "none"
+
+    def _message_with_seed(self, message: str) -> str:
+        if not self.pending_context_seed:
+            return message
+        rendered_turns = "\n".join(f"{turn.role}: {turn.content}" for turn in self.pending_context_seed)
+        self.pending_context_seed = ()
+        return (
+            "Use this scenario context as prior conversation state. "
+            "Do not repeat it back unless it matters to solving the task.\n\n"
+            f"{rendered_turns}\n\n"
+            "Current user request:\n"
+            f"{message}"
+        )
+
+    def _run_event_from_api(self, payload: dict[str, Any]) -> RunEvent:
+        event_type = RunEventType(str(payload.get("type", RunEventType.EVENT.value)))
+        return RunEvent(
+            seq=int(payload.get("seq", 0)),
+            event_type=event_type,
+            code=_event_code(payload, event_type),
+            payload=_event_payload(payload, event_type),
+            created_at=str(payload.get("created_at", "")),
+        )
+
+    def _fetch_events_after(self, run_id: str, after_seq: int) -> tuple[list[RunEvent], int]:
+        payload = self._request_json(
+            "GET",
+            f"/runs/{run_id}/events?after_seq={after_seq}&limit=1000",
+        )
+        if not isinstance(payload, list):
+            raise AdapterError(f"Expected a list of run events for run {run_id}.")
+        events = [self._run_event_from_api(item) for item in payload if isinstance(item, dict)]
+        next_seq = after_seq
+        for item in events:
+            next_seq = max(next_seq, item.seq)
+        return events, next_seq
+
+    def _wait_for_terminal_run(self, run_id: str) -> tuple[dict[str, Any], tuple[RunEvent, ...]]:
+        deadline = time.time() + self.config.poll_timeout_seconds
+        after_seq = 0
+        events: list[RunEvent] = []
+
+        while time.time() < deadline:
+            new_events, after_seq = self._fetch_events_after(run_id, after_seq)
+            events.extend(new_events)
+            run_payload = self._request_json("GET", f"/runs/{run_id}")
+            status = str(run_payload.get("status", "")).strip()
+            if status in TERMINAL_RUN_STATUSES:
+                tail_events, after_seq = self._fetch_events_after(run_id, after_seq)
+                if tail_events:
+                    events.extend(tail_events)
+                return run_payload, tuple(events)
+            time.sleep(self.config.poll_interval_seconds)
+
+        raise AdapterError(f"Timed out waiting for run {run_id} to finish.")
+
+    def submit_user_message(self, message: str, *, mode_override: str | None = None) -> AdapterTurnResult:
+        user_message = message
+        self.turn_counter += 1
+        effective_message = self._message_with_seed(user_message)
+        magi_mode = _normalize_magi_mode(mode_override or self.variant.solver_mode)
+        client_request_id = f"{self.group_id}-{self.variant.name}-{self.turn_counter}-{uuid4().hex[:12]}"[:120]
+        run_request = {
+            "content": effective_message,
+            "magi": magi_mode,
+            "client_request_id": client_request_id,
+        }
+        created_run = self._request_json("POST", f"/chats/{self.chat_id}/runs", payload=run_request)
+        run_id = str(created_run.get("id", "")).strip()
+        if not run_id:
+            raise AdapterError("Run creation did not return an id.")
+        self.latest_run_id = run_id
+
+        run_snapshot, events = self._wait_for_terminal_run(run_id)
+        status = str(run_snapshot.get("status", "")).strip() or "failed"
+        done_event = next((event for event in reversed(events) if event.event_type == RunEventType.DONE), None)
+        terminal_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.event_type in {RunEventType.DONE, RunEventType.ERROR, RunEventType.CANCELLED}
+            ),
+            None,
+        )
+
+        assistant_message = ""
+        if done_event is not None:
+            assistant_message = _extract_message_text(done_event.payload.get("assistant_message", {}) or {})
+
+        return AdapterTurnResult(
+            user_message=user_message,
+            assistant_message=assistant_message,
+            run_id=run_id,
+            status=status,
+            terminal_event_type=terminal_event.event_type.value if terminal_event else "",
+            events=events,
+            debug={
+                "project_id": self.project_id,
+                "chat_id": self.chat_id,
+                "request_payload": run_request,
+                "run_snapshot": run_snapshot,
+                "seed_strategy": self.seed_strategy,
+            },
+            metadata={
+                "magi_mode": magi_mode,
+                "variant": self.variant.name,
+            },
+        )
+
+    def close(self) -> dict[str, Any]:
+        self.client.close()
+        return {
+            "project_id": self.project_id,
+            "chat_id": self.chat_id,
+            "latest_run_id": self.latest_run_id,
+        }
+
+
+class AILinuxAssistantHttpAdapter(SolverAdapter):
+    name = "ai_linux_assistant_http"
+
+    def __init__(self, config: AILinuxAssistantHttpConfig):
+        self.config = config
+
+    def create_session(self, scenario: ScenarioSpec, group_id: str, variant: VariantSpec) -> SolverSession:
+        return AILinuxAssistantHttpSession(
+            client=requests.Session(),
+            config=self.config,
+            scenario=scenario,
+            group_id=group_id,
+            variant=variant,
+        )
+
+
+AILinuxAssistantHTTPConfig = AILinuxAssistantHttpConfig
+AILinuxAssistantHTTPAdapter = AILinuxAssistantHttpAdapter

@@ -1,0 +1,43 @@
+{
+  "backend": {
+    "type": "aws_ec2",
+    "region": "us-west-2",
+    "subnet_id": "subnet-REPLACE_ME",
+    "security_group_ids": [
+      "sg-REPLACE_ME"
+    ],
+    "instance_profile_name": "eval-harness-ssm",
+    "golden_ami_id": "ami-REPLACE_ME",
+    "instance_type": "t3.small",
+    "default_tags": {
+      "Project": "eval-harness",
+      "Owner": "research"
+    }
+  },
+  "controller": {
+    "type": "openclaw",
+    "token": "env:EVAL_HARNESS_OPENCLAW_TOKEN",
+    "remote_port": 8080,
+    "request_timeout_seconds": 60
+  },
+  "adapter": {
+    "type": "ai_linux_assistant_http",
+    "base_url": "https://eval-api.example.com",
+    "request_timeout_seconds": 30,
+    "poll_interval_seconds": 1,
+    "poll_timeout_seconds": 1800,
+    "project_name_prefix": "eval-harness",
+    "bearer_tokens_by_variant": {
+      "regular": "env:EVAL_HARNESS_REGULAR_TOKEN",
+      "magi_lite": "env:EVAL_HARNESS_MAGI_LITE_TOKEN",
+      "magi_full": "env:EVAL_HARNESS_MAGI_FULL_TOKEN",
+      "hybrid": "env:EVAL_HARNESS_HYBRID_TOKEN"
+    },
+    "legacy_bootstrap_usernames_by_variant": {
+      "regular": "eval-regular",
+      "magi_lite": "eval-magi-lite",
+      "magi_full": "eval-magi-full",
+      "hybrid": "eval-hybrid"
+    }
+  }
+}

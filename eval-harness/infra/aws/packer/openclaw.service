@@ -1,0 +1,16 @@
+[Unit]
+Description=OpenClaw Gateway
+After=network-online.target amazon-ssm-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eval
+WorkingDirectory=/opt/openclaw
+ExecStart=/opt/openclaw/node_modules/.bin/openclaw
+Restart=on-failure
+RestartSec=5
+Environment=HOME=/home/eval
+
+[Install]
+WantedBy=multi-user.target

@@ -1,66 +1,42 @@
 from __future__ import annotations
 
-from eval_harness.artifacts import ArtifactPack
-from eval_harness.models import CheckPhase, CheckStatus, GraderOutput
-from eval_harness.plugins.base import GraderPlugin
+from .base import GraderPlugin
+from ..models import ArtifactPack, GraderOutput, VariantLifecycle
 
 
-class ExampleGrader(GraderPlugin):
-    """Reference-only grader. Core harness does not require this plugin."""
+class ExampleArtifactGrader(GraderPlugin):
+    """
+    Optional reference grader.
 
-    name = "example_grader"
-    version = "0.1.0"
+    This is intentionally non-canonical: it summarizes artifacts and emits
+    convenience metrics without imposing a harness-wide pass/fail contract.
+    """
 
-    def grade(self, artifact_pack: ArtifactPack) -> GraderOutput:
-        broken_total = 0
-        broken_pass = 0
-        resolution_total = 0
-        resolution_pass = 0
-        successful_repairs = 0
-        attempted_repairs = 0
-        transcript_message_count = 0
+    name = "example_artifact_grader"
 
-        for variant in artifact_pack.variants:
-            transcript_message_count += len(variant.transcript)
-            resolution_for_variant = []
-
-            for result in variant.check_results:
-                if result.phase is CheckPhase.BROKEN_STATE:
-                    broken_total += 1
-                    if result.status is CheckStatus.PASS:
-                        broken_pass += 1
-                if result.phase is CheckPhase.RESOLUTION:
-                    resolution_total += 1
-                    resolution_for_variant.append(result)
-                    if result.status is CheckStatus.PASS:
-                        resolution_pass += 1
-
-            if resolution_for_variant:
-                attempted_repairs += 1
-                if all(result.status is CheckStatus.PASS for result in resolution_for_variant):
-                    successful_repairs += 1
+    def grade(self, pack: ArtifactPack) -> GraderOutput:
+        variants = list(pack.variant_artifacts)
+        total_variants = len(variants)
+        completed_variants = [item for item in variants if item.lifecycle == VariantLifecycle.COMPLETED]
+        failed_variants = [item for item in variants if item.lifecycle == VariantLifecycle.FAILED]
+        successful_repairs = [
+            item for item in completed_variants if item.resolution_results and all(result.success for result in item.resolution_results)
+        ]
+        average_turns = 0.0
+        if variants:
+            average_turns = sum(len(item.transcript) for item in variants) / float(total_variants)
 
         metrics = {
-            "broken_state_pass_rate": _ratio(broken_pass, broken_total),
-            "resolution_pass_rate": _ratio(resolution_pass, resolution_total),
-            "repair_success_rate": _ratio(successful_repairs, attempted_repairs),
-            "transcript_message_count": float(transcript_message_count),
-            "variant_count": float(len(artifact_pack.variants)),
+            "variant_count": total_variants,
+            "completed_variants": len(completed_variants),
+            "failed_variants": len(failed_variants),
+            "successful_repairs": len(successful_repairs),
+            "repair_success_rate": (len(successful_repairs) / float(total_variants)) if total_variants else 0.0,
+            "average_transcript_turns": average_turns,
+            "broken_state_verified": bool(pack.broken_state_results) and all(item.success for item in pack.broken_state_results),
         }
-
-        return GraderOutput(
-            plugin_name=self.name,
-            artifact_pack_id=artifact_pack.artifact_pack_id,
-            metrics=metrics,
-            overall_score=None,
-            notes=[
-                "Example grader is optional and operates on stored artifacts only.",
-                "No canonical score is produced by core contracts.",
-            ],
+        summary = (
+            f"{len(successful_repairs)}/{total_variants} variants passed all resolution checks; "
+            f"{len(failed_variants)} variants ended in a failed lifecycle."
         )
-
-
-def _ratio(numerator: int, denominator: int) -> float:
-    if denominator <= 0:
-        return 0.0
-    return numerator / denominator
+        return GraderOutput(plugin_name=self.name, summary=summary, metrics=metrics)

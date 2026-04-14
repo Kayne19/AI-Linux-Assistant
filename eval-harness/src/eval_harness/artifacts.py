@@ -1,43 +1,42 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
+import json
+from pathlib import Path
 
-from .models import CheckPhase, CheckStatus, RunStatus, VerificationResult, utc_now
-
-
-@dataclass(slots=True)
-class VariantArtifact:
-    variant_id: str
-    status: RunStatus
-    check_results: list[VerificationResult] = field(default_factory=list)
-    transcript: list[str] = field(default_factory=list)
-    command_outputs: list[str] = field(default_factory=list)
-    started_at: datetime = field(default_factory=utc_now)
-    finished_at: datetime | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def resolution_passed(self) -> bool | None:
-        resolution = [
-            result for result in self.check_results if result.phase is CheckPhase.RESOLUTION
-        ]
-        if not resolution:
-            return None
-        return all(result.status is CheckStatus.PASS for result in resolution)
+from .models import ArtifactPack, GraderOutput
 
 
-@dataclass(slots=True)
-class ArtifactPack:
-    artifact_pack_id: str
-    scenario_id: str
-    run_group_id: str
-    variants: list[VariantArtifact] = field(default_factory=list)
-    created_at: datetime = field(default_factory=utc_now)
-    metadata: dict[str, Any] = field(default_factory=dict)
+class ArtifactStore:
+    """File-backed artifact persistence for replayable post-run analysis."""
 
-    def get_variant(self, variant_id: str) -> VariantArtifact | None:
-        for variant in self.variants:
-            if variant.variant_id == variant_id:
-                return variant
-        return None
+    def __init__(self, root: str | Path):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def group_directory(self, group_id: str) -> Path:
+        directory = self.root / group_id
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def pack_path(self, group_id: str) -> Path:
+        return self.group_directory(group_id) / "artifact-pack.json"
+
+    def plugin_directory(self, group_id: str) -> Path:
+        directory = self.group_directory(group_id) / "plugins"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def save_pack(self, pack: ArtifactPack) -> Path:
+        path = self.pack_path(pack.group_id)
+        path.write_text(json.dumps(pack.to_dict(), indent=2), encoding="utf-8")
+        return path
+
+    def load_pack(self, path: str | Path) -> ArtifactPack:
+        pack_path = Path(path)
+        payload = json.loads(pack_path.read_text(encoding="utf-8"))
+        return ArtifactPack.from_dict(payload)
+
+    def save_plugin_output(self, group_id: str, output: GraderOutput) -> Path:
+        path = self.plugin_directory(group_id) / f"{output.plugin_name}.json"
+        path.write_text(json.dumps(output.to_dict(), indent=2), encoding="utf-8")
+        return path
