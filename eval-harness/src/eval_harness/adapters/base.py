@@ -3,22 +3,22 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from ..models import AdapterTurnResult, ScenarioSpec, TurnSeed, VariantSpec
+from ..models import AdapterTurnResult, SubjectSpec, TurnSeed
 
 
 class AdapterError(RuntimeError):
-    """Raised when a solver adapter cannot complete a turn."""
+    """Raised when a subject adapter cannot complete a turn."""
 
 
-class SolverSession(ABC):
-    """Session contract for one scenario/variant pair."""
+class SubjectSession(ABC):
+    """Session contract for one benchmark subject."""
 
     @abstractmethod
     def seed_context(self, context_seed: tuple[TurnSeed, ...]) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def submit_user_message(self, message: str, *, mode_override: str | None = None) -> AdapterTurnResult:
+    def submit_user_message(self, message: str) -> AdapterTurnResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -26,11 +26,16 @@ class SolverSession(ABC):
         raise NotImplementedError
 
 
-class SolverAdapter(ABC):
-    """Adapter owns product-specific solver semantics only."""
+class SubjectAdapter(ABC):
+    """Adapter owns product-specific subject semantics only."""
 
     name: str
 
     @abstractmethod
-    def create_session(self, scenario: ScenarioSpec, group_id: str, variant: VariantSpec) -> SolverSession:
+    def create_session(self, benchmark_run_id: str, subject: SubjectSpec) -> SubjectSession:
         raise NotImplementedError
+
+
+# Backward-compatibility aliases for old scaffold naming.
+SolverSession = SubjectSession
+SolverAdapter = SubjectAdapter

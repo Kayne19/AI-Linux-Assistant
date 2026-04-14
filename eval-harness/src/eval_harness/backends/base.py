@@ -34,12 +34,12 @@ class SandboxBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def launch_variant_clones(
+    def launch_subject_clones(
         self,
         group_id: str,
         scenario_id: str,
         broken_image_id: str,
-        variants: list[str],
+        subject_names: list[str],
     ) -> dict[str, SandboxHandle]:
         raise NotImplementedError
 

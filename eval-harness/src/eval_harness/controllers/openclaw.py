@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import socket
 from dataclasses import dataclass
 from typing import Any
 
-from .base import SandboxController
-from ..models import VerificationCheck, VerificationMatchMode, VerificationResult, utc_now_iso
+from .base import SandboxController, SandboxControllerFactory
+from ..backends.base import SandboxHandle
+from ..models import CommandExecutionResult, utc_now_iso
+from ..runtime.ssm import SsmPortForwardSession
 
 try:
     import requests
@@ -17,12 +20,35 @@ def _require_requests() -> None:
         raise RuntimeError("requests is required for the OpenClaw controller.")
 
 
+_STDOUT_BEGIN = "__STDOUT_BEGIN__"
+_STDOUT_END = "__STDOUT_END__"
+_STDERR_BEGIN = "__STDERR_BEGIN__"
+_STDERR_END = "__STDERR_END__"
+_EXIT_CODE_PREFIX = "__EXIT_CODE__="
+
+
 @dataclass(frozen=True)
 class OpenClawControllerConfig:
     base_url: str
     token: str
     default_session_key: str
     request_timeout_seconds: int = 60
+
+
+@dataclass(frozen=True)
+class OpenClawControllerFactoryConfig:
+    token: str
+    default_session_key_prefix: str
+    request_timeout_seconds: int = 60
+    fixed_base_url: str | None = None
+    aws_region: str | None = None
+    remote_port: int = 3000
+
+
+def _allocate_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 class OpenClawController(SandboxController):
@@ -54,20 +80,44 @@ class OpenClawController(SandboxController):
             return "".join(text_parts)
         return str(content)
 
-    def _parse_exit_code(self, output: str) -> tuple[str, int | None]:
-        marker = "__EXIT_CODE__="
-        lines = output.splitlines()
-        for index in range(len(lines) - 1, -1, -1):
-            line = lines[index].strip()
-            if line.startswith(marker):
-                raw_value = line[len(marker):].strip()
+    def _command_prompt(self, command: str) -> str:
+        return (
+            "Run the exact shell command below in the sandbox and return only the structured result.\n"
+            f"Format exactly as:\n{_STDOUT_BEGIN}\n<stdout>\n{_STDOUT_END}\n"
+            f"{_STDERR_BEGIN}\n<stderr>\n{_STDERR_END}\n"
+            f"{_EXIT_CODE_PREFIX}<integer>\n\n"
+            "Do not explain anything. Do not omit empty sections.\n\n"
+            f"Command:\n{command}"
+        )
+
+    def _extract_block(self, text: str, start_marker: str, end_marker: str) -> str:
+        start_index = text.find(start_marker)
+        end_index = text.find(end_marker)
+        if start_index == -1 or end_index == -1 or end_index < start_index:
+            return ""
+        start_index += len(start_marker)
+        return text[start_index:end_index].strip("\n")
+
+    def _parse_command_result(self, command: str, output: str) -> CommandExecutionResult:
+        stdout = self._extract_block(output, _STDOUT_BEGIN, _STDOUT_END)
+        stderr = self._extract_block(output, _STDERR_BEGIN, _STDERR_END)
+        exit_code: int | None = None
+        for line in output.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(_EXIT_CODE_PREFIX):
+                raw_value = stripped[len(_EXIT_CODE_PREFIX):].strip()
                 try:
                     exit_code = int(raw_value)
                 except ValueError:
-                    return output, None
-                trimmed = "\n".join(lines[:index]).rstrip()
-                return trimmed, exit_code
-        return output, None
+                    exit_code = None
+                break
+        return CommandExecutionResult(
+            command=command,
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            metadata={"raw_output": output},
+        )
 
     def send(self, *, agent_id: str, message: str, session_key: str | None = None) -> str:
         payload = {
@@ -83,37 +133,73 @@ class OpenClawController(SandboxController):
         response.raise_for_status()
         return self._extract_text(response.json())
 
-    def run_verification(self, check: VerificationCheck, *, agent_id: str, session_key: str | None = None) -> VerificationResult:
-        started_at = utc_now_iso()
-        verify_prompt = (
-            "Run this exact command in the sandbox. Return the raw stdout/stderr only. "
-            "After the raw output, append one final line exactly like __EXIT_CODE__=<integer>. "
-            f"Do not explain anything.\n\n{check.command}"
-        )
-        raw_output = self.send(agent_id=agent_id, message=verify_prompt, session_key=session_key)
-        output, actual_exit_code = self._parse_exit_code(raw_output)
-        success = True
-        expected = list(check.expected_substrings)
-        if expected:
-            if check.match_mode == VerificationMatchMode.ALL:
-                success = all(item in output for item in expected)
-            else:
-                success = any(item in output for item in expected)
-        if check.expected_exit_code is not None:
-            success = success and actual_exit_code == check.expected_exit_code
-        finished_at = utc_now_iso()
-        return VerificationResult(
-            check_name=check.name,
-            command=check.command,
-            success=success,
-            output=output,
-            expected_exit_code=check.expected_exit_code,
-            actual_exit_code=actual_exit_code,
-            started_at=started_at,
-            finished_at=finished_at,
-        )
+    def execute_commands(
+        self,
+        commands: tuple[str, ...],
+        *,
+        agent_id: str,
+        session_key: str | None = None,
+    ) -> tuple[CommandExecutionResult, ...]:
+        results: list[CommandExecutionResult] = []
+        for command in commands:
+            started_at = utc_now_iso()
+            raw_output = self.send(
+                agent_id=agent_id,
+                message=self._command_prompt(command),
+                session_key=session_key,
+            )
+            parsed = self._parse_command_result(command, raw_output)
+            results.append(
+                CommandExecutionResult(
+                    command=parsed.command,
+                    stdout=parsed.stdout,
+                    stderr=parsed.stderr,
+                    exit_code=parsed.exit_code,
+                    started_at=started_at,
+                    finished_at=utc_now_iso(),
+                    metadata=parsed.metadata,
+                )
+            )
+        return tuple(results)
 
     def close(self) -> None:
         self.session.close()
         if self.port_forward_session is not None:
             self.port_forward_session.stop()
+
+
+class OpenClawControllerFactory(SandboxControllerFactory):
+    def __init__(self, config: OpenClawControllerFactoryConfig):
+        self.config = config
+
+    def open(self, handle: SandboxHandle, *, purpose: str = "") -> SandboxController:
+        session_key = self.config.default_session_key_prefix
+        if purpose:
+            session_key = f"{session_key}-{purpose}"
+        if self.config.fixed_base_url:
+            controller_config = OpenClawControllerConfig(
+                base_url=self.config.fixed_base_url,
+                token=self.config.token,
+                default_session_key=session_key,
+                request_timeout_seconds=self.config.request_timeout_seconds,
+            )
+            return OpenClawController(controller_config)
+
+        if not self.config.aws_region:
+            raise RuntimeError("aws_region is required when fixed_base_url is not configured.")
+
+        local_port = _allocate_local_port()
+        port_forward = SsmPortForwardSession(
+            instance_id=handle.remote_id,
+            local_port=local_port,
+            remote_port=self.config.remote_port,
+            region=self.config.aws_region,
+        )
+        port_forward.start()
+        controller_config = OpenClawControllerConfig(
+            base_url=f"http://127.0.0.1:{local_port}",
+            token=self.config.token,
+            default_session_key=session_key,
+            request_timeout_seconds=self.config.request_timeout_seconds,
+        )
+        return OpenClawController(controller_config, port_forward_session=port_forward)

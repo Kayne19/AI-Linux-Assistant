@@ -1,116 +1,159 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import json
 from dataclasses import dataclass, field
 
-from eval_harness.adapters.base import SolverAdapter, SolverSession
+import pytest
+
+from eval_harness.adapters.base import SubjectAdapter, SubjectSession
 from eval_harness.backends.base import SandboxBackend, SandboxHandle
+from eval_harness.controllers.base import SandboxController, SandboxControllerFactory
+from eval_harness.judges.base import BlindJudge
 from eval_harness.models import (
     AdapterTurnResult,
+    BlindJudgeRequest,
+    BlindJudgeResult,
+    CommandExecutionResult,
+    PlannerReviewDecision,
+    PlannerReviewOutcome,
+    PlannerScenarioRequest,
     RunEvent,
     RunEventType,
     ScenarioSpec,
-    VariantLifecycle,
-    VariantSpec,
+    SubjectSpec,
+    TurnSeed,
     VerificationCheck,
-    VerificationResult,
 )
-from eval_harness.orchestrator import EvalOrchestrator
+from eval_harness.orchestration import (
+    BenchmarkRunOrchestrator,
+    JudgeJobOrchestrator,
+    ScenarioSetupFailedError,
+    ScenarioSetupOrchestrator,
+)
+from eval_harness.persistence.database import build_engine, build_session_factory, create_all_tables
+from eval_harness.persistence.store import EvalHarnessStore
+from eval_harness.planners.base import ScenarioPlanner
 
 
-def _scenario(*, variants: tuple[VariantSpec, ...] | None = None) -> ScenarioSpec:
+def _build_store() -> EvalHarnessStore:
+    engine = build_engine("sqlite+pysqlite:///:memory:")
+    create_all_tables(engine)
+    return EvalHarnessStore(build_session_factory(engine))
+
+
+def _scenario() -> ScenarioSpec:
     return ScenarioSpec(
-        scenario_id="svc-nginx-001",
-        title="nginx broken",
-        summary="Example",
-        target_image="debian-12-openclaw-golden",
-        setup_steps=("break nginx config",),
-        broken_state_checks=(VerificationCheck(name="broken", command="systemctl is-active nginx"),),
-        resolution_checks=(VerificationCheck(name="fixed", command="systemctl is-active nginx"),),
-        opening_user_message="nginx will not start",
-        turn_budget=4,
-        variants=variants or (VariantSpec(name="regular", solver_mode="off"),),
+        scenario_name="nginx-recovery",
+        title="Nginx recovery",
+        summary="Recover a broken nginx service",
+        what_it_tests=("systemd recovery", "log inspection"),
+        target_image="ami-golden",
+        observable_problem_statement="The website is down and nginx will not start.",
+        sabotage_procedure=("Break nginx with a bad unit override.",),
+        verification_probes=(
+            VerificationCheck(
+                name="nginx-broken",
+                command="systemctl is-active nginx",
+                expected_substrings=("failed",),
+            ),
+        ),
+        repair_checks=(
+            VerificationCheck(
+                name="nginx-fixed",
+                command="systemctl is-active nginx",
+                expected_substrings=("active",),
+            ),
+        ),
+        judge_rubric=("diagnosis", "actionability"),
+        context_seed=(TurnSeed(role="system", content="Use concise shell reasoning."),),
+        turn_budget=3,
     )
 
 
 @dataclass
-class FakeSession(SolverSession):
-    status: str = "completed"
-    assistant_message: str = "That should fix it."
-    seed_calls: list[tuple[str, ...]] = field(default_factory=list)
-    submitted_messages: list[tuple[str, str | None]] = field(default_factory=list)
+class FakePlanner(ScenarioPlanner):
+    generated_scenario: ScenarioSpec = field(default_factory=_scenario)
+    review_decisions: list[PlannerReviewDecision] = field(default_factory=list)
+    review_calls: list[tuple[int, int]] = field(default_factory=list)
+    name: str = "fake_planner"
 
-    def seed_context(self, context_seed):
-        self.seed_calls.append(tuple(turn.content for turn in context_seed))
+    def generate_scenario(self, request: PlannerScenarioRequest) -> ScenarioSpec:
+        del request
+        return self.generated_scenario
 
-    def submit_user_message(self, message: str, *, mode_override: str | None = None) -> AdapterTurnResult:
-        self.submitted_messages.append((message, mode_override))
-        return AdapterTurnResult(
-            user_message=message,
-            assistant_message=self.assistant_message,
-            run_id="run-1",
-            status=self.status,
-            terminal_event_type="done" if self.status == "completed" else "error",
-            events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
-        )
-
-    def close(self) -> dict[str, str]:
-        return {"closed": "true"}
-
-
-@dataclass
-class FakeAdapter(SolverAdapter):
-    name: str = "fake_adapter"
-    session_factory: Callable[[], FakeSession] | None = None
-    created_variants: list[str] = field(default_factory=list)
-
-    def create_session(self, scenario, group_id, variant):
-        del scenario, group_id
-        self.created_variants.append(variant.name)
-        factory = self.session_factory or (lambda: FakeSession())
-        return factory()
+    def review_sabotage(
+        self,
+        scenario: ScenarioSpec,
+        *,
+        round_index: int,
+        command_results: tuple[CommandExecutionResult, ...],
+        correction_count: int,
+    ) -> PlannerReviewDecision:
+        del scenario, command_results
+        self.review_calls.append((round_index, correction_count))
+        if self.review_decisions:
+            return self.review_decisions.pop(0)
+        return PlannerReviewDecision(outcome=PlannerReviewOutcome.APPROVE, summary="approved")
 
 
 @dataclass
-class FakeController:
+class FakeController(SandboxController):
     name: str = "fake_controller"
-    send_responses: list[str] = field(default_factory=lambda: ["setup-complete"])
-    verification_results: list[VerificationResult] = field(default_factory=list)
+    send_responses: list[str] = field(default_factory=list)
+    execute_batches: list[tuple[CommandExecutionResult, ...]] = field(default_factory=list)
     sent_messages: list[str] = field(default_factory=list)
+    session_keys: list[str] = field(default_factory=list)
     closed: bool = False
 
     def send(self, *, agent_id: str, message: str, session_key: str | None = None) -> str:
-        del agent_id, session_key
+        del agent_id
         self.sent_messages.append(message)
+        self.session_keys.append(session_key or "")
         if self.send_responses:
             return self.send_responses.pop(0)
-        return ""
+        return "ack"
 
-    def run_verification(self, check: VerificationCheck, *, agent_id: str, session_key: str | None = None) -> VerificationResult:
-        del check, agent_id, session_key
-        if self.verification_results:
-            return self.verification_results.pop(0)
-        return VerificationResult(check_name="default", command="true", success=True, output="ok")
+    def execute_commands(
+        self,
+        commands: tuple[str, ...],
+        *,
+        agent_id: str,
+        session_key: str | None = None,
+    ) -> tuple[CommandExecutionResult, ...]:
+        del commands, agent_id
+        self.session_keys.append(session_key or "")
+        if self.execute_batches:
+            return self.execute_batches.pop(0)
+        return ()
 
     def close(self) -> None:
         self.closed = True
 
 
 @dataclass
+class FakeControllerFactory(SandboxControllerFactory):
+    controllers: list[FakeController]
+    opened_purposes: list[str] = field(default_factory=list)
+
+    def open(self, handle: SandboxHandle, *, purpose: str = "") -> SandboxController:
+        del handle
+        self.opened_purposes.append(purpose)
+        return self.controllers.pop(0)
+
+
+@dataclass
 class FakeBackend(SandboxBackend):
     name: str = "fake_backend"
-    wait_calls: list[str] = field(default_factory=list)
-    destroyed_handles: list[str] = field(default_factory=list)
-    destroyed_images: list[str] = field(default_factory=list)
     created_broken_images: list[str] = field(default_factory=list)
+    destroyed_handles: list[str] = field(default_factory=list)
+    wait_calls: list[str] = field(default_factory=list)
 
     def launch_staging(self, group_id: str, scenario_id: str) -> SandboxHandle:
         return SandboxHandle(
-            handle_id=f"{group_id}-staging",
+            handle_id=f"staging-{group_id}",
             kind="instance",
             backend_name=self.name,
-            remote_id=f"instance-staging-{scenario_id}",
-            image_id="golden-ami",
+            remote_id=f"staging-{scenario_id}",
         )
 
     def wait_until_ready(self, handle: SandboxHandle, timeout_seconds: int = 600) -> None:
@@ -123,131 +166,286 @@ class FakeBackend(SandboxBackend):
         self.created_broken_images.append(image_id)
         return image_id
 
-    def launch_variant_clones(self, group_id: str, scenario_id: str, broken_image_id: str, variants: list[str]) -> dict[str, SandboxHandle]:
+    def launch_subject_clones(
+        self,
+        group_id: str,
+        scenario_id: str,
+        broken_image_id: str,
+        subject_names: list[str],
+    ) -> dict[str, SandboxHandle]:
         del scenario_id, broken_image_id
         return {
-            variant: SandboxHandle(
-                handle_id=f"{group_id}-{variant}",
+            subject_name: SandboxHandle(
+                handle_id=f"{group_id}-{subject_name}",
                 kind="instance",
                 backend_name=self.name,
-                remote_id=f"instance-{variant}",
-                image_id="broken-ami",
+                remote_id=f"clone-{subject_name}",
             )
-            for variant in variants
+            for subject_name in subject_names
         }
 
     def destroy_handle(self, handle: SandboxHandle) -> None:
         self.destroyed_handles.append(handle.remote_id)
 
     def destroy_broken_image(self, image_id: str) -> None:
-        self.destroyed_images.append(image_id)
+        del image_id
 
 
-def test_setup_failure_short_circuits_variants() -> None:
-    backend = FakeBackend()
-    staging_controller = FakeController(
-        verification_results=[
-            VerificationResult(check_name="broken", command="check", success=False, output="still healthy")
-        ]
-    )
-    controllers: list[FakeController] = [staging_controller]
-    adapter = FakeAdapter()
-    scenario = _scenario()
+@dataclass
+class FakeSubjectSession(SubjectSession):
+    turn_results: list[AdapterTurnResult]
+    seeded: tuple[TurnSeed, ...] = ()
+    submitted_messages: list[str] = field(default_factory=list)
 
-    def controller_factory(handle: SandboxHandle, session_name: str):
-        del handle, session_name
-        controller = controllers.pop(0)
-        return controller
+    def seed_context(self, context_seed: tuple[TurnSeed, ...]) -> None:
+        self.seeded = context_seed
 
-    pack = EvalOrchestrator(
-        backend=backend,
-        controller_factory=controller_factory,
-        adapter=adapter,
-    ).run_group(scenario, group_id="group-1")
+    def submit_user_message(self, message: str) -> AdapterTurnResult:
+        self.submitted_messages.append(message)
+        if self.turn_results:
+            return self.turn_results.pop(0)
+        return AdapterTurnResult(
+            user_message=message,
+            assistant_message="No-op",
+            run_id="run-default",
+            status="completed",
+            terminal_event_type="done",
+            events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+        )
 
-    assert pack.metadata["status"] == VariantLifecycle.SETUP_FAILED.value
-    assert pack.variant_artifacts == ()
-    assert adapter.created_variants == []
-    assert backend.created_broken_images == []
-    assert "instance-staging-svc-nginx-001" in backend.destroyed_handles
+    def close(self) -> dict[str, str]:
+        return {"closed": "true"}
 
 
-def test_resolution_failure_is_separate_from_variant_lifecycle() -> None:
-    backend = FakeBackend()
-    staging_controller = FakeController(
-        verification_results=[
-            VerificationResult(check_name="broken", command="check", success=True, output="failed")
-        ]
-    )
-    variant_controller = FakeController(
-        verification_results=[
-            VerificationResult(check_name="fixed", command="check", success=False, output="failed")
-        ]
-    )
-    controllers = [staging_controller, variant_controller]
-    adapter = FakeAdapter()
-    scenario = _scenario()
-
-    def controller_factory(handle: SandboxHandle, session_name: str):
-        del handle, session_name
-        return controllers.pop(0)
-
-    pack = EvalOrchestrator(
-        backend=backend,
-        controller_factory=controller_factory,
-        adapter=adapter,
-    ).run_group(scenario, group_id="group-2")
-
-    assert pack.metadata["status"] == VariantLifecycle.COMPLETED.value
-    assert len(pack.variant_artifacts) == 1
-    artifact = pack.variant_artifacts[0]
-    assert artifact.lifecycle == VariantLifecycle.COMPLETED
-    assert artifact.metadata["repair_success"] is False
-    assert artifact.resolution_results[0].success is False
-
-
-def test_cleanup_destroys_variant_instances_and_broken_image() -> None:
-    backend = FakeBackend()
-    staging_controller = FakeController(
-        verification_results=[
-            VerificationResult(check_name="broken", command="check", success=True, output="failed")
-        ]
-    )
-    variant_controllers = [
-        FakeController(
-            verification_results=[
-                VerificationResult(check_name="fixed", command="check", success=True, output="active")
+@dataclass
+class FakeSubjectAdapter(SubjectAdapter):
+    name: str = "fake_subject_adapter"
+    session: FakeSubjectSession = field(
+        default_factory=lambda: FakeSubjectSession(
+            turn_results=[
+                AdapterTurnResult(
+                    user_message="",
+                    assistant_message="Please run systemctl status nginx",
+                    run_id="run-1",
+                    status="completed",
+                    terminal_event_type="done",
+                    events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+                ),
+                AdapterTurnResult(
+                    user_message="",
+                    assistant_message="Restart nginx and verify the site now.",
+                    run_id="run-2",
+                    status="completed",
+                    terminal_event_type="done",
+                    events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+                ),
             ]
-        ),
-        FakeController(
-            verification_results=[
-                VerificationResult(check_name="fixed", command="check", success=True, output="active")
-            ]
-        ),
-    ]
-    controllers = [staging_controller, *variant_controllers]
-    adapter = FakeAdapter(session_factory=lambda: FakeSession())
-    scenario = _scenario(
-        variants=(
-            VariantSpec(name="regular", solver_mode="off"),
-            VariantSpec(name="magi_full", solver_mode="full"),
         )
     )
+    created_subjects: list[str] = field(default_factory=list)
 
-    def controller_factory(handle: SandboxHandle, session_name: str):
-        del handle, session_name
-        return controllers.pop(0)
+    def create_session(self, benchmark_run_id: str, subject: SubjectSpec) -> SubjectSession:
+        del benchmark_run_id
+        self.created_subjects.append(subject.subject_name)
+        return self.session
 
-    pack = EvalOrchestrator(
+
+@dataclass
+class FakeJudge(BlindJudge):
+    name: str = "fake_blind_judge"
+    requests: list[BlindJudgeRequest] = field(default_factory=list)
+
+    def grade(self, request: BlindJudgeRequest) -> BlindJudgeResult:
+        self.requests.append(request)
+        return BlindJudgeResult(
+            blind_label=request.blind_label,
+            summary="Clear troubleshooting session",
+            scores={"diagnosis": 4, "actionability": 5},
+            raw_response={"blind_label": request.blind_label},
+        )
+
+
+def test_setup_orchestrator_kills_after_second_planner_correction() -> None:
+    store = _build_store()
+    backend = FakeBackend()
+    controller = FakeController(
+        send_responses=["applied first sabotage", "applied second sabotage"],
+        execute_batches=[
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
+            ),
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="activating", stderr="", exit_code=0),
+            ),
+        ],
+    )
+    planner = FakePlanner(
+        review_decisions=[
+            PlannerReviewDecision(
+                outcome=PlannerReviewOutcome.CORRECT,
+                summary="The service is still healthy.",
+                correction_instructions=("Actually break the unit override.",),
+            ),
+            PlannerReviewDecision(
+                outcome=PlannerReviewOutcome.CORRECT,
+                summary="The service still is not objectively broken.",
+                correction_instructions=("Second correction should not get another attempt.",),
+            ),
+        ]
+    )
+    orchestrator = ScenarioSetupOrchestrator(
         backend=backend,
-        controller_factory=controller_factory,
-        adapter=adapter,
-    ).run_group(scenario, group_id="group-3")
+        controller_factory=FakeControllerFactory([controller]),
+        planner=planner,
+        store=store,
+    )
 
-    assert pack.metadata["cleanup_complete"] is True
-    assert sorted(backend.destroyed_handles) == [
-        "instance-magi_full",
-        "instance-regular",
-        "instance-staging-svc-nginx-001",
-    ]
-    assert backend.destroyed_images == ["broken-group-3"]
+    with pytest.raises(ScenarioSetupFailedError):
+        orchestrator.run(
+            PlannerScenarioRequest(planning_brief="break nginx", target_image="ami-golden"),
+            group_id="group-1",
+            max_corrections=2,
+        )
+
+    scenario_row = store.get_scenario_by_name("nginx-recovery")
+    assert scenario_row is not None
+    assert scenario_row.lifecycle_status == "failed_setup"
+    verified_revision = store.get_current_verified_revision(scenario_row.id)
+    assert verified_revision is None
+    assert backend.created_broken_images == []
+    assert planner.review_calls == [(0, 0), (1, 1)]
+    assert "staging-nginx-recovery" in backend.destroyed_handles
+
+
+def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair() -> None:
+    store = _build_store()
+    scenario = store.create_scenario(title="Nginx recovery", scenario_name_hint="nginx-recovery")
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-golden",
+        summary="Recover nginx",
+        what_it_tests={"items": ["systemd recovery"]},
+        observable_problem_statement="The website is down and nginx will not start.",
+        sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
+        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        judge_rubric={"items": ["diagnosis", "actionability"]},
+        planner_metadata={
+            "repair_checks": [
+                {
+                    "name": "nginx-fixed",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["active"],
+                }
+            ],
+            "turn_budget": 3,
+        },
+    )
+    setup = store.create_setup_run(scenario_revision_id=revision.id, status="running")
+    store.update_setup_run_status(
+        setup_run_id=setup.id,
+        status="verified",
+        broken_image_id="ami-broken",
+        planner_approved=True,
+    )
+    store.upsert_subject(
+        subject_name="system-a",
+        adapter_type="fake_adapter",
+        display_name="System A",
+        adapter_config={"max_turns": 3},
+    )
+
+    clone_controller = FakeController(
+        send_responses=["I checked and `systemctl status nginx` shows failure."],
+        execute_batches=[
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),
+            ),
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
+            ),
+        ],
+    )
+    backend = FakeBackend()
+    adapter = FakeSubjectAdapter()
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([clone_controller]),
+        subject_adapters={"fake_adapter": adapter},
+        store=store,
+    )
+
+    result = orchestrator.run(
+        scenario_revision_id=revision.id,
+        verified_setup_run_id=setup.id,
+        user_proxy_agent_id="user_proxy_agent",
+        verification_agent_id="verification_executor",
+    )
+
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+    assert evaluation_runs[0].repair_success is True
+    assert evaluation_runs[0].status == "completed"
+    assert "bad unit override" not in clone_controller.sent_messages[0].lower()
+
+
+def test_judge_job_blinds_subject_identity() -> None:
+    store = _build_store()
+    scenario = store.create_scenario(title="Nginx recovery", scenario_name_hint="nginx-recovery")
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-golden",
+        summary="Recover nginx",
+        what_it_tests={"items": ["systemd recovery"]},
+        observable_problem_statement="The website is down and nginx will not start.",
+        sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
+        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        judge_rubric={"items": ["diagnosis", "actionability"]},
+        planner_metadata={"repair_checks": [], "turn_budget": 2},
+    )
+    setup = store.create_setup_run(scenario_revision_id=revision.id, status="running")
+    store.update_setup_run_status(
+        setup_run_id=setup.id,
+        status="verified",
+        broken_image_id="ami-broken",
+        planner_approved=True,
+    )
+    subject = store.upsert_subject(
+        subject_name="system-a",
+        adapter_type="fake_adapter",
+        display_name="System A",
+        adapter_config={},
+    )
+    benchmark = store.create_benchmark_run(
+        scenario_revision_id=revision.id,
+        verified_setup_run_id=setup.id,
+        subject_ids=[subject.id],
+    )
+    evaluation = store.create_evaluation_run(
+        benchmark_run_id=benchmark.id,
+        subject_id=subject.id,
+        clone_handle_id="clone-1",
+        status="completed",
+    )
+    store.append_evaluation_event(
+        evaluation_run_id=evaluation.id,
+        seq=1,
+        actor_role="user_proxy",
+        event_kind="message",
+        payload={"role": "user", "content": "The website is down."},
+    )
+    store.append_evaluation_event(
+        evaluation_run_id=evaluation.id,
+        seq=2,
+        actor_role="subject",
+        event_kind="message",
+        payload={"role": "assistant", "content": "Please run systemctl status nginx", "metadata": {"subject_name": "system-a"}},
+    )
+
+    judge = FakeJudge()
+    result = JudgeJobOrchestrator(judge=judge, store=store).run(benchmark_run_id=benchmark.id)
+
+    assert len(result.judge_item_ids) == 1
+    assert len(judge.requests) == 1
+    request = judge.requests[0]
+    assert request.blind_label == "candidate-1"
+    assert "system-a" not in json.dumps(request.to_dict())

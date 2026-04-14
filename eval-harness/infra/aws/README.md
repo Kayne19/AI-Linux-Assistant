@@ -20,8 +20,8 @@ Every transient resource should include at least:
 - `EvalHarness=true`
 - `EvalGroupId=<group id>`
 - `EvalScenarioId=<scenario id>`
-- `EvalRole=<staging|broken-image|variant>`
-- `EvalVariant=<variant>` on variant instances
+- `EvalRole=<staging|broken-image|subject-clone>`
+- `EvalSubject=<subject>` on subject clone instances
 
 ## Cleanup Model
 

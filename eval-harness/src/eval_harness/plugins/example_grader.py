@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .base import GraderPlugin
-from ..models import ArtifactPack, GraderOutput, VariantLifecycle
+from ..models import ArtifactPack, EvaluationRunStatus, GraderOutput
 
 
 class ExampleArtifactGrader(GraderPlugin):
@@ -15,28 +15,27 @@ class ExampleArtifactGrader(GraderPlugin):
     name = "example_artifact_grader"
 
     def grade(self, pack: ArtifactPack) -> GraderOutput:
-        variants = list(pack.variant_artifacts)
-        total_variants = len(variants)
-        completed_variants = [item for item in variants if item.lifecycle == VariantLifecycle.COMPLETED]
-        failed_variants = [item for item in variants if item.lifecycle == VariantLifecycle.FAILED]
-        successful_repairs = [
-            item for item in completed_variants if item.resolution_results and all(result.success for result in item.resolution_results)
-        ]
+        evaluations = list(pack.evaluations)
+        total_evaluations = len(evaluations)
+        completed_evaluations = [item for item in evaluations if item.status == EvaluationRunStatus.COMPLETED.value]
+        failed_evaluations = [item for item in evaluations if item.status == EvaluationRunStatus.FAILED.value]
+        successful_repairs = [item for item in completed_evaluations if item.repair_success]
         average_turns = 0.0
-        if variants:
-            average_turns = sum(len(item.transcript) for item in variants) / float(total_variants)
+        if evaluations:
+            average_turns = sum(len(item.transcript) for item in evaluations) / float(total_evaluations)
 
         metrics = {
-            "variant_count": total_variants,
-            "completed_variants": len(completed_variants),
-            "failed_variants": len(failed_variants),
+            "evaluation_count": total_evaluations,
+            "completed_evaluations": len(completed_evaluations),
+            "failed_evaluations": len(failed_evaluations),
             "successful_repairs": len(successful_repairs),
-            "repair_success_rate": (len(successful_repairs) / float(total_variants)) if total_variants else 0.0,
+            "repair_success_rate": (len(successful_repairs) / float(total_evaluations)) if total_evaluations else 0.0,
             "average_transcript_turns": average_turns,
-            "broken_state_verified": bool(pack.broken_state_results) and all(item.success for item in pack.broken_state_results),
+            "judge_item_count": len(pack.judge_artifacts),
+            "setup_probe_count": len(pack.setup_command_results),
         }
         summary = (
-            f"{len(successful_repairs)}/{total_variants} variants passed all resolution checks; "
-            f"{len(failed_variants)} variants ended in a failed lifecycle."
+            f"{len(successful_repairs)}/{total_evaluations} evaluation runs passed repair checks; "
+            f"{len(failed_evaluations)} evaluation runs ended failed."
         )
         return GraderOutput(plugin_name=self.name, summary=summary, metrics=metrics)

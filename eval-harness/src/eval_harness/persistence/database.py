@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+
+class Base(DeclarativeBase):
+    """Dedicated declarative base for eval-harness persistence models."""
+
+
+def get_database_url() -> str:
+    """Resolve eval-harness DB URL with explicit override precedence."""
+    url = os.getenv("EVAL_HARNESS_DATABASE_URL") or os.getenv("DATABASE_URL")
+    if not url:
+        raise RuntimeError("Missing database URL. Set EVAL_HARNESS_DATABASE_URL or DATABASE_URL.")
+    return url
+
+
+def build_engine(database_url: str | None = None, *, echo: bool = False) -> Engine:
+    resolved = database_url or get_database_url()
+    if resolved.startswith("sqlite") and ":memory:" in resolved:
+        return create_engine(
+            resolved,
+            future=True,
+            pool_pre_ping=True,
+            echo=echo,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+    return create_engine(resolved, future=True, pool_pre_ping=True, echo=echo)
+
+
+def build_session_factory(engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
+
+
+def create_all_tables(engine: Engine) -> None:
+    from . import postgres_models  # noqa: F401
+
+    Base.metadata.create_all(engine)
+
+
+def drop_all_tables(engine: Engine) -> None:
+    from . import postgres_models  # noqa: F401
+
+    Base.metadata.drop_all(engine)
+
+
+@contextmanager
+def session_scope(session_factory: sessionmaker[Session]) -> Iterator[Session]:
+    session = session_factory()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

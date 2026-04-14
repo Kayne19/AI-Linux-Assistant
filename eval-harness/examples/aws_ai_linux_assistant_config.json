@@ -1,4 +1,7 @@
 {
+  "database": {
+    "url": "env:EVAL_HARNESS_DATABASE_URL"
+  },
   "backend": {
     "type": "aws_ec2",
     "region": "us-west-2",
@@ -17,27 +20,77 @@
   "controller": {
     "type": "openclaw",
     "token": "env:EVAL_HARNESS_OPENCLAW_TOKEN",
+    "default_session_key_prefix": "eval-harness",
+    "aws_region": "us-west-2",
     "remote_port": 8080,
     "request_timeout_seconds": 60
   },
-  "adapter": {
-    "type": "ai_linux_assistant_http",
-    "base_url": "https://eval-api.example.com",
-    "request_timeout_seconds": 30,
-    "poll_interval_seconds": 1,
-    "poll_timeout_seconds": 1800,
-    "project_name_prefix": "eval-harness",
-    "bearer_tokens_by_variant": {
-      "regular": "env:EVAL_HARNESS_REGULAR_TOKEN",
-      "magi_lite": "env:EVAL_HARNESS_MAGI_LITE_TOKEN",
-      "magi_full": "env:EVAL_HARNESS_MAGI_FULL_TOKEN",
-      "hybrid": "env:EVAL_HARNESS_HYBRID_TOKEN"
-    },
-    "legacy_bootstrap_usernames_by_variant": {
-      "regular": "eval-regular",
-      "magi_lite": "eval-magi-lite",
-      "magi_full": "eval-magi-full",
-      "hybrid": "eval-hybrid"
+  "planner": {
+    "type": "openai_compatible",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-5.4",
+    "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
+    "request_timeout_seconds": 90
+  },
+  "judge": {
+    "type": "openai_compatible",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-5.4-mini",
+    "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
+    "request_timeout_seconds": 90
+  },
+  "subject_adapters": {
+    "ai_linux_assistant_http": {
+      "type": "ai_linux_assistant_http",
+      "base_url": "https://eval-api.example.com",
+      "request_timeout_seconds": 30,
+      "poll_interval_seconds": 1,
+      "poll_timeout_seconds": 1800,
+      "project_name_prefix": "eval-harness",
+      "bearer_tokens_by_subject": {
+        "regular": "env:EVAL_HARNESS_REGULAR_TOKEN",
+        "magi-lite": "env:EVAL_HARNESS_MAGI_LITE_TOKEN",
+        "magi-full": "env:EVAL_HARNESS_MAGI_FULL_TOKEN"
+      },
+      "legacy_bootstrap_usernames_by_subject": {
+        "regular": "eval-regular",
+        "magi-lite": "eval-magi-lite",
+        "magi-full": "eval-magi-full"
+      }
     }
+  },
+  "subjects": [
+    {
+      "subject_name": "regular",
+      "adapter_type": "ai_linux_assistant_http",
+      "display_name": "AI Linux Assistant Regular",
+      "adapter_config": {
+        "magi_mode": "off",
+        "max_turns": 8
+      },
+      "is_active": true
+    },
+    {
+      "subject_name": "magi-lite",
+      "adapter_type": "ai_linux_assistant_http",
+      "display_name": "AI Linux Assistant Magi Lite",
+      "adapter_config": {
+        "magi_mode": "lite",
+        "max_turns": 8
+      },
+      "is_active": true
+    },
+    {
+      "subject_name": "magi-full",
+      "adapter_type": "ai_linux_assistant_http",
+      "display_name": "AI Linux Assistant Magi Full",
+      "adapter_config": {
+        "magi_mode": "full",
+        "max_turns": 8
+      },
+      "is_active": true
+    }
+  ]
+}
   }
 }

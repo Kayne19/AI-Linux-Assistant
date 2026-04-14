@@ -1,29 +1,33 @@
+import pytest
+
 from eval_harness.models import ScenarioSpec, VerificationCheck
 from eval_harness.scenario import ScenarioValidationError, validate_scenario
 
 
 def _base_scenario():
     return ScenarioSpec(
-        scenario_id="svc-nginx-001",
+        scenario_name="nginx-recovery",
         title="nginx override permission fault",
         summary="Example scenario",
+        what_it_tests=("service recovery",),
         target_image="debian-12-openclaw-golden",
-        setup_steps=("apt-get install -y nginx",),
-        broken_state_checks=(
+        sabotage_procedure=("apt-get install -y nginx", "break nginx override"),
+        verification_probes=(
             VerificationCheck(
                 name="nginx-broken",
                 command="systemctl is-active nginx",
                 expected_substrings=("inactive", "failed"),
             ),
         ),
-        resolution_checks=(
+        repair_checks=(
             VerificationCheck(
                 name="nginx-fixed",
                 command="systemctl is-active nginx",
                 expected_substrings=("active",),
             ),
         ),
-        opening_user_message="nginx will not start",
+        observable_problem_statement="nginx will not start",
+        judge_rubric=("diagnosis", "repair quality"),
         turn_budget=6,
     )
 
@@ -32,69 +36,46 @@ def test_validate_scenario_accepts_runnable_spec():
     validate_scenario(_base_scenario())
 
 
-def test_validate_scenario_requires_broken_and_resolution_checks():
+def test_validate_scenario_requires_verification_and_repair_checks():
     spec = ScenarioSpec(
-        scenario_id="bad-1",
+        scenario_name="bad-1",
         title="broken",
-        summary="",
+        summary="bad",
+        what_it_tests=("test",),
         target_image="image",
-        setup_steps=("echo setup",),
-        broken_state_checks=(),
-        resolution_checks=(),
-        opening_user_message="help",
+        sabotage_procedure=("echo setup",),
+        verification_probes=(),
+        repair_checks=(),
+        observable_problem_statement="help",
+        judge_rubric=("quality",),
         turn_budget=3,
     )
 
-    try:
+    with pytest.raises(ScenarioValidationError) as exc_info:
         validate_scenario(spec)
-    except ScenarioValidationError as exc:
-        message = str(exc)
-    else:
-        raise AssertionError("ScenarioValidationError was not raised")
 
-    assert "broken_state_check" in message
-    assert "resolution_check" in message
+    message = str(exc_info.value)
+    assert "verification_probe" in message
+    assert "repair_check" in message
 
 
-def test_validate_scenario_rejects_empty_setup_step():
+def test_validate_scenario_rejects_non_objective_verification_probe():
     spec = _base_scenario()
     spec = ScenarioSpec(
-        scenario_id=spec.scenario_id,
+        scenario_name=spec.scenario_name,
         title=spec.title,
         summary=spec.summary,
+        what_it_tests=spec.what_it_tests,
         target_image=spec.target_image,
-        setup_steps=(" ",),
-        broken_state_checks=spec.broken_state_checks,
-        resolution_checks=spec.resolution_checks,
-        opening_user_message=spec.opening_user_message,
+        sabotage_procedure=spec.sabotage_procedure,
+        verification_probes=(VerificationCheck(name="probe", command="true"),),
+        repair_checks=spec.repair_checks,
+        observable_problem_statement=spec.observable_problem_statement,
+        judge_rubric=spec.judge_rubric,
         turn_budget=spec.turn_budget,
     )
 
-    try:
+    with pytest.raises(ScenarioValidationError) as exc_info:
         validate_scenario(spec)
-    except ScenarioValidationError as exc:
-        assert "setup_steps[1]" in str(exc)
-    else:
-        raise AssertionError("ScenarioValidationError was not raised")
 
-
-def test_validate_scenario_requires_target_image():
-    spec = _base_scenario()
-    spec = ScenarioSpec(
-        scenario_id=spec.scenario_id,
-        title=spec.title,
-        summary=spec.summary,
-        target_image="",
-        setup_steps=spec.setup_steps,
-        broken_state_checks=spec.broken_state_checks,
-        resolution_checks=spec.resolution_checks,
-        opening_user_message=spec.opening_user_message,
-        turn_budget=spec.turn_budget,
-    )
-
-    try:
-        validate_scenario(spec)
-    except ScenarioValidationError as exc:
-        assert "target_image is required" in str(exc)
-    else:
-        raise AssertionError("ScenarioValidationError was not raised")
+    assert "expected_exit_code or expected_substrings" in str(exc_info.value)

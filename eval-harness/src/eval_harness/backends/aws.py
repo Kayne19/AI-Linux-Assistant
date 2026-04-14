@@ -28,7 +28,7 @@ class AwsEc2BackendConfig:
     golden_ami_id: str
     instance_type: str = "t3.small"
     staging_name_prefix: str = "eval-staging"
-    variant_name_prefix: str = "eval-variant"
+    clone_name_prefix: str = "eval-clone"
     default_tags: dict[str, str] = field(default_factory=dict)
     root_volume_size_gb: int = 16
     image_wait_timeout_seconds: int = 1800
@@ -45,7 +45,7 @@ class AwsEc2Backend(SandboxBackend):
     - launch staging instance from the golden AMI
     - wait for SSM readiness
     - create a broken image after staging verification succeeds
-    - launch one clone per variant from that broken image
+    - launch one clone per benchmark subject from that broken image
     - tear down instances and deregister transient images
     """
 
@@ -134,19 +134,19 @@ class AwsEc2Backend(SandboxBackend):
             time.sleep(15)
         raise TimeoutError(f"Timed out waiting for broken image {image_id} to become available.")
 
-    def launch_variant_clones(
+    def launch_subject_clones(
         self,
         group_id: str,
         scenario_id: str,
         broken_image_id: str,
-        variants: list[str],
+        subject_names: list[str],
     ) -> dict[str, SandboxHandle]:
         handles: dict[str, SandboxHandle] = {}
-        for variant in variants:
-            name = f"{self.config.variant_name_prefix}-{variant}-{group_id}"
-            tags = self._base_tags(group_id, scenario_id, "variant", {"Name": name, "EvalVariant": variant})
+        for subject_name in subject_names:
+            name = f"{self.config.clone_name_prefix}-{subject_name}-{group_id}"
+            tags = self._base_tags(group_id, scenario_id, "subject-clone", {"Name": name, "EvalSubject": subject_name})
             handle = self._launch_instance(image_id=broken_image_id, name=name, tags=tags)
-            handles[variant] = handle
+            handles[subject_name] = handle
         return handles
 
     def destroy_handle(self, handle: SandboxHandle) -> None:
