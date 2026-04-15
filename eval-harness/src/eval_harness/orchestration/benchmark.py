@@ -145,8 +145,15 @@ class BenchmarkRunOrchestrator:
             session.seed_context(scenario.context_seed)
 
             user_message = scenario.observable_problem_statement
-            proxy_exec_calls_remaining = subject_spec.max_turns * 3
-            for _ in range(subject_spec.max_turns):
+            scenario_turn_budget = scenario.turn_budget if scenario.turn_budget > 0 else subject_spec.max_turns
+            subject_max = subject_spec.max_turns if subject_spec.max_turns > 0 else scenario_turn_budget
+            effective_max_turns = min(scenario_turn_budget, subject_max)
+            if effective_max_turns <= 0:
+                effective_max_turns = 8  # absolute fallback
+            proxy_exec_calls_remaining = effective_max_turns * 3
+            consecutive_stalled_turns = 0
+            _PROXY_STALL_LIMIT = 3
+            for _ in range(effective_max_turns):
                 self.store.append_evaluation_event(
                     evaluation_run_id=evaluation_run_id,
                     seq=seq,
@@ -293,6 +300,25 @@ class BenchmarkRunOrchestrator:
                         seq += 1
                     # Append real output to the user message that goes to the subject
                     user_message = user_message + "\n\n" + _render_command_outputs(proxy_exec_results)
+
+                # Stall detection: no productive output and repair still failing
+                turn_had_exec = bool(host_run_commands)  # True if any host-run commands were parsed
+                if not turn_had_exec and not self._repair_checks_pass(scenario, repair_results):
+                    consecutive_stalled_turns += 1
+                    if consecutive_stalled_turns >= _PROXY_STALL_LIMIT:
+                        session_metadata = session.close()
+                        session = None
+                        self.store.update_evaluation_run_status(
+                            evaluation_run_id=evaluation_run_id,
+                            status=EvaluationRunStatus.FAILED.value,
+                            repair_success=False,
+                            resolution_result={"reason": "proxy_stalled"},
+                            adapter_session_metadata=session_metadata,
+                            finished=True,
+                        )
+                        return
+                else:
+                    consecutive_stalled_turns = 0
 
             session_metadata = session.close()
             session = None
