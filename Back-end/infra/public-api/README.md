@@ -34,6 +34,22 @@ Run the backend as separate long-lived services:
 1. FastAPI API service
 2. chat-run worker service
 
+For a temporary non-`systemd` launch from the repo root, use:
+
+```bash
+conda activate AI-Linux-Assistant
+python run_public_api.py
+```
+
+Optional launcher env:
+
+- `AILA_PUBLIC_API_HOST` default `127.0.0.1`
+- `AILA_PUBLIC_API_PORT` default `8000`
+- `AILA_PUBLIC_WORKER_PROCESS_COUNT` default `1`
+- `AILA_PUBLIC_WORKER_CONCURRENCY` default `2`
+- `AILA_PUBLIC_START_CLOUDFLARED=1` to launch `cloudflared` with the same command
+- `AILA_CLOUDFLARED_CONFIG` default `~/.cloudflared/config.yml`
+
 The provided systemd unit files are templates. Replace:
 
 - `<REPO_ROOT>`

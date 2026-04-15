@@ -36,6 +36,19 @@ That starts:
 - four chat worker processes by default in dev (`CHAT_RUN_WORKER_PROCESS_COUNT`, defaults to `4`)
 - Vite frontend on port `5173`
 
+For a temporary public API-only stack without `systemd`:
+
+```bash
+conda activate AI-Linux-Assistant
+python run_public_api.py
+```
+
+That starts:
+
+- FastAPI backend on `127.0.0.1:8000` by default
+- one or more chat worker processes
+- optional `cloudflared` when `AILA_PUBLIC_START_CLOUDFLARED=1`
+
 Web auth requires Auth0 configuration for the browser app:
 
 - backend: `AUTH0_DOMAIN`, `AUTH0_ISSUER`, `AUTH0_AUDIENCE`, `FRONTEND_ORIGIN`
