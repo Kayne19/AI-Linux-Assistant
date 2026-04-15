@@ -8,7 +8,7 @@ from typing import Any
 
 from .adapters.ai_linux_assistant_http import AILinuxAssistantHttpAdapter, AILinuxAssistantHttpConfig
 from .artifacts import ArtifactStore, PostgresArtifactExporter
-from .backends.aws import AwsEc2Backend, AwsEc2BackendConfig
+from .backends.aws import AwsEc2Backend, AwsEc2BackendConfig, AwsTargetImageConfig
 from .controllers.openclaw import OpenClawControllerFactory, OpenClawControllerFactoryConfig
 from .judges.openai_compatible import OpenAICompatibleBlindJudge, OpenAICompatibleBlindJudgeConfig
 from .orchestration import BenchmarkRunOrchestrator, JudgeJobOrchestrator, ScenarioSetupOrchestrator
@@ -16,6 +16,27 @@ from .persistence import EvalHarnessStore, build_engine, build_session_factory, 
 from .planners.openai_compatible import OpenAICompatibleScenarioPlanner, OpenAICompatibleScenarioPlannerConfig
 from .scenario import load_scenario, validate_scenario
 from .models import PlannerScenarioRequest
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
+
+
+def _autoload_dotenv(path: Path = DEFAULT_ENV_PATH) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
 
 
 def _load_json(path: str | Path) -> dict[str, Any]:
@@ -45,21 +66,41 @@ def _load_resolved_config(path: str | Path) -> dict[str, Any]:
     return _resolve_env_placeholders(_load_json(path))
 
 
+def _resolve_project_path(path_value: str | Path) -> Path:
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return (PROJECT_ROOT / path).resolve()
+
+
 def _store_from_config(config: dict[str, Any]) -> EvalHarnessStore:
     database_config = dict(config.get("database", {}) or {})
     engine = build_engine(database_config.get("url"))
     return EvalHarnessStore(build_session_factory(engine))
 
 
-def _aws_backend_from_config(config: dict[str, Any]) -> AwsEc2Backend:
+def _aws_backend_from_config(config: dict[str, Any], *, controller_config: dict[str, Any] | None = None) -> AwsEc2Backend:
     if config.get("type", "aws_ec2") != "aws_ec2":
         raise ValueError(f"Unsupported backend type {config.get('type')!r}.")
+    target_images: dict[str, AwsTargetImageConfig] = {}
+    for target_image, payload in dict(config.get("target_images", {}) or {}).items():
+        item = dict(payload or {})
+        distro_vars_file = str(item.get("distro_vars_file", "")).strip()
+        if not distro_vars_file:
+            raise ValueError(f"backend.target_images[{target_image!r}] is missing distro_vars_file.")
+        target_images[target_image] = AwsTargetImageConfig(
+            target_image=target_image,
+            packer_template_dir=_resolve_project_path(str(item.get("packer_template_dir", "infra/aws/packer"))),
+            distro_vars_file=_resolve_project_path(distro_vars_file),
+            openclaw_version=str(item.get("openclaw_version", "2026.4.11")),
+            node_major_version=str(item.get("node_major_version", "24")),
+            packer_bin=str(item.get("packer_bin", "packer")),
+        )
     backend_config = AwsEc2BackendConfig(
         region=str(config["region"]),
         subnet_id=str(config["subnet_id"]),
         security_group_ids=tuple(str(item) for item in config["security_group_ids"]),
         instance_profile_name=str(config["instance_profile_name"]),
-        golden_ami_id=str(config["golden_ami_id"]),
         instance_type=str(config.get("instance_type", "t3.small")),
         staging_name_prefix=str(config.get("staging_name_prefix", "eval-staging")),
         clone_name_prefix=str(config.get("clone_name_prefix", "eval-clone")),
@@ -69,6 +110,12 @@ def _aws_backend_from_config(config: dict[str, Any]) -> AwsEc2Backend:
         ssm_wait_timeout_seconds=int(config.get("ssm_wait_timeout_seconds", 600)),
         terminate_wait_seconds=int(config.get("terminate_wait_seconds", 300)),
         use_spot=bool(config.get("use_spot", False)),
+        vpc_id=str(config.get("vpc_id", "")),
+        default_target_image=str(config.get("default_target_image", "")).strip(),
+        target_images=target_images,
+        golden_ami_id=(str(config["golden_ami_id"]).strip() if config.get("golden_ami_id") else None),
+        golden_image_build_timeout_seconds=int(config.get("golden_image_build_timeout_seconds", 3600)),
+        openclaw_eval_token=(str((controller_config or {}).get("token", "")).strip()),
     )
     return AwsEc2Backend(backend_config)
 
@@ -82,7 +129,7 @@ def _controller_factory_from_config(config: dict[str, Any]) -> OpenClawControlle
         request_timeout_seconds=int(config.get("request_timeout_seconds", 60)),
         fixed_base_url=(str(config["fixed_base_url"]).strip() if config.get("fixed_base_url") else None),
         aws_region=(str(config["aws_region"]).strip() if config.get("aws_region") else None),
-        remote_port=int(config.get("remote_port", 3000)),
+        remote_port=int(config.get("remote_port", 18789)),
     )
     return OpenClawControllerFactory(factory_config)
 
@@ -179,8 +226,9 @@ def _command_generate_scenario(args: argparse.Namespace) -> int:
 
 def _command_verify_scenario(args: argparse.Namespace) -> int:
     config = _load_resolved_config(args.config)
-    backend = _aws_backend_from_config(dict(config.get("backend", {}) or {}))
-    controller_factory = _controller_factory_from_config(dict(config.get("controller", {}) or {}))
+    controller_config = dict(config.get("controller", {}) or {})
+    backend = _aws_backend_from_config(dict(config.get("backend", {}) or {}), controller_config=controller_config)
+    controller_factory = _controller_factory_from_config(controller_config)
     planner = _planner_from_config(dict(config.get("planner", {}) or {}))
     store = _store_from_config(config)
     orchestrator = ScenarioSetupOrchestrator(
@@ -203,8 +251,9 @@ def _command_verify_scenario(args: argparse.Namespace) -> int:
 
 def _command_run_benchmark(args: argparse.Namespace) -> int:
     config = _load_resolved_config(args.config)
-    backend = _aws_backend_from_config(dict(config.get("backend", {}) or {}))
-    controller_factory = _controller_factory_from_config(dict(config.get("controller", {}) or {}))
+    controller_config = dict(config.get("controller", {}) or {})
+    backend = _aws_backend_from_config(dict(config.get("backend", {}) or {}), controller_config=controller_config)
+    controller_factory = _controller_factory_from_config(controller_config)
     store = _store_from_config(config)
     _sync_subjects(store, list(config.get("subjects", []) or []))
     subject_adapters = _subject_adapters_from_config(config)
@@ -277,16 +326,16 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--config", required=True)
     verify_parser.add_argument("--request", required=True)
     verify_parser.add_argument("--group-id", required=True)
-    verify_parser.add_argument("--sabotage-agent-id", default="sabotage_agent")
-    verify_parser.add_argument("--verification-agent-id", default="verification_executor")
+    verify_parser.add_argument("--sabotage-agent-id", default="setup")
+    verify_parser.add_argument("--verification-agent-id", default="verifier")
     verify_parser.add_argument("--max-corrections", type=int, default=2)
     verify_parser.set_defaults(func=_command_verify_scenario)
 
     benchmark_parser = subparsers.add_parser("run-benchmark", help="Run all active subjects against a verified setup run.")
     benchmark_parser.add_argument("--config", required=True)
     benchmark_parser.add_argument("--setup-run-id", required=True)
-    benchmark_parser.add_argument("--user-proxy-agent-id", default="user_proxy_agent")
-    benchmark_parser.add_argument("--verification-agent-id", default="verification_executor")
+    benchmark_parser.add_argument("--user-proxy-agent-id", default="proxy")
+    benchmark_parser.add_argument("--verification-agent-id", default="verifier")
     benchmark_parser.set_defaults(func=_command_run_benchmark)
 
     judge_parser = subparsers.add_parser("run-judge-job", help="Blind-grade a completed benchmark run.")
@@ -308,6 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _autoload_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))

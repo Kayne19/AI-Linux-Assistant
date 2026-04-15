@@ -102,6 +102,7 @@ def test_setup_benchmark_evaluation_and_judge_records() -> None:
         status="verified",
         broken_image_id="ami-broken",
         planner_approved=True,
+        backend_metadata={"resolved_golden_ami_id": "ami-golden", "golden_image_build_triggered": False},
     )
     store.mark_scenario_verified(scenario_id=scenario.id, revision_id=revision.id)
 
@@ -184,3 +185,37 @@ def test_mark_scenario_verified_rejects_revision_from_other_scenario() -> None:
     )
     with pytest.raises(ValueError):
         store.mark_scenario_verified(scenario_id=first.id, revision_id=second_revision.id)
+
+
+def test_setup_run_status_merges_backend_metadata() -> None:
+    store, _ = _build_store()
+    scenario = store.create_scenario(title="Metadata", scenario_name_hint="metadata")
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-2",
+        summary="metadata issue",
+        what_it_tests={"category": "metadata"},
+        observable_problem_statement="metadata",
+        sabotage_plan={"steps": ["noop"]},
+        verification_plan={"probes": [{"command": "true"}]},
+        judge_rubric={"criteria": ["metadata"]},
+    )
+    setup = store.create_setup_run(
+        scenario_revision_id=revision.id,
+        backend_metadata={"group_id": "group-1", "requested_target_image": "debian-12-openclaw-golden"},
+    )
+
+    store.update_setup_run_status(
+        setup_run_id=setup.id,
+        status="running",
+        backend_metadata={"resolved_golden_ami_id": "ami-golden", "golden_image_build_triggered": True},
+    )
+
+    stored = store.get_setup_run(setup.id)
+    assert stored is not None
+    assert stored.backend_metadata_json == {
+        "group_id": "group-1",
+        "requested_target_image": "debian-12-openclaw-golden",
+        "resolved_golden_ami_id": "ami-golden",
+        "golden_image_build_triggered": True,
+    }

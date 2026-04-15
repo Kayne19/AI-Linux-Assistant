@@ -1,0 +1,7 @@
+aws_region           = "us-west-2"
+subnet_id            = "subnet-0123456789abcdef0"
+instance_type        = "t3.small"
+iam_instance_profile = "EvalSSMInstanceProfile"
+openclaw_eval_token  = "CHANGE_ME_TO_A_REAL_SECRET"
+openclaw_version     = "2026.4.11"
+node_major_version   = "24"

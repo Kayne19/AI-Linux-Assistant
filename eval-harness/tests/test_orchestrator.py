@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 
 import pytest
+from sqlalchemy import select
 
 from eval_harness.adapters.base import SubjectAdapter, SubjectSession
 from eval_harness.backends.base import SandboxBackend, SandboxHandle
@@ -31,6 +32,7 @@ from eval_harness.orchestration import (
     ScenarioSetupOrchestrator,
 )
 from eval_harness.persistence.database import build_engine, build_session_factory, create_all_tables
+from eval_harness.persistence.postgres_models import ScenarioSetupRunRecord
 from eval_harness.persistence.store import EvalHarnessStore
 from eval_harness.planners.base import ScenarioPlanner
 
@@ -147,13 +149,23 @@ class FakeBackend(SandboxBackend):
     created_broken_images: list[str] = field(default_factory=list)
     destroyed_handles: list[str] = field(default_factory=list)
     wait_calls: list[str] = field(default_factory=list)
+    requested_target_images: list[str] = field(default_factory=list)
 
-    def launch_staging(self, group_id: str, scenario_id: str) -> SandboxHandle:
+    def launch_staging(self, group_id: str, scenario_id: str, *, target_image: str | None = None) -> SandboxHandle:
+        self.requested_target_images.append(str(target_image or ""))
         return SandboxHandle(
             handle_id=f"staging-{group_id}",
             kind="instance",
             backend_name=self.name,
             remote_id=f"staging-{scenario_id}",
+            image_id="ami-resolved",
+            metadata={
+                "requested_target_image": str(target_image or ""),
+                "resolved_target_image": str(target_image or ""),
+                "resolved_golden_ami_id": "ami-resolved",
+                "golden_image_build_triggered": False,
+                "golden_image_build_source": "existing_ami",
+            },
         )
 
     def wait_until_ready(self, handle: SandboxHandle, timeout_seconds: int = 600) -> None:
@@ -313,8 +325,12 @@ def test_setup_orchestrator_kills_after_second_planner_correction() -> None:
     verified_revision = store.get_current_verified_revision(scenario_row.id)
     assert verified_revision is None
     assert backend.created_broken_images == []
+    assert backend.requested_target_images == ["ami-golden"]
     assert planner.review_calls == [(0, 0), (1, 1)]
     assert "staging-nginx-recovery" in backend.destroyed_handles
+    with store._session_factory() as session:
+        failed_setup_run = session.scalars(select(ScenarioSetupRunRecord)).one()
+    assert failed_setup_run.backend_metadata_json["resolved_golden_ami_id"] == "ami-resolved"
 
 
 def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair() -> None:

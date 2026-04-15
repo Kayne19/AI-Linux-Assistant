@@ -215,6 +215,7 @@ class EvalHarnessStore:
         broken_image_id: str | None = None,
         failure_reason: str | None = None,
         planner_approved: bool = False,
+        backend_metadata: dict | None = None,
     ) -> None:
         with self._session_factory() as session:
             row = session.get(ScenarioSetupRunRecord, setup_run_id)
@@ -231,6 +232,10 @@ class EvalHarnessStore:
                 row.failure_reason = failure_reason
             if planner_approved:
                 row.planner_approved_at = _utc_now()
+            if backend_metadata is not None:
+                merged = dict(row.backend_metadata_json or {})
+                merged.update(dict(backend_metadata))
+                row.backend_metadata_json = merged
             session.add(row)
             session.commit()
 

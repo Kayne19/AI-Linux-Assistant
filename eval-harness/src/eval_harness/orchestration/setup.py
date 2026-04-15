@@ -82,8 +82,8 @@ class ScenarioSetupOrchestrator:
         request: PlannerScenarioRequest,
         *,
         group_id: str,
-        sabotage_agent_id: str = "sabotage_agent",
-        verification_agent_id: str = "verification_executor",
+        sabotage_agent_id: str = "setup",
+        verification_agent_id: str = "verifier",
         max_corrections: int = 2,
     ) -> ScenarioSetupResult:
         draft = self.planner.generate_scenario(request)
@@ -115,7 +115,7 @@ class ScenarioSetupOrchestrator:
         setup_run = self.store.create_setup_run(
             scenario_revision_id=revision_row.id,
             max_corrections=max_corrections,
-            backend_metadata={"group_id": group_id},
+            backend_metadata={"group_id": group_id, "requested_target_image": scenario.target_image},
         )
         seq = 1
         correction_count = 0
@@ -123,12 +123,13 @@ class ScenarioSetupOrchestrator:
         instructions = scenario.sabotage_procedure
 
         try:
-            staging_handle = self.backend.launch_staging(group_id, scenario_row.scenario_name)
+            staging_handle = self.backend.launch_staging(group_id, scenario_row.scenario_name, target_image=scenario.target_image)
             self.store.update_setup_run_status(
                 setup_run_id=setup_run.id,
                 status=ScenarioSetupStatus.RUNNING.value,
                 staging_handle_id=staging_handle.remote_id,
                 correction_count=correction_count,
+                backend_metadata=staging_handle.metadata,
             )
             self.backend.wait_until_ready(staging_handle)
             controller = self.controller_factory.open(staging_handle, purpose=f"setup-{setup_run.id}")

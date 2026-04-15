@@ -4,7 +4,7 @@ V1 runtime assumptions:
 - AWS only
 - SSM only
 - zero inbound SSH rules
-- one golden AMI, one verified staging instance, one transient broken image per run group
+- one target-image alias resolved to one tagged golden AMI, one verified staging instance, one transient broken image per run group
 
 ## Required AWS Inputs
 
@@ -12,9 +12,16 @@ V1 runtime assumptions:
 - subnet with outbound access for SSM registration
 - security group set appropriate for outbound-only instances
 - IAM instance profile with `AmazonSSMManagedInstanceCore`
-- golden AMI id
+- target-image config in the harness backend config
+- `packer`, `aws`, and Session Manager tooling on the operator machine if auto-build is enabled
 
 ## Required Tagging
+
+Every golden AMI should include at least:
+- `EvalHarness=true`
+- `EvalImageRole=golden`
+- `EvalTargetImage=<target image alias>`
+- `OpenClawVersion=<version>`
 
 Every transient resource should include at least:
 - `EvalHarness=true`
@@ -30,6 +37,7 @@ Worker cleanup is necessary but not sufficient.
 Also operate a separate reaper:
 - find instances tagged `EvalHarness=true`
 - terminate instances older than the allowed TTL
+- find golden AMIs by `EvalImageRole=golden` and `EvalTargetImage=*` when auditing image inventory
 - deregister leaked transient AMIs and delete their snapshots
 
 This keeps resource lifecycle responsibility outside the orchestrator.

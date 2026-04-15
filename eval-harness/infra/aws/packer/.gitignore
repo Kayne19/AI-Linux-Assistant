@@ -1,0 +1,3 @@
+variables.pkrvars.hcl
+packer_cache/
+*.log

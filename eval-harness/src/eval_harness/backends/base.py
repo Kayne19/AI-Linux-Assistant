@@ -22,7 +22,7 @@ class SandboxBackend(ABC):
     name: str
 
     @abstractmethod
-    def launch_staging(self, group_id: str, scenario_id: str) -> SandboxHandle:
+    def launch_staging(self, group_id: str, scenario_id: str, *, target_image: str | None = None) -> SandboxHandle:
         raise NotImplementedError
 
     @abstractmethod

@@ -196,8 +196,8 @@ class BenchmarkRunOrchestrator:
         *,
         scenario_revision_id: str,
         verified_setup_run_id: str,
-        user_proxy_agent_id: str = "user_proxy_agent",
-        verification_agent_id: str = "verification_executor",
+        user_proxy_agent_id: str = "proxy",
+        verification_agent_id: str = "verifier",
     ) -> BenchmarkRunResult:
         revision = self.store.get_scenario_revision(scenario_revision_id)
         if revision is None:

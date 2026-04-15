@@ -42,7 +42,7 @@ class OpenClawControllerFactoryConfig:
     request_timeout_seconds: int = 60
     fixed_base_url: str | None = None
     aws_region: str | None = None
-    remote_port: int = 3000
+    remote_port: int = 18789
 
 
 def _allocate_local_port() -> int:

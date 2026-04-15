@@ -9,6 +9,11 @@ The current design target is an AWS-first, Postgres-backed workflow with four ex
 3. The approved broken environment is cloned once per benchmark subject.
 4. Blind judging grades stored transcripts after the benchmark run completes.
 
+Golden images are now target-image driven:
+- scenarios name a `target_image`
+- the AWS backend resolves that alias to the newest tagged golden AMI
+- if the AMI is missing, `verify-scenario` auto-builds it with Packer and prints build progress to `stderr`
+
 ## Methodology
 
 V1 benchmark flow:
@@ -180,3 +185,9 @@ See:
 - [aws_ai_linux_assistant_config.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/aws_ai_linux_assistant_config.json)
 - [nginx_recovery_request.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/planner_requests/nginx_recovery_request.json)
 - [nginx_service_repair.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/scenarios/nginx_service_repair.json)
+
+For the AWS backend:
+- `backend.default_target_image` is the alias used when a scenario or request does not override it
+- `backend.target_images` maps each supported alias to the canonical Packer template directory and distro var-file
+- `backend.golden_ami_id` remains a legacy single-image override only; prefer tagged target images
+- `controller.remote_port` should match the baked OpenClaw gateway port, `18789`

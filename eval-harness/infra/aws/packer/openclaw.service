@@ -1,5 +1,5 @@
 [Unit]
-Description=OpenClaw Gateway
+Description=OpenClaw Gateway (eval harness)
 After=network-online.target amazon-ssm-agent.service
 Wants=network-online.target
 
@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=eval
 WorkingDirectory=/opt/openclaw
-ExecStart=/opt/openclaw/node_modules/.bin/openclaw
+ExecStart=/opt/openclaw/node_modules/.bin/openclaw gateway start --config /home/eval/.openclaw/gateway.yaml
 Restart=on-failure
 RestartSec=5
 Environment=HOME=/home/eval

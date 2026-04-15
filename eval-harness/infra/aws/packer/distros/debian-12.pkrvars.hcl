@@ -1,0 +1,6 @@
+source_ami_filter_name = "debian-12-amd64-*"
+source_ami_owner       = "136693071363"
+ssh_username           = "admin"
+distro_family          = "debian"
+ami_name_prefix        = "eval-golden-debian12"
+target_image_alias     = "debian-12-openclaw-golden"

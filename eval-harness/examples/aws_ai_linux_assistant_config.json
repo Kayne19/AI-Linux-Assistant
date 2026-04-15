@@ -10,8 +10,16 @@
       "env:EVAL_HARNESS_SECURITY_GROUP_ID"
     ],
     "instance_profile_name": "env:EVAL_HARNESS_INSTANCE_PROFILE_NAME",
-    "golden_ami_id": "env:EVAL_HARNESS_GOLDEN_AMI_ID",
     "instance_type": "t3.small",
+    "default_target_image": "debian-12-openclaw-golden",
+    "target_images": {
+      "debian-12-openclaw-golden": {
+        "packer_template_dir": "infra/aws/packer",
+        "distro_vars_file": "infra/aws/packer/distros/debian-12.pkrvars.hcl",
+        "openclaw_version": "2026.4.11",
+        "node_major_version": "24"
+      }
+    },
     "default_tags": {
       "Project": "eval-harness",
       "Owner": "research"
@@ -22,7 +30,7 @@
     "token": "env:EVAL_HARNESS_OPENCLAW_TOKEN",
     "default_session_key_prefix": "eval-harness",
     "aws_region": "env:EVAL_HARNESS_AWS_REGION",
-    "remote_port": 8080,
+    "remote_port": 18789,
     "request_timeout_seconds": 60
   },
   "planner": {

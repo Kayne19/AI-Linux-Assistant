@@ -6,8 +6,14 @@ def test_aws_ai_linux_assistant_example_config_is_valid_json():
     config_path = Path(__file__).resolve().parents[1] / "examples" / "aws_ai_linux_assistant_config.json"
     payload = json.loads(config_path.read_text(encoding="utf-8"))
 
+    backend = payload["backend"]
     adapter = payload["subject_adapters"]["ai_linux_assistant_http"]
+    controller = payload["controller"]
 
     assert adapter["base_url"] == "env:EVAL_HARNESS_AI_API_BASE_URL"
     assert "bearer_tokens_by_subject" in adapter
     assert "legacy_bootstrap_usernames_by_subject" not in adapter
+    assert backend["default_target_image"] == "debian-12-openclaw-golden"
+    assert "golden_ami_id" not in backend
+    assert backend["target_images"]["debian-12-openclaw-golden"]["distro_vars_file"] == "infra/aws/packer/distros/debian-12.pkrvars.hcl"
+    assert controller["remote_port"] == 18789

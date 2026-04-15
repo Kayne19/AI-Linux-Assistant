@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
 
+from .aws_packer import AwsPackerBuildRequest, build_golden_ami
 from .base import SandboxBackend, SandboxHandle
 from ..runtime.ssm import wait_for_ssm_online
 
@@ -20,12 +24,29 @@ def _require_boto3() -> None:
 
 
 @dataclass(frozen=True)
+class AwsTargetImageConfig:
+    target_image: str
+    packer_template_dir: Path
+    distro_vars_file: Path
+    openclaw_version: str = "2026.4.11"
+    node_major_version: str = "24"
+    packer_bin: str = "packer"
+
+
+@dataclass(frozen=True)
+class ResolvedGoldenImage:
+    image_id: str
+    target_image: str
+    build_triggered: bool
+    build_source: str
+
+
+@dataclass(frozen=True)
 class AwsEc2BackendConfig:
     region: str
     subnet_id: str
     security_group_ids: tuple[str, ...]
     instance_profile_name: str
-    golden_ami_id: str
     instance_type: str = "t3.small"
     staging_name_prefix: str = "eval-staging"
     clone_name_prefix: str = "eval-clone"
@@ -35,6 +56,12 @@ class AwsEc2BackendConfig:
     ssm_wait_timeout_seconds: int = 600
     terminate_wait_seconds: int = 300
     use_spot: bool = False
+    vpc_id: str = ""
+    default_target_image: str = ""
+    target_images: dict[str, AwsTargetImageConfig] = field(default_factory=dict)
+    golden_ami_id: str | None = None
+    golden_image_build_timeout_seconds: int = 3600
+    openclaw_eval_token: str = ""
 
 
 class AwsEc2Backend(SandboxBackend):
@@ -42,7 +69,7 @@ class AwsEc2Backend(SandboxBackend):
     AWS-only v1 backend.
 
     Backend responsibilities:
-    - launch staging instance from the golden AMI
+    - launch staging instance from a resolved golden AMI for the requested target image
     - wait for SSM readiness
     - create a broken image after staging verification succeeds
     - launch one clone per benchmark subject from that broken image
@@ -51,13 +78,31 @@ class AwsEc2Backend(SandboxBackend):
 
     name = "aws_ec2"
 
-    def __init__(self, config: AwsEc2BackendConfig):
-        _require_boto3()
+    def __init__(
+        self,
+        config: AwsEc2BackendConfig,
+        *,
+        ec2_client: Any | None = None,
+        ssm_client: Any | None = None,
+        golden_image_builder: Callable[[AwsPackerBuildRequest], Any] = build_golden_ami,
+    ):
+        if ec2_client is None or ssm_client is None:
+            _require_boto3()
         self.config = config
-        self.ec2 = boto3.client("ec2", region_name=config.region)
-        self.ssm = boto3.client("ssm", region_name=config.region)
+        self.ec2 = ec2_client or boto3.client("ec2", region_name=config.region)
+        self.ssm = ssm_client or boto3.client("ssm", region_name=config.region)
+        self._golden_image_builder = golden_image_builder
 
-    def _base_tags(self, group_id: str, scenario_id: str, role: str, extra: dict[str, str] | None = None) -> list[dict[str, str]]:
+    def _emit_progress(self, message: str) -> None:
+        print(message, file=sys.stderr, flush=True)
+
+    def _base_tags(
+        self,
+        group_id: str,
+        scenario_id: str,
+        role: str,
+        extra: dict[str, str] | None = None,
+    ) -> list[dict[str, str]]:
         tags = {
             "EvalHarness": "true",
             "EvalGroupId": group_id,
@@ -104,10 +149,122 @@ class AwsEc2Backend(SandboxBackend):
             metadata={"state": instance.get("State", {}).get("Name", ""), "launched_image_id": image_id},
         )
 
-    def launch_staging(self, group_id: str, scenario_id: str) -> SandboxHandle:
+    def _requested_target_image(self, target_image: str | None) -> str:
+        requested = str(target_image or self.config.default_target_image or "").strip()
+        if requested:
+            return requested
+        if self.config.golden_ami_id:
+            return "legacy-default"
+        raise ValueError("No target image was requested and backend.default_target_image is not configured.")
+
+    def _find_existing_golden_image(self, target_image: str) -> str | None:
+        response = self.ec2.describe_images(
+            Owners=["self"],
+            Filters=[
+                {"Name": "state", "Values": ["available"]},
+                {"Name": "tag:EvalHarness", "Values": ["true"]},
+                {"Name": "tag:EvalImageRole", "Values": ["golden"]},
+                {"Name": "tag:EvalTargetImage", "Values": [target_image]},
+            ],
+        )
+        images = list(response.get("Images", []))
+        if not images:
+            return None
+        images.sort(key=lambda item: str(item.get("CreationDate", "")), reverse=True)
+        return str(images[0]["ImageId"])
+
+    def _build_missing_golden_image(self, target_image: str, target_config: AwsTargetImageConfig) -> ResolvedGoldenImage:
+        if not self.config.openclaw_eval_token:
+            raise RuntimeError("Controller token is required to build a golden AMI automatically.")
+        self._emit_progress(f"Building golden AMI for target image {target_image} with Packer...")
+        build_request = AwsPackerBuildRequest(
+            target_image=target_image,
+            aws_region=self.config.region,
+            vpc_id=self.config.vpc_id,
+            subnet_id=self.config.subnet_id,
+            instance_type=self.config.instance_type,
+            iam_instance_profile=self.config.instance_profile_name,
+            openclaw_eval_token=self.config.openclaw_eval_token,
+            packer_template_dir=target_config.packer_template_dir,
+            distro_vars_file=target_config.distro_vars_file,
+            node_major_version=target_config.node_major_version,
+            openclaw_version=target_config.openclaw_version,
+            packer_bin=target_config.packer_bin,
+            timeout_seconds=self.config.golden_image_build_timeout_seconds,
+        )
+        result = self._golden_image_builder(build_request)
+        image_id = str(result.image_id)
+        self._emit_progress(f"Built golden AMI {image_id} for target image {target_image}.")
+        return ResolvedGoldenImage(
+            image_id=image_id,
+            target_image=target_image,
+            build_triggered=True,
+            build_source="packer",
+        )
+
+    def _resolve_golden_image(self, target_image: str | None) -> ResolvedGoldenImage:
+        requested_target = self._requested_target_image(target_image)
+        if (
+            self.config.golden_ami_id
+            and requested_target in {"legacy-default", self.config.default_target_image}
+        ):
+            return ResolvedGoldenImage(
+                image_id=self.config.golden_ami_id,
+                target_image=requested_target,
+                build_triggered=False,
+                build_source="legacy_config",
+            )
+
+        target_config = self.config.target_images.get(requested_target)
+        if target_config is None:
+            available = ", ".join(sorted(self.config.target_images))
+            raise ValueError(
+                f"Unsupported target image {requested_target!r}. "
+                f"Configured target images: {available or 'none'}."
+            )
+
+        existing_image_id = self._find_existing_golden_image(requested_target)
+        if existing_image_id:
+            return ResolvedGoldenImage(
+                image_id=existing_image_id,
+                target_image=requested_target,
+                build_triggered=False,
+                build_source="existing_ami",
+            )
+        return self._build_missing_golden_image(requested_target, target_config)
+
+    def launch_staging(self, group_id: str, scenario_id: str, *, target_image: str | None = None) -> SandboxHandle:
+        resolved = self._resolve_golden_image(target_image)
         name = f"{self.config.staging_name_prefix}-{group_id}"
-        tags = self._base_tags(group_id, scenario_id, "staging", {"Name": name})
-        return self._launch_instance(image_id=self.config.golden_ami_id, name=name, tags=tags)
+        tags = self._base_tags(
+            group_id,
+            scenario_id,
+            "staging",
+            {
+                "Name": name,
+                "EvalTargetImage": resolved.target_image,
+            },
+        )
+        handle = self._launch_instance(image_id=resolved.image_id, name=name, tags=tags)
+        metadata = dict(handle.metadata)
+        metadata.update(
+            {
+                "requested_target_image": self._requested_target_image(target_image),
+                "resolved_target_image": resolved.target_image,
+                "resolved_golden_ami_id": resolved.image_id,
+                "golden_image_build_triggered": resolved.build_triggered,
+                "golden_image_build_source": resolved.build_source,
+            }
+        )
+        return SandboxHandle(
+            handle_id=handle.handle_id,
+            kind=handle.kind,
+            backend_name=handle.backend_name,
+            remote_id=handle.remote_id,
+            image_id=handle.image_id,
+            local_port=handle.local_port,
+            metadata=metadata,
+        )
 
     def wait_until_ready(self, handle: SandboxHandle, timeout_seconds: int = 600) -> None:
         waiter = self.ec2.get_waiter("instance_running")
