@@ -11,7 +11,6 @@ from ..mapping import scenario_spec_from_records, subject_spec_from_record
 from ..models import EvaluationRunStatus
 from ..persistence.store import EvalHarnessStore
 
-_NGINX_PID_PERMISSION_DENIED = 'open() "/run/nginx.pid" failed (13: Permission denied)'
 _PROXY_APPROVAL_RE = re.compile(r"/approve\s+[a-f0-9]+", re.IGNORECASE)
 
 
@@ -86,36 +85,11 @@ class BenchmarkRunOrchestrator:
     def _proxy_reply_has_approval_leak(self, reply: str) -> bool:
         return bool(_PROXY_APPROVAL_RE.search(reply))
 
-    def _is_known_nginx_permission_false_negative(self, check, result) -> bool:
-        combined_output = result.combined_output()
-        return (
-            "nginx -t" in str(check.command)
-            and "nginx -t" in str(result.command)
-            and _NGINX_PID_PERMISSION_DENIED in combined_output
-            and "syntax is ok" in str(result.stdout).lower()
-        )
-
     def _repair_checks_pass(self, scenario, command_results) -> bool:
         pairs = tuple(zip(scenario.repair_checks, command_results, strict=True))
         if not pairs:
             return False
-        passed = [check.is_satisfied_by(result) for check, result in pairs]
-        if all(passed):
-            return True
-        fallback_indexes = [
-            index
-            for index, ((check, result), check_passed) in enumerate(zip(pairs, passed, strict=True))
-            if not check_passed and self._is_known_nginx_permission_false_negative(check, result)
-        ]
-        if not fallback_indexes:
-            return False
-        if any(not check_passed and index not in fallback_indexes for index, check_passed in enumerate(passed)):
-            return False
-        return any(
-            check_passed
-            for index, check_passed in enumerate(passed)
-            if index not in fallback_indexes
-        )
+        return all(check.is_satisfied_by(result) for check, result in pairs)
 
     def _run_subject(
         self,
