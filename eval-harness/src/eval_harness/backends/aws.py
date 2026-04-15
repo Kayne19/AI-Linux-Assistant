@@ -432,6 +432,61 @@ WantedBy=multi-user.target
             ]
         raise TimeoutError(f"Timed out collecting diagnostics from instance {instance_id} over SSM.")
 
+    def _runtime_phase_summary(self, phase: str, invocation: dict[str, Any]) -> dict[str, Any]:
+        stdout = str(invocation.get("stdout", ""))
+        stderr = str(invocation.get("stderr", ""))
+        text = f"{stdout}\n{stderr}".lower()
+        summary = {
+            "phase": phase,
+            "status": str(invocation.get("status", "")),
+            "status_details": str(invocation.get("status_details", "")),
+            "exit_code": invocation.get("exit_code"),
+            "stdout_length": len(stdout),
+            "stderr_length": len(stderr),
+            "category": self._classify_runtime_phase_text(phase, text),
+        }
+        if phase == "service_restart":
+            summary["service_active"] = "active (running)" in text or "activestate=active" in text
+            summary["port_18789_listening"] = "127.0.0.1:18789" in text or ":18789" in text
+        return summary
+
+    def _classify_runtime_phase_text(self, phase: str, text: str) -> str:
+        normalized = str(text or "").lower()
+        if not normalized.strip():
+            return "empty_output"
+        if "incorrect api key" in normalized or "invalid api key" in normalized or "invalid_api_key" in normalized:
+            return "invalid_api_key"
+        if "quota" in normalized or "rate limit" in normalized or "429" in normalized:
+            return "rate_limited"
+        if "model_not_found" in normalized or "model not found" in normalized or "unknown model" in normalized:
+            return "model_not_found"
+        if "unauthorized" in normalized or "forbidden" in normalized or "authentication" in normalized:
+            return "auth_error"
+        if "bad request" in normalized or "invalid request" in normalized or "json" in normalized or "schema" in normalized:
+            return "bad_request"
+        if "remote end closed connection" in normalized or "connection refused" in normalized or "connection reset" in normalized:
+            return "transport_error"
+        if "timed out" in normalized or "timeout" in normalized:
+            return "timeout"
+        if "permission denied" in normalized:
+            return "permission_denied"
+        if "no such file" in normalized:
+            return "missing_file"
+        if phase == "service_restart" and ("active (running)" in normalized or "activestate=active" in normalized):
+            return "service_ready"
+        if phase == "gateway_probe" and ("httperror" in normalized or "gateway http response status=" in normalized):
+            return "gateway_http_ready"
+        if phase == "model_probe" and ('"choices"' in normalized or "ready" in normalized):
+            return "model_probe_ready"
+        return "unknown"
+
+    def _format_runtime_phase_error(self, handle: SandboxHandle, summary: dict[str, Any]) -> str:
+        return (
+            f"Failed to configure OpenClaw runtime on {handle.remote_id} during {summary['phase']}: "
+            f"category={summary['category']}, status={summary['status']}, "
+            f"status_details={summary['status_details']}, exit_code={summary['exit_code']}"
+        )
+
     def collect_failure_diagnostics(self, handle: SandboxHandle) -> dict[str, Any]:
         commands = (
             "systemctl is-active openclaw-gateway.service || true",
@@ -505,11 +560,46 @@ cat > /etc/systemd/system/openclaw-gateway.service <<'EOF'
 {service_unit}
 EOF
 systemctl daemon-reload
-systemctl enable openclaw-gateway.service
-systemctl restart openclaw-gateway.service
 """
-        probe_script = f"""python3 - <<'PY'
+        service_script = """systemctl enable openclaw-gateway.service
+systemctl restart openclaw-gateway.service
+for _ in $(seq 1 30); do
+  active=$(systemctl is-active openclaw-gateway.service || true)
+  if [ "${active}" = "active" ] && ss -ltn | grep -q ':18789'; then
+    systemctl is-active openclaw-gateway.service
+    systemctl show openclaw-gateway.service --property=ActiveState,SubState --no-pager || true
+    ss -ltnp | grep 18789 || true
+    exit 0
+  fi
+  sleep 2
+done
+systemctl is-active openclaw-gateway.service || true
+systemctl status openclaw-gateway.service --no-pager --full || true
+ss -ltnp | grep 18789 || true
+exit 1
+"""
+        gateway_probe_script = f"""python3 - <<'PY'
+import urllib.error
+import urllib.request
+
+url = "http://127.0.0.1:18789/v1/chat/completions"
+headers = {{
+    "Authorization": "Bearer " + {token_literal},
+    "Content-Type": "application/json",
+}}
+req = urllib.request.Request(url, data=b"{{}}", headers=headers, method="POST")
+try:
+    with urllib.request.urlopen(req, timeout=20) as response:
+        print(f"Gateway HTTP response status={{response.status}}")
+        raise SystemExit(0)
+except urllib.error.HTTPError as exc:
+    print(f"Gateway HTTP response status={{exc.code}}")
+    raise SystemExit(0)
+PY
+"""
+        model_probe_script = f"""python3 - <<'PY'
 import json
+import urllib.error
 import time
 import urllib.request
 
@@ -524,38 +614,51 @@ payload = json.dumps({{
     "messages": [{{"role": "user", "content": "Reply with READY."}}],
 }}).encode("utf-8")
 last_error = None
-for _ in range(30):
+for _ in range(18):
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with urllib.request.urlopen(req, timeout=45) as response:
             body = response.read().decode("utf-8", errors="replace")
         print(body)
         raise SystemExit(0)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        print(f"HTTPError: {{exc.code}}")
+        print(body)
+        last_error = exc
     except Exception as exc:
         last_error = exc
-        time.sleep(2)
+    time.sleep(5)
 print(f"OpenClaw runtime probe failed: {{last_error}}")
 raise SystemExit(1)
 PY
 """
-        invocations = self._run_ssm_shell_commands(
-            handle.remote_id,
-            (config_script, probe_script),
-            timeout_seconds=240,
-        )
-        invocation = invocations[0]
-        exit_code = invocation.get("exit_code")
-        if int(1 if exit_code is None else exit_code) != 0:
-            raise RuntimeError(
-                f"Failed to configure OpenClaw runtime on {handle.remote_id}: "
-                f"{invocation.get('stderr') or invocation.get('stdout') or invocation.get('status')}"
-            )
+        phase_summaries: list[dict[str, Any]] = []
+        for phase_name, commands, timeout_seconds in (
+            ("write_runtime_files", (config_script,), 180),
+            ("service_restart", (service_script,), 180),
+            ("gateway_probe", (gateway_probe_script,), 120),
+            ("model_probe", (model_probe_script,), 180),
+        ):
+            invocation = self._run_ssm_shell_commands(
+                handle.remote_id,
+                commands,
+                timeout_seconds=timeout_seconds,
+            )[0]
+            summary = self._runtime_phase_summary(phase_name, invocation)
+            phase_summaries.append(summary)
+            exit_code = invocation.get("exit_code")
+            if int(1 if exit_code is None else exit_code) != 0:
+                raise RuntimeError(self._format_runtime_phase_error(handle, summary))
         return {
             "openclaw_runtime_provider": runtime.provider,
             "openclaw_runtime_model": normalized_model,
             "openclaw_runtime_thinking": runtime.thinking,
             "openclaw_runtime_configured": True,
+            "openclaw_runtime_phase_summaries": phase_summaries,
+            "openclaw_gateway_ready": True,
             "openclaw_runtime_probe_passed": True,
+            "openclaw_model_probe_passed": True,
         }
 
     def clear_controller_runtime(self, handle: SandboxHandle) -> dict[str, Any]:

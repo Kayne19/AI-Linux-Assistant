@@ -13,7 +13,7 @@ Golden images are now target-image driven:
 - scenarios name a `target_image`
 - the AWS backend resolves that alias to the newest tagged golden AMI
 - if the AMI is missing, `verify-scenario` auto-builds it with Packer and prints build progress to `stderr`
-- before the first OpenClaw request on staging or a benchmark clone, the backend injects runtime model/provider config and probes the local chat path
+- before the first OpenClaw request on staging or a benchmark clone, the backend injects runtime model/provider config, verifies the local gateway is up, then runs a model-backed probe
 - before the verified broken-image snapshot is created, the backend removes the injected provider secret from staging so it is not baked into the transient AMI
 - if staging setup fails after launch, the harness captures backend diagnostics before teardown so setup-run metadata includes the failure context
 

@@ -63,8 +63,9 @@ class FakeEc2Client:
 
 
 class FakeSsmClient:
-    def __init__(self):
+    def __init__(self, *, invocations: list[dict] | None = None):
         self.sent_commands: list[dict] = []
+        self.invocations = list(invocations or [])
 
     def send_command(self, **kwargs):
         self.sent_commands.append(dict(kwargs))
@@ -72,6 +73,8 @@ class FakeSsmClient:
 
     def get_command_invocation(self, **kwargs):
         del kwargs
+        if self.invocations:
+            return self.invocations.pop(0)
         return {
             "Status": "Success",
             "StatusDetails": "Success",
@@ -94,9 +97,10 @@ def _backend(
     images: list[dict] | None = None,
     golden_ami_id: str | None = None,
     builder=None,
+    ssm_invocations: list[dict] | None = None,
 ) -> tuple[AwsEc2Backend, FakeEc2Client, FakeSsmClient]:
     ec2 = FakeEc2Client(images=images)
-    ssm = FakeSsmClient()
+    ssm = FakeSsmClient(invocations=ssm_invocations)
     config = AwsEc2BackendConfig(
         region="us-west-2",
         subnet_id="subnet-123",
@@ -204,13 +208,57 @@ def test_configure_controller_runtime_writes_model_and_secret_material() -> None
 
     assert metadata["openclaw_runtime_model"] == "openai/gpt-5.4-mini"
     assert metadata["openclaw_runtime_thinking"] == "medium"
-    commands = ssm.sent_commands[-1]["Parameters"]["commands"]
-    rendered = "\n".join(commands)
+    assert metadata["openclaw_gateway_ready"] is True
+    assert metadata["openclaw_model_probe_passed"] is True
+    assert len(metadata["openclaw_runtime_phase_summaries"]) == 4
+    assert len(ssm.sent_commands) == 4
+    rendered = "\n".join(command for entry in ssm.sent_commands for command in entry["Parameters"]["commands"])
     assert '"primary": "openai/gpt-5.4-mini"' in rendered
     assert '"thinkingDefault": "medium"' in rendered
     assert "OPENAI_API_KEY=sk-test" in rendered
     assert "Destructive changes inside the sandbox are intentional and authorized." in rendered
     assert "Do not use exec host=sandbox." in rendered
+    assert "Gateway HTTP response status" in rendered
+    assert "Reply with READY." in rendered
+
+
+def test_configure_controller_runtime_reports_model_probe_failure_category() -> None:
+    backend, _, _ = _backend(
+        ssm_invocations=[
+            {
+                "Status": "Success",
+                "StatusDetails": "Success",
+                "ResponseCode": 0,
+                "StandardOutputContent": "wrote runtime files",
+                "StandardErrorContent": "",
+            },
+            {
+                "Status": "Success",
+                "StatusDetails": "Success",
+                "ResponseCode": 0,
+                "StandardOutputContent": "active (running)\n127.0.0.1:18789",
+                "StandardErrorContent": "",
+            },
+            {
+                "Status": "Success",
+                "StatusDetails": "Success",
+                "ResponseCode": 0,
+                "StandardOutputContent": "Gateway HTTP response status=400",
+                "StandardErrorContent": "",
+            },
+            {
+                "Status": "Failed",
+                "StatusDetails": "Failed",
+                "ResponseCode": 1,
+                "StandardOutputContent": "HTTPError: 401\nAuthenticationError: Invalid API key",
+                "StandardErrorContent": "",
+            },
+        ]
+    )
+    handle = SandboxHandle(handle_id="h1", kind="instance", backend_name="aws_ec2", remote_id="i-123")
+
+    with pytest.raises(RuntimeError, match="during model_probe: category=invalid_api_key"):
+        backend.configure_controller_runtime(handle)
 
 
 def test_clear_controller_runtime_removes_runtime_files() -> None:
