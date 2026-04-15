@@ -31,7 +31,13 @@
     "default_session_key_prefix": "eval-harness",
     "aws_region": "env:EVAL_HARNESS_AWS_REGION",
     "remote_port": 18789,
-    "request_timeout_seconds": 60
+    "request_timeout_seconds": 180,
+    "runtime": {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "thinking": "medium",
+      "api_key_env_var": "EVAL_HARNESS_OPENCLAW_PROVIDER_API_KEY"
+    }
   },
   "planner": {
     "type": "openai_compatible",

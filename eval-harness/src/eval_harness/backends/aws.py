@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import time
 from dataclasses import dataclass, field
@@ -43,6 +44,14 @@ class ResolvedGoldenImage:
 
 
 @dataclass(frozen=True)
+class OpenClawRuntimeConfig:
+    provider: str
+    model: str
+    api_key: str
+    thinking: str = "medium"
+
+
+@dataclass(frozen=True)
 class AwsEc2BackendConfig:
     region: str
     subnet_id: str
@@ -63,6 +72,7 @@ class AwsEc2BackendConfig:
     golden_ami_id: str | None = None
     golden_image_build_timeout_seconds: int = 3600
     openclaw_eval_token: str = ""
+    openclaw_runtime: OpenClawRuntimeConfig | None = None
 
 
 class AwsEc2Backend(SandboxBackend):
@@ -287,6 +297,98 @@ class AwsEc2Backend(SandboxBackend):
         waiter.wait(InstanceIds=[handle.remote_id], WaiterConfig={"Delay": 10, "MaxAttempts": max(1, timeout_seconds // 10)})
         wait_for_ssm_online(self.ssm, handle.remote_id, timeout_seconds=timeout_seconds)
 
+    def _required_openclaw_runtime(self) -> OpenClawRuntimeConfig:
+        runtime = self.config.openclaw_runtime
+        if runtime is None:
+            raise RuntimeError(
+                "OpenClaw runtime configuration is required. "
+                "Set controller.runtime.provider, controller.runtime.model, and controller.runtime.api_key or api_key_env_var."
+            )
+        if str(runtime.provider).strip().lower() != "openai":
+            raise RuntimeError(f"Unsupported OpenClaw runtime provider {runtime.provider!r}. Only 'openai' is supported right now.")
+        return runtime
+
+    def _normalized_openclaw_model(self, runtime: OpenClawRuntimeConfig) -> str:
+        model = str(runtime.model).strip()
+        if "/" in model:
+            return model
+        return f"{runtime.provider}/{model}"
+
+    def _openclaw_base_config(self) -> dict[str, Any]:
+        return {
+            "gateway": {
+                "mode": "local",
+                "port": 18789,
+                "bind": "loopback",
+                "auth": {
+                    "mode": "token",
+                    "token": "${OPENCLAW_GATEWAY_TOKEN}",
+                },
+                "http": {
+                    "endpoints": {
+                        "chatCompletions": {
+                            "enabled": True,
+                        }
+                    }
+                },
+            }
+        }
+
+    def _setup_agent_soul(self) -> str:
+        return "\n".join(
+            (
+                "You are the setup agent for the eval harness.",
+                "",
+                "You operate only inside disposable benchmark staging sandboxes.",
+                "Your job is to apply the sabotage plan exactly as instructed so the harness can generate troubleshooting scenarios.",
+                "Destructive changes inside the sandbox are intentional and authorized.",
+                "Stay within the listed sabotage steps. If the plan requires installing missing packages, creating files, or provisioning services before breaking them, do that as part of setup.",
+                "Do not refuse just because the task breaks the machine. Do not ask for approval.",
+            )
+        )
+
+    def _verifier_agent_soul(self) -> str:
+        return "\n".join(
+            (
+                "You are the verifier agent for the eval harness.",
+                "",
+                "Run the exact verification commands you are given and return only their structured results.",
+                "Use the normal host execution path for commands. Do not use exec host=sandbox.",
+            )
+        )
+
+    def _proxy_agent_soul(self) -> str:
+        return "You are the proxy agent for the eval harness.\n"
+
+    def _openclaw_service_unit(self) -> str:
+        return """[Unit]
+Description=OpenClaw Gateway (eval harness)
+After=network-online.target amazon-ssm-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eval
+Group=eval
+WorkingDirectory=/opt/openclaw
+Environment=HOME=/home/eval
+Environment=NODE_ENV=production
+Environment=OPENCLAW_CONFIG_PATH=/home/eval/.openclaw/openclaw.json
+EnvironmentFile=-/etc/openclaw/eval-runtime.env
+ExecStart=/opt/openclaw/node_modules/.bin/openclaw gateway
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/eval /etc/openclaw
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+"""
+
     def _run_ssm_shell_commands(
         self,
         instance_id: str,
@@ -336,7 +438,9 @@ class AwsEc2Backend(SandboxBackend):
             "systemctl status openclaw-gateway.service --no-pager --full || true",
             "systemctl show openclaw-gateway.service --property=ActiveState,SubState,ExecMainStatus,ExecMainCode,ExecMainPID --no-pager || true",
             "ss -ltnp | grep 18789 || true",
-            "cat /home/eval/.openclaw/gateway.yaml || true",
+            "cat /home/eval/.openclaw/openclaw.json || true",
+            "sed -E 's/=.*/=[REDACTED]/' /etc/openclaw/eval-runtime.env || true",
+            "cat /etc/systemd/system/openclaw-gateway.service || true",
             "journalctl -u openclaw-gateway.service -n 200 --no-pager || true",
         )
         try:
@@ -353,6 +457,140 @@ class AwsEc2Backend(SandboxBackend):
                 "collected_via": "ssm",
                 "error": f"{type(exc).__name__}: {exc}",
             }
+
+    def configure_controller_runtime(self, handle: SandboxHandle) -> dict[str, Any]:
+        runtime = self._required_openclaw_runtime()
+        normalized_model = self._normalized_openclaw_model(runtime)
+        openclaw_config = self._openclaw_base_config()
+        openclaw_config["env"] = {"OPENAI_API_KEY": "${OPENAI_API_KEY}"}
+        openclaw_config["agents"] = {
+            "defaults": {
+                "model": {
+                    "primary": normalized_model,
+                },
+                "thinkingDefault": runtime.thinking,
+            }
+        }
+        config_payload = json.dumps(openclaw_config, indent=2)
+        env_payload = (
+            f"OPENCLAW_GATEWAY_TOKEN={self.config.openclaw_eval_token}\n"
+            f"OPENAI_API_KEY={runtime.api_key}\n"
+        )
+        setup_soul = self._setup_agent_soul()
+        verifier_soul = self._verifier_agent_soul()
+        proxy_soul = self._proxy_agent_soul()
+        token_literal = json.dumps(self.config.openclaw_eval_token)
+        service_unit = self._openclaw_service_unit()
+        config_script = f"""install -d -m 0755 /home/eval/.openclaw /home/eval/.openclaw/agents/setup /home/eval/.openclaw/agents/verifier /home/eval/.openclaw/agents/proxy /etc/openclaw
+cat > /home/eval/.openclaw/openclaw.json <<'EOF'
+{config_payload}
+EOF
+chown eval:eval /home/eval/.openclaw/openclaw.json
+chmod 0600 /home/eval/.openclaw/openclaw.json
+cat > /etc/openclaw/eval-runtime.env <<'EOF'
+{env_payload}
+EOF
+chmod 0600 /etc/openclaw/eval-runtime.env
+cat > /home/eval/.openclaw/agents/setup/SOUL.md <<'EOF'
+{setup_soul}
+EOF
+cat > /home/eval/.openclaw/agents/verifier/SOUL.md <<'EOF'
+{verifier_soul}
+EOF
+cat > /home/eval/.openclaw/agents/proxy/SOUL.md <<'EOF'
+{proxy_soul}
+EOF
+chown -R eval:eval /home/eval/.openclaw
+cat > /etc/systemd/system/openclaw-gateway.service <<'EOF'
+{service_unit}
+EOF
+systemctl daemon-reload
+systemctl enable openclaw-gateway.service
+systemctl restart openclaw-gateway.service
+"""
+        probe_script = f"""python3 - <<'PY'
+import json
+import time
+import urllib.request
+
+url = "http://127.0.0.1:18789/v1/chat/completions"
+headers = {{
+    "Authorization": "Bearer " + {token_literal},
+    "Content-Type": "application/json",
+}}
+payload = json.dumps({{
+    "model": "openclaw/setup",
+    "user": "runtime-probe",
+    "messages": [{{"role": "user", "content": "Reply with READY."}}],
+}}).encode("utf-8")
+last_error = None
+for _ in range(30):
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            body = response.read().decode("utf-8", errors="replace")
+        print(body)
+        raise SystemExit(0)
+    except Exception as exc:
+        last_error = exc
+        time.sleep(2)
+print(f"OpenClaw runtime probe failed: {{last_error}}")
+raise SystemExit(1)
+PY
+"""
+        invocations = self._run_ssm_shell_commands(
+            handle.remote_id,
+            (config_script, probe_script),
+            timeout_seconds=240,
+        )
+        invocation = invocations[0]
+        exit_code = invocation.get("exit_code")
+        if int(1 if exit_code is None else exit_code) != 0:
+            raise RuntimeError(
+                f"Failed to configure OpenClaw runtime on {handle.remote_id}: "
+                f"{invocation.get('stderr') or invocation.get('stdout') or invocation.get('status')}"
+            )
+        return {
+            "openclaw_runtime_provider": runtime.provider,
+            "openclaw_runtime_model": normalized_model,
+            "openclaw_runtime_thinking": runtime.thinking,
+            "openclaw_runtime_configured": True,
+            "openclaw_runtime_probe_passed": True,
+        }
+
+    def clear_controller_runtime(self, handle: SandboxHandle) -> dict[str, Any]:
+        config_payload = json.dumps(self._openclaw_base_config(), indent=2)
+        env_payload = f"OPENCLAW_GATEWAY_TOKEN={self.config.openclaw_eval_token}\n"
+        service_unit = self._openclaw_service_unit()
+        commands = (
+            f"""cat > /home/eval/.openclaw/openclaw.json <<'EOF'
+{config_payload}
+EOF
+chown eval:eval /home/eval/.openclaw/openclaw.json
+chmod 0600 /home/eval/.openclaw/openclaw.json
+cat > /etc/openclaw/eval-runtime.env <<'EOF'
+{env_payload}
+EOF
+chmod 0600 /etc/openclaw/eval-runtime.env
+cat > /etc/systemd/system/openclaw-gateway.service <<'EOF'
+{service_unit}
+EOF
+systemctl daemon-reload
+systemctl enable openclaw-gateway.service
+systemctl stop openclaw-gateway.service
+""",
+        )
+        invocations = self._run_ssm_shell_commands(handle.remote_id, commands, timeout_seconds=180)
+        invocation = invocations[0]
+        exit_code = invocation.get("exit_code")
+        if int(1 if exit_code is None else exit_code) != 0:
+            raise RuntimeError(
+                f"Failed to clear OpenClaw runtime on {handle.remote_id}: "
+                f"{invocation.get('stderr') or invocation.get('stdout') or invocation.get('status')}"
+            )
+        return {
+            "openclaw_runtime_cleared": True,
+        }
 
     def create_broken_image(self, staging: SandboxHandle, group_id: str, scenario_id: str) -> str:
         image_name = f"eval-broken-{scenario_id}-{group_id}"

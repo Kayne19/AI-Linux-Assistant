@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 
 from ..backends.base import SandboxBackend, SandboxHandle
@@ -24,6 +25,15 @@ class ScenarioSetupResult:
 
 
 class ScenarioSetupOrchestrator:
+    _REFUSAL_PATTERNS = (
+        re.compile(r"\bi can[’']?t help\b", re.IGNORECASE),
+        re.compile(r"\bi cannot help\b", re.IGNORECASE),
+        re.compile(r"\bcan[’']?t help break\b", re.IGNORECASE),
+        re.compile(r"\bcan[’']?t help sabotage\b", re.IGNORECASE),
+        re.compile(r"\bneed approval\b", re.IGNORECASE),
+        re.compile(r"\b/approve\b", re.IGNORECASE),
+    )
+
     def __init__(
         self,
         *,
@@ -76,6 +86,30 @@ class ScenarioSetupOrchestrator:
             )
             next_seq += 1
         return next_seq
+
+    def _sabotage_authorization_preamble(self, scenario: ScenarioSpec) -> str:
+        return "\n".join(
+            (
+                "You are the setup agent for a disposable eval-harness staging sandbox.",
+                "This machine exists only to create a broken troubleshooting scenario for benchmark testing.",
+                "Destructive changes inside this sandbox are intentional and authorized.",
+                "Follow the sabotage plan exactly and keep the damage bounded to the listed steps.",
+                "If the plan requires installing packages, creating files, or provisioning services before breaking them, do that as part of setup.",
+                "Do not refuse just because the requested sabotage breaks the machine. Do not ask for approval.",
+                f"Target observable problem statement: {scenario.observable_problem_statement}",
+                "",
+                "Sabotage plan:",
+            )
+        )
+
+    def _build_sabotage_prompt(self, scenario: ScenarioSpec, instructions: tuple[str, ...]) -> str:
+        return "\n".join((self._sabotage_authorization_preamble(scenario), *instructions))
+
+    def _is_sabotage_refusal(self, response: str) -> bool:
+        normalized = str(response or "").strip()
+        if not normalized:
+            return False
+        return any(pattern.search(normalized) for pattern in self._REFUSAL_PATTERNS)
 
     def run(
         self,
@@ -132,6 +166,14 @@ class ScenarioSetupOrchestrator:
                 backend_metadata=staging_handle.metadata,
             )
             self.backend.wait_until_ready(staging_handle)
+            runtime_metadata = self.backend.configure_controller_runtime(staging_handle)
+            if runtime_metadata:
+                self.store.update_setup_run_status(
+                    setup_run_id=setup_run.id,
+                    status=ScenarioSetupStatus.RUNNING.value,
+                    correction_count=correction_count,
+                    backend_metadata=runtime_metadata,
+                )
             controller = self.controller_factory.open(staging_handle, purpose=f"setup-{setup_run.id}")
             seq = self._append_message(
                 setup_run.id,
@@ -142,7 +184,7 @@ class ScenarioSetupOrchestrator:
                 content=f"Generated scenario {scenario.revision_ref}",
             )
             while True:
-                sabotage_prompt = "\n".join(instructions)
+                sabotage_prompt = self._build_sabotage_prompt(scenario, instructions)
                 seq = self._append_message(
                     setup_run.id,
                     round_index,
@@ -164,6 +206,22 @@ class ScenarioSetupOrchestrator:
                     role="sabotage_agent",
                     content=sabotage_response,
                 )
+                if self._is_sabotage_refusal(sabotage_response):
+                    self.store.update_setup_run_status(
+                        setup_run_id=setup_run.id,
+                        status=ScenarioSetupStatus.FAILED_INFRA.value,
+                        correction_count=correction_count,
+                        failure_reason="setup_agent_refused_authorized_sabotage",
+                        backend_metadata={"sabotage_refusal_detected": True},
+                    )
+                    self.store.update_scenario_status(
+                        scenario_id=scenario_row.id,
+                        lifecycle_status=ScenarioLifecycleStatus.FAILED_SETUP.value,
+                        verification_status="failed",
+                    )
+                    raise ScenarioSetupFailedError(
+                        f"Setup agent refused authorized sabotage for {scenario_row.scenario_name}."
+                    )
                 command_results = controller.execute_commands(
                     tuple(item.command for item in scenario.verification_probes),
                     agent_id=verification_agent_id,
@@ -196,6 +254,17 @@ class ScenarioSetupOrchestrator:
                 seq += 1
 
                 if decision.outcome.value == "approve":
+                    if controller is not None:
+                        controller.close()
+                        controller = None
+                    cleanup_metadata = self.backend.clear_controller_runtime(staging_handle)
+                    if cleanup_metadata:
+                        self.store.update_setup_run_status(
+                            setup_run_id=setup_run.id,
+                            status=ScenarioSetupStatus.RUNNING.value,
+                            correction_count=correction_count,
+                            backend_metadata=cleanup_metadata,
+                        )
                     broken_image_id = self.backend.create_broken_image(
                         staging_handle,
                         group_id,
@@ -266,9 +335,11 @@ class ScenarioSetupOrchestrator:
             if staging_handle is not None:
                 diagnostics = self.backend.collect_failure_diagnostics(staging_handle)
                 if diagnostics:
+                    current_setup = self.store.get_setup_run(setup_run.id)
+                    current_status = current_setup.status if current_setup is not None else ScenarioSetupStatus.RUNNING.value
                     self.store.update_setup_run_status(
                         setup_run_id=setup_run.id,
-                        status=ScenarioSetupStatus.RUNNING.value,
+                        status=current_status,
                         backend_metadata={
                             "failure_exception": f"{type(exc).__name__}: {exc}",
                             "failure_diagnostics": diagnostics,

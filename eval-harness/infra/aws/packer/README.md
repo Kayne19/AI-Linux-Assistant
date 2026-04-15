@@ -18,6 +18,8 @@ The harness uses these assets in two ways:
 - build a preinstalled OpenClaw bundle on the machine running Packer and upload that bundle to the builder instead of resolving OpenClaw live inside the EC2 instance
 - bind the gateway to loopback only on port `18789`
 - bake three named agents: `setup`, `verifier`, and `proxy`
+- bake generic agent prompts only; scenario-specific prerequisites such as installing nginx remain the planner/setup agent's job during staging sabotage
+- leave provider/model credentials out of the AMI itself; the harness injects them at runtime before use
 - require an IAM instance profile with `AmazonSSMManagedInstanceCore`
 
 ## Auto-Build Inputs
@@ -65,3 +67,12 @@ packer build \
 ```
 
 The resulting AMI will be discoverable by the harness through its tags; you do not need to copy the AMI id back into the harness config.
+
+## Runtime Model Config
+
+The golden AMI only bakes the OpenClaw gateway and eval agents. The harness injects the backing model configuration at runtime:
+- `/home/eval/.openclaw/openclaw.json` for the default `provider/model`
+- `/etc/openclaw/eval-runtime.env` for provider secrets such as `OPENAI_API_KEY`
+- refreshed `SOUL.md` files for `setup`, `verifier`, and `proxy` so cached AMIs still receive the current sandbox-sabotage and host-exec instructions
+
+For v1 the harness supports `controller.runtime.provider = "openai"`, a single model string such as `gpt-5.4-mini`, and `controller.runtime.thinking`, for example `medium`.

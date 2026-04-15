@@ -11,3 +11,7 @@ def test_aws_docs_reference_canonical_packer_surface() -> None:
     assert "packer-ami-openclaw" not in packer_readme
     assert "controller.remote_port" in harness_readme
     assert "18789" in harness_readme
+    assert "controller.runtime" in harness_readme
+    assert "gpt-5.4-mini" in packer_readme
+    assert "must not refuse bounded sabotage" in harness_readme
+    assert "cached AMIs still receive the current sandbox-sabotage" in packer_readme

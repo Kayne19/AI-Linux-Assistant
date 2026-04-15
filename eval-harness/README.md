@@ -13,14 +13,18 @@ Golden images are now target-image driven:
 - scenarios name a `target_image`
 - the AWS backend resolves that alias to the newest tagged golden AMI
 - if the AMI is missing, `verify-scenario` auto-builds it with Packer and prints build progress to `stderr`
+- before the first OpenClaw request on staging or a benchmark clone, the backend injects runtime model/provider config and probes the local chat path
+- before the verified broken-image snapshot is created, the backend removes the injected provider secret from staging so it is not baked into the transient AMI
 - if staging setup fails after launch, the harness captures backend diagnostics before teardown so setup-run metadata includes the failure context
 
 ## Methodology
 
 V1 benchmark flow:
 - planner LLM produces the troubleshooting scenario
-- planner must define both sabotage and objective verification procedures
+- planner must define both sabotage and objective verification procedures, including any prerequisite installation or provisioning needed to create the failure
 - OpenClaw Agent A applies sabotage on staging and runs the planner’s probes
+- the setup agent is explicitly told it is operating inside a disposable benchmark sandbox and must not refuse bounded sabotage on generic safety grounds
+- the verifier is explicitly told to use the normal host execution path and not `exec host=sandbox`
 - planner reviews raw probe output and either approves or issues a correction
 - if the planner has to correct sabotage twice, the setup run fails
 - only planner-approved broken environments are cloned
@@ -206,3 +210,7 @@ For the AWS backend:
 - `backend.target_images` maps each supported alias to the canonical Packer template directory and distro var-file
 - `backend.golden_ami_id` remains a legacy single-image override only; prefer tagged target images
 - `controller.remote_port` should match the baked OpenClaw gateway port, `18789`
+- `controller.request_timeout_seconds` controls how long the harness waits for an OpenClaw agent turn; `180` is the current default/example value
+- `controller.runtime` configures the backing OpenClaw model route at runtime
+- `controller.runtime.thinking` sets the OpenClaw default thinking level, for example `medium`
+- `controller.runtime.api_key_env_var` is the recommended way to point the harness at the provider API key without storing the secret in JSON

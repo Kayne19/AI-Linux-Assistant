@@ -54,3 +54,11 @@ class SandboxBackend(ABC):
     def collect_failure_diagnostics(self, handle: SandboxHandle) -> dict[str, Any]:
         del handle
         return {}
+
+    def configure_controller_runtime(self, handle: SandboxHandle) -> dict[str, Any]:
+        del handle
+        return {}
+
+    def clear_controller_runtime(self, handle: SandboxHandle) -> dict[str, Any]:
+        del handle
+        return {}

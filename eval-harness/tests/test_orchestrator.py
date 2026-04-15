@@ -155,6 +155,8 @@ class FakeBackend(SandboxBackend):
     requested_target_images: list[str] = field(default_factory=list)
     diagnostics: dict = field(default_factory=lambda: {"service": "ok"})
     collected_failure_handles: list[str] = field(default_factory=list)
+    configured_runtime_handles: list[str] = field(default_factory=list)
+    cleared_runtime_handles: list[str] = field(default_factory=list)
 
     def launch_staging(self, group_id: str, scenario_id: str, *, target_image: str | None = None) -> SandboxHandle:
         self.requested_target_images.append(str(target_image or ""))
@@ -210,6 +212,20 @@ class FakeBackend(SandboxBackend):
     def collect_failure_diagnostics(self, handle: SandboxHandle) -> dict:
         self.collected_failure_handles.append(handle.remote_id)
         return dict(self.diagnostics)
+
+    def configure_controller_runtime(self, handle: SandboxHandle) -> dict:
+        self.configured_runtime_handles.append(handle.remote_id)
+        return {
+            "openclaw_runtime_provider": "openai",
+            "openclaw_runtime_model": "openai/gpt-5.4-mini",
+            "openclaw_runtime_thinking": "medium",
+            "openclaw_runtime_configured": True,
+            "openclaw_runtime_probe_passed": True,
+        }
+
+    def clear_controller_runtime(self, handle: SandboxHandle) -> dict:
+        self.cleared_runtime_handles.append(handle.remote_id)
+        return {"openclaw_runtime_cleared": True}
 
 
 @dataclass
@@ -335,6 +351,8 @@ def test_setup_orchestrator_kills_after_second_planner_correction() -> None:
     assert verified_revision is None
     assert backend.created_broken_images == []
     assert backend.requested_target_images == ["ami-golden"]
+    assert backend.configured_runtime_handles == ["staging-nginx-recovery"]
+    assert backend.cleared_runtime_handles == []
     assert planner.review_calls == [(0, 0), (1, 1)]
     assert "staging-nginx-recovery" in backend.destroyed_handles
     with store._session_factory() as session:
@@ -367,8 +385,57 @@ def test_setup_orchestrator_collects_failure_diagnostics_before_teardown() -> No
         "journal": "gateway crashed",
         "status": "failed",
     }
+    assert failed_setup_run.backend_metadata_json["openclaw_runtime_configured"] is True
     assert backend.collected_failure_handles == ["staging-nginx-recovery"]
     assert "staging-nginx-recovery" in backend.destroyed_handles
+
+
+def test_setup_orchestrator_authorizes_sandbox_sabotage_in_prompt() -> None:
+    store = _build_store()
+    backend = FakeBackend()
+    controller = FakeController(send_responses=["applied sabotage"])
+    orchestrator = ScenarioSetupOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([controller]),
+        planner=FakePlanner(),
+        store=store,
+    )
+
+    orchestrator.run(
+        PlannerScenarioRequest(planning_brief="break nginx", target_image="ami-golden"),
+        group_id="group-1",
+    )
+
+    sabotage_prompt = controller.sent_messages[0]
+    assert "disposable eval-harness staging sandbox" in sabotage_prompt
+    assert "Destructive changes inside this sandbox are intentional and authorized." in sabotage_prompt
+    assert "If the plan requires installing packages" in sabotage_prompt
+    assert "Do not refuse just because the requested sabotage breaks the machine." in sabotage_prompt
+
+
+def test_setup_orchestrator_fails_fast_when_setup_agent_refuses_authorized_sabotage() -> None:
+    store = _build_store()
+    backend = FakeBackend(diagnostics={"journal": "gateway healthy", "status": "running"})
+    controller = FakeController(send_responses=["I can't help break the machine in that way."])
+    orchestrator = ScenarioSetupOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([controller]),
+        planner=FakePlanner(),
+        store=store,
+    )
+
+    with pytest.raises(ScenarioSetupFailedError, match="refused authorized sabotage"):
+        orchestrator.run(
+            PlannerScenarioRequest(planning_brief="break nginx", target_image="ami-golden"),
+            group_id="group-1",
+        )
+
+    with store._session_factory() as session:
+        failed_setup_run = session.scalars(select(ScenarioSetupRunRecord)).one()
+    assert failed_setup_run.status == "failed_infra"
+    assert failed_setup_run.failure_reason == "setup_agent_refused_authorized_sabotage"
+    assert failed_setup_run.backend_metadata_json["sabotage_refusal_detected"] is True
+    assert failed_setup_run.backend_metadata_json["failure_exception"].startswith("ScenarioSetupFailedError:")
 
 
 def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair() -> None:
@@ -440,6 +507,28 @@ def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair()
     assert evaluation_runs[0].repair_success is True
     assert evaluation_runs[0].status == "completed"
     assert "bad unit override" not in clone_controller.sent_messages[0].lower()
+    assert backend.configured_runtime_handles == ["clone-system-a"]
+
+
+def test_setup_orchestrator_clears_runtime_before_creating_broken_image() -> None:
+    store = _build_store()
+    backend = FakeBackend()
+    controller = FakeController(send_responses=["applied sabotage"])
+    orchestrator = ScenarioSetupOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([controller]),
+        planner=FakePlanner(),
+        store=store,
+    )
+
+    result = orchestrator.run(
+        PlannerScenarioRequest(planning_brief="break nginx", target_image="ami-golden"),
+        group_id="group-1",
+    )
+
+    assert result.broken_image_id == "broken-group-1"
+    assert backend.configured_runtime_handles == ["staging-nginx-recovery"]
+    assert backend.cleared_runtime_handles == ["staging-nginx-recovery"]
 
 
 def test_judge_job_blinds_subject_identity() -> None:

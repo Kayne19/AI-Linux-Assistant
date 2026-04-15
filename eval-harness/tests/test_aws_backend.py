@@ -12,8 +12,9 @@ if "eval_harness" not in sys.modules:
     namespace_pkg.__path__ = [str(SRC_EVAL_HARNESS)]  # type: ignore[attr-defined]
     sys.modules["eval_harness"] = namespace_pkg
 
-from eval_harness.backends.aws import AwsEc2Backend, AwsEc2BackendConfig, AwsTargetImageConfig
+from eval_harness.backends.aws import AwsEc2Backend, AwsEc2BackendConfig, AwsTargetImageConfig, OpenClawRuntimeConfig
 from eval_harness.backends.aws_packer import AwsPackerBuildResult
+from eval_harness.backends.base import SandboxHandle
 
 
 class FakeWaiter:
@@ -62,7 +63,22 @@ class FakeEc2Client:
 
 
 class FakeSsmClient:
-    pass
+    def __init__(self):
+        self.sent_commands: list[dict] = []
+
+    def send_command(self, **kwargs):
+        self.sent_commands.append(dict(kwargs))
+        return {"Command": {"CommandId": "cmd-123"}}
+
+    def get_command_invocation(self, **kwargs):
+        del kwargs
+        return {
+            "Status": "Success",
+            "StatusDetails": "Success",
+            "ResponseCode": 0,
+            "StandardOutputContent": "ok",
+            "StandardErrorContent": "",
+        }
 
 
 def _target_image_config() -> AwsTargetImageConfig:
@@ -78,8 +94,9 @@ def _backend(
     images: list[dict] | None = None,
     golden_ami_id: str | None = None,
     builder=None,
-) -> tuple[AwsEc2Backend, FakeEc2Client]:
+) -> tuple[AwsEc2Backend, FakeEc2Client, FakeSsmClient]:
     ec2 = FakeEc2Client(images=images)
+    ssm = FakeSsmClient()
     config = AwsEc2BackendConfig(
         region="us-west-2",
         subnet_id="subnet-123",
@@ -89,18 +106,24 @@ def _backend(
         target_images={"debian-12-openclaw-golden": _target_image_config()},
         golden_ami_id=golden_ami_id,
         openclaw_eval_token="token-123",
+        openclaw_runtime=OpenClawRuntimeConfig(
+            provider="openai",
+            model="gpt-5.4-mini",
+            api_key="sk-test",
+            thinking="medium",
+        ),
     )
     backend = AwsEc2Backend(
         config,
         ec2_client=ec2,
-        ssm_client=FakeSsmClient(),
+        ssm_client=ssm,
         golden_image_builder=builder or (lambda request: AwsPackerBuildResult(image_id="ami-built")),
     )
-    return backend, ec2
+    return backend, ec2, ssm
 
 
 def test_launch_staging_uses_existing_tagged_golden_ami() -> None:
-    backend, ec2 = _backend(
+    backend, ec2, _ = _backend(
         images=[
             {
                 "ImageId": "ami-existing",
@@ -120,7 +143,7 @@ def test_launch_staging_uses_existing_tagged_golden_ami() -> None:
 
 
 def test_launch_staging_uses_root_volume_size_from_image_when_larger_than_default() -> None:
-    backend, ec2 = _backend(
+    backend, ec2, _ = _backend(
         images=[
             {
                 "ImageId": "ami-existing",
@@ -145,7 +168,7 @@ def test_launch_staging_builds_missing_golden_ami() -> None:
         builder_calls.append(request)
         return AwsPackerBuildResult(image_id="ami-built")
 
-    backend, ec2 = _backend(builder=_builder)
+    backend, ec2, _ = _backend(builder=_builder)
 
     handle = backend.launch_staging("group-1", "scenario-1", target_image="debian-12-openclaw-golden")
 
@@ -157,17 +180,48 @@ def test_launch_staging_builds_missing_golden_ami() -> None:
 
 
 def test_launch_staging_rejects_unsupported_target_image() -> None:
-    backend, _ = _backend()
+    backend, _, _ = _backend()
 
     with pytest.raises(ValueError, match="Unsupported target image"):
         backend.launch_staging("group-1", "scenario-1", target_image="ubuntu-2404-openclaw-golden")
 
 
 def test_launch_staging_uses_legacy_default_golden_ami() -> None:
-    backend, ec2 = _backend(golden_ami_id="ami-legacy")
+    backend, ec2, _ = _backend(golden_ami_id="ami-legacy")
 
     handle = backend.launch_staging("group-1", "scenario-1", target_image="debian-12-openclaw-golden")
 
     assert ec2.launched_images == ["ami-legacy"]
     assert handle.metadata["resolved_golden_ami_id"] == "ami-legacy"
     assert handle.metadata["golden_image_build_source"] == "legacy_config"
+
+
+def test_configure_controller_runtime_writes_model_and_secret_material() -> None:
+    backend, _, ssm = _backend()
+    handle = SandboxHandle(handle_id="h1", kind="instance", backend_name="aws_ec2", remote_id="i-123")
+
+    metadata = backend.configure_controller_runtime(handle)
+
+    assert metadata["openclaw_runtime_model"] == "openai/gpt-5.4-mini"
+    assert metadata["openclaw_runtime_thinking"] == "medium"
+    commands = ssm.sent_commands[-1]["Parameters"]["commands"]
+    rendered = "\n".join(commands)
+    assert '"primary": "openai/gpt-5.4-mini"' in rendered
+    assert '"thinkingDefault": "medium"' in rendered
+    assert "OPENAI_API_KEY=sk-test" in rendered
+    assert "Destructive changes inside the sandbox are intentional and authorized." in rendered
+    assert "Do not use exec host=sandbox." in rendered
+
+
+def test_clear_controller_runtime_removes_runtime_files() -> None:
+    backend, _, ssm = _backend()
+    handle = SandboxHandle(handle_id="h1", kind="instance", backend_name="aws_ec2", remote_id="i-123")
+
+    metadata = backend.clear_controller_runtime(handle)
+
+    assert metadata["openclaw_runtime_cleared"] is True
+    commands = ssm.sent_commands[-1]["Parameters"]["commands"]
+    rendered = commands[0]
+    assert '"port": 18789' in rendered
+    assert 'OPENCLAW_GATEWAY_TOKEN=token-123' in rendered
+    assert 'systemctl stop openclaw-gateway.service' in rendered

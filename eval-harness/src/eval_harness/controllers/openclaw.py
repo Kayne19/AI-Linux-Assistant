@@ -32,14 +32,14 @@ class OpenClawControllerConfig:
     base_url: str
     token: str
     default_session_key: str
-    request_timeout_seconds: int = 60
+    request_timeout_seconds: int = 180
 
 
 @dataclass(frozen=True)
 class OpenClawControllerFactoryConfig:
     token: str
     default_session_key_prefix: str
-    request_timeout_seconds: int = 60
+    request_timeout_seconds: int = 180
     fixed_base_url: str | None = None
     aws_region: str | None = None
     remote_port: int = 18789
@@ -83,6 +83,8 @@ class OpenClawController(SandboxController):
     def _command_prompt(self, command: str) -> str:
         return (
             "Run the exact shell command below in the sandbox and return only the structured result.\n"
+            "Use the normal host execution path. Do not use exec host=sandbox.\n"
+            "If you need to choose an execution host, use host=auto or host=gateway.\n"
             f"Format exactly as:\n{_STDOUT_BEGIN}\n<stdout>\n{_STDOUT_END}\n"
             f"{_STDERR_BEGIN}\n<stderr>\n{_STDERR_END}\n"
             f"{_EXIT_CODE_PREFIX}<integer>\n\n"
@@ -125,11 +127,17 @@ class OpenClawController(SandboxController):
             "user": session_key or self.config.default_session_key,
             "messages": [{"role": "user", "content": message}],
         }
-        response = self.session.post(
-            f"{self.config.base_url.rstrip('/')}/v1/chat/completions",
-            json=payload,
-            timeout=self.config.request_timeout_seconds,
-        )
+        try:
+            response = self.session.post(
+                f"{self.config.base_url.rstrip('/')}/v1/chat/completions",
+                json=payload,
+                timeout=self.config.request_timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                "OpenClaw request failed "
+                f"(base_url={self.config.base_url!r}, agent_id={agent_id!r}, session_key={(session_key or self.config.default_session_key)!r}): {exc}"
+            ) from exc
         response.raise_for_status()
         return self._extract_text(response.json())
 

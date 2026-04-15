@@ -9,7 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .adapters.ai_linux_assistant_http import AILinuxAssistantHttpAdapter, AILinuxAssistantHttpConfig
 from .artifacts import ArtifactStore, PostgresArtifactExporter
-from .backends.aws import AwsEc2Backend, AwsEc2BackendConfig, AwsTargetImageConfig
+from .backends.aws import AwsEc2Backend, AwsEc2BackendConfig, AwsTargetImageConfig, OpenClawRuntimeConfig
 from .controllers.openclaw import OpenClawControllerFactory, OpenClawControllerFactoryConfig
 from .judges.openai_compatible import OpenAICompatibleBlindJudge, OpenAICompatibleBlindJudgeConfig
 from .orchestration import BenchmarkRunOrchestrator, JudgeJobOrchestrator, ScenarioSetupOrchestrator
@@ -115,6 +115,31 @@ def _aws_backend_from_config(config: dict[str, Any], *, controller_config: dict[
             node_major_version=str(item.get("node_major_version", "24")),
             packer_bin=str(item.get("packer_bin", "packer")),
         )
+    runtime_payload = dict((controller_config or {}).get("runtime", {}) or {})
+    openclaw_runtime: OpenClawRuntimeConfig | None = None
+    if runtime_payload:
+        provider = str(runtime_payload.get("provider", "")).strip()
+        model = str(runtime_payload.get("model", "")).strip()
+        api_key = str(runtime_payload.get("api_key", "")).strip()
+        api_key_env_var = str(runtime_payload.get("api_key_env_var", "")).strip()
+        if api_key_env_var and not api_key:
+            api_key = str(os.getenv(api_key_env_var, "")).strip()
+            if not api_key:
+                raise ValueError(f"Environment variable {api_key_env_var} is not set.")
+        if not provider:
+            raise ValueError("controller.runtime.provider is required when controller.runtime is configured.")
+        if not model:
+            raise ValueError("controller.runtime.model is required when controller.runtime is configured.")
+        if not api_key:
+            raise ValueError(
+                "controller.runtime.api_key or controller.runtime.api_key_env_var is required when controller.runtime is configured."
+            )
+        openclaw_runtime = OpenClawRuntimeConfig(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            thinking=str(runtime_payload.get("thinking", "medium")).strip() or "medium",
+        )
     backend_config = AwsEc2BackendConfig(
         region=str(config["region"]),
         subnet_id=str(config["subnet_id"]),
@@ -135,6 +160,7 @@ def _aws_backend_from_config(config: dict[str, Any], *, controller_config: dict[
         golden_ami_id=(str(config["golden_ami_id"]).strip() if config.get("golden_ami_id") else None),
         golden_image_build_timeout_seconds=int(config.get("golden_image_build_timeout_seconds", 3600)),
         openclaw_eval_token=(str((controller_config or {}).get("token", "")).strip()),
+        openclaw_runtime=openclaw_runtime,
     )
     return AwsEc2Backend(backend_config)
 
@@ -145,7 +171,7 @@ def _controller_factory_from_config(config: dict[str, Any]) -> OpenClawControlle
     factory_config = OpenClawControllerFactoryConfig(
         token=str(config["token"]),
         default_session_key_prefix=str(config.get("default_session_key_prefix", "eval-harness")),
-        request_timeout_seconds=int(config.get("request_timeout_seconds", 60)),
+        request_timeout_seconds=int(config.get("request_timeout_seconds", 180)),
         fixed_base_url=(str(config["fixed_base_url"]).strip() if config.get("fixed_base_url") else None),
         aws_region=(str(config["aws_region"]).strip() if config.get("aws_region") else None),
         remote_port=int(config.get("remote_port", 18789)),

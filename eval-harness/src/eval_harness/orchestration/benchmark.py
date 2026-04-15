@@ -78,6 +78,7 @@ class BenchmarkRunOrchestrator:
         transcript_pairs: list[tuple[str, str]] = []
         try:
             self.backend.wait_until_ready(clone_handle)
+            self.backend.configure_controller_runtime(clone_handle)
             controller = self.controller_factory.open(clone_handle, purpose=f"evaluation-{evaluation_run_id}")
             subject_spec = subject_spec_from_record(subject_row)
             session = adapter.create_session(benchmark_run_id, subject_spec)
