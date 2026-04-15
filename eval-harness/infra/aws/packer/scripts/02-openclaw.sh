@@ -4,9 +4,25 @@ set -euo pipefail
 echo ">>> [02] Installing OpenClaw ${OPENCLAW_VERSION}"
 
 install_dir="/opt/openclaw"
+install_log="/var/log/openclaw-install.log"
 mkdir -p "${install_dir}"
 cd "${install_dir}"
-npm install --omit=dev --no-package-lock "openclaw@${OPENCLAW_VERSION}"
+
+echo ">>> [02] Writing install log to ${install_log}"
+export npm_config_audit=false
+export npm_config_fund=false
+export npm_config_loglevel=info
+
+install_status=0
+timeout --signal=TERM 20m env OPENCLAW_DISABLE_BUNDLED_PLUGIN_POSTINSTALL=1 \
+  npm install --omit=dev --no-package-lock "openclaw@${OPENCLAW_VERSION}" 2>&1 | tee "${install_log}" || install_status=$?
+if [[ "${install_status}" -ne 0 ]]; then
+  echo ">>> [02] OpenClaw install failed with status ${install_status}" >&2
+  tail -n 200 "${install_log}" >&2 || true
+  exit "${install_status}"
+fi
+
+/opt/openclaw/node_modules/.bin/openclaw --version
 
 mkdir -p /home/eval/.openclaw/agents/setup
 mkdir -p /home/eval/.openclaw/agents/verifier
