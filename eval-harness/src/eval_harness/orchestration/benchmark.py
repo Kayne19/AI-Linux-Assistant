@@ -12,6 +12,33 @@ from ..models import EvaluationRunStatus
 from ..persistence.store import EvalHarnessStore
 
 _PROXY_APPROVAL_RE = re.compile(r"/approve\s+[a-f0-9]+", re.IGNORECASE)
+_HOST_RUN_RE = re.compile(r"```host-run\s*\n(.*?)```", re.DOTALL)
+
+
+def _parse_host_run_commands(reply: str) -> tuple[str, ...]:
+    commands = []
+    for match in _HOST_RUN_RE.finditer(reply):
+        cmd = match.group(1).strip()
+        if cmd:
+            commands.append(cmd)
+        if len(commands) >= 3:
+            break
+    return tuple(commands)
+
+
+def _render_command_outputs(command_results: tuple) -> str:
+    parts = []
+    for result in command_results:
+        stdout = (result.stdout or "").strip()[:2000]
+        stderr = (result.stderr or "").strip()[:2000]
+        exit_code = result.exit_code
+        parts.append(
+            f"$ {result.command}\n"
+            + (f"{stdout}\n" if stdout else "")
+            + (f"{stderr}\n" if stderr else "")
+            + f"[exit {exit_code}]"
+        )
+    return "\n\n".join(parts)
 
 
 def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
@@ -118,6 +145,7 @@ class BenchmarkRunOrchestrator:
             session.seed_context(scenario.context_seed)
 
             user_message = scenario.observable_problem_statement
+            proxy_exec_calls_remaining = subject_spec.max_turns * 3
             for _ in range(subject_spec.max_turns):
                 self.store.append_evaluation_event(
                     evaluation_run_id=evaluation_run_id,
@@ -214,6 +242,57 @@ class BenchmarkRunOrchestrator:
                         )
                         seq += 1
                         continue
+
+                if user_message.strip() == "REPAIR_CONFIRMED":
+                    repair_results = controller.execute_commands(
+                        tuple(item.command for item in scenario.repair_checks),
+                        agent_id=verification_agent_id,
+                        session_key=f"{evaluation_run_id}-repair",
+                    )
+                    for result in repair_results:
+                        self.store.append_evaluation_event(
+                            evaluation_run_id=evaluation_run_id,
+                            seq=seq,
+                            actor_role="controller",
+                            event_kind="command_result",
+                            payload=result.to_dict(),
+                        )
+                        seq += 1
+                    session_metadata = session.close()
+                    session = None
+                    repair_success = self._repair_checks_pass(scenario, repair_results)
+                    self.store.update_evaluation_run_status(
+                        evaluation_run_id=evaluation_run_id,
+                        status=EvaluationRunStatus.COMPLETED.value if repair_success else EvaluationRunStatus.FAILED.value,
+                        repair_success=repair_success,
+                        resolution_result=self._repair_result_payload(scenario, repair_results),
+                        adapter_session_metadata=session_metadata,
+                        finished=True,
+                    )
+                    return
+
+                # Execute any HOST_RUN commands the proxy requested
+                host_run_commands = _parse_host_run_commands(user_message)
+                if host_run_commands and proxy_exec_calls_remaining > 0:
+                    n = min(len(host_run_commands), proxy_exec_calls_remaining)
+                    commands_to_run = host_run_commands[:n]
+                    proxy_exec_calls_remaining -= n
+                    proxy_exec_results = controller.execute_commands(
+                        commands_to_run,
+                        agent_id="proxy-exec",
+                        session_key=f"{evaluation_run_id}-proxy-exec",
+                    )
+                    for exec_result in proxy_exec_results:
+                        self.store.append_evaluation_event(
+                            evaluation_run_id=evaluation_run_id,
+                            seq=seq,
+                            actor_role="user_proxy_exec",
+                            event_kind="command_result",
+                            payload=exec_result.to_dict(),
+                        )
+                        seq += 1
+                    # Append real output to the user message that goes to the subject
+                    user_message = user_message + "\n\n" + _render_command_outputs(proxy_exec_results)
 
             session_metadata = session.close()
             session = None
