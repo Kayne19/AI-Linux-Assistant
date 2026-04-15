@@ -100,12 +100,14 @@ def test_generate_scenario_raises_if_repair_is_still_invalid() -> None:
         planner.generate_scenario(_request())
 
 
-def test_generate_scenario_normalizes_nginx_test_probe_path() -> None:
+def test_generate_scenario_does_not_rewrite_nginx_probe_command() -> None:
+    # nginx-specific rewrites were removed; the command must be stored verbatim.
+    original_command = "bash -lc 'nginx -t >/tmp/nginx-test.out 2>&1; rc=$?; cat /tmp/nginx-test.out; exit $rc'"
     payload = _valid_payload()
     payload["verification_probes"] = [
         {
             "name": "nginx-config-broken",
-            "command": "bash -lc 'nginx -t >/tmp/nginx-test.out 2>&1; rc=$?; cat /tmp/nginx-test.out; exit $rc'",
+            "command": original_command,
             "expected_exit_code": 1,
             "expected_substrings": ["emerg", "/etc/nginx/"],
         }
@@ -114,6 +116,4 @@ def test_generate_scenario_normalizes_nginx_test_probe_path() -> None:
 
     scenario = planner.generate_scenario(_request())
 
-    assert "sudo -n /usr/sbin/nginx -t" in scenario.verification_probes[0].command
-    assert "cat /tmp/nginx-test.out" in scenario.verification_probes[0].command
-    assert "2>/tmp/nginx-test.err" not in scenario.verification_probes[0].command
+    assert scenario.verification_probes[0].command == original_command
