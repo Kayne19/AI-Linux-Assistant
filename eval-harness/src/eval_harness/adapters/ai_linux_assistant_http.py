@@ -11,14 +11,6 @@ from .base import AdapterError, SubjectAdapter, SubjectSession
 from ..models import AdapterTurnResult, RunEvent, RunEventType, SubjectSpec, TurnSeed
 
 TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
-_BENCHMARK_EXECUTION_PREAMBLE = (
-    "You are operating inside an automated troubleshooting benchmark. "
-    "Treat the current machine and tool access as the source of truth. "
-    "All commands needed to solve the benchmark are pre-approved. "
-    "If tools are available, act directly instead of asking the user to approve commands or paste their output. "
-    "Do not expose internal command ids, approval tokens, or tool-routing details. "
-    "Do not repeat the user's request verbatim unless doing so is necessary to explain the fix."
-)
 
 
 def _extract_message_text(message_payload: dict[str, Any]) -> str:
@@ -208,24 +200,19 @@ class AILinuxAssistantHttpSession(SubjectSession):
         self.seed_strategy = "message_preamble" if self.pending_context_seed else "none"
 
     def _message_with_seed(self, message: str) -> str:
-        parts = [_BENCHMARK_EXECUTION_PREAMBLE]
         if self.pending_context_seed:
             rendered_turns = "\n".join(f"{turn.role}: {turn.content}" for turn in self.pending_context_seed)
             self.pending_context_seed = ()
-            parts.extend(
+            return "\n\n".join(
                 [
                     "Use this benchmark context as prior conversation state. "
                     "Do not repeat it back unless it matters to solving the task.",
                     rendered_turns,
+                    "Current user request:",
+                    message,
                 ]
             )
-        parts.extend(
-            [
-                "Current user request:",
-                message,
-            ]
-        )
-        return "\n\n".join(parts)
+        return message
 
     def _run_event_from_api(self, payload: dict[str, Any]) -> RunEvent:
         event_type = RunEventType(str(payload.get("type", RunEventType.EVENT.value)))

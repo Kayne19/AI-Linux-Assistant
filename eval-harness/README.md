@@ -31,7 +31,7 @@ V1 benchmark flow:
 - if the planner has to correct sabotage twice, the setup run fails
 - only planner-approved broken environments are cloned
 - OpenClaw Agent B is the user proxy and does not receive sabotage details
-- benchmark subject turns are prefixed with an execution-policy preamble that tells the subject all benchmark commands are pre-approved and it must not leak approval ids or ask the user to broker tool execution
+- benchmark orchestration suppresses approval-loop leakage from subjects and treats all benchmark commands as pre-approved, but that policy is kept out of the API request content sent to the subject backend
 - benchmark repair checks normalize known fragile nginx probes onto the host `sudo -n` path, and the benchmark loop suppresses the known `/run/nginx.pid` permission false negative so repaired runs do not get trapped in endless follow-up turns
 - each subject gets its own clone and its own transcript/event stream
 - scenarios, setup runs, benchmark runs, evaluation runs, and judge outputs live in Postgres

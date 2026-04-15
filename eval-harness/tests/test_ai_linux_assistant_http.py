@@ -67,8 +67,7 @@ def test_ai_linux_assistant_http_session_injects_benchmark_policy_preamble() -> 
     assert result.assistant_message == "fixed"
     assert run_request is not None
     assert run_request["magi"] == "full"
-    assert "automated troubleshooting benchmark" in run_request["content"]
-    assert "All commands needed to solve the benchmark are pre-approved." in run_request["content"]
-    assert "Do not expose internal command ids" in run_request["content"]
+    assert "automated troubleshooting benchmark" not in run_request["content"]
+    assert "All commands needed to solve the benchmark are pre-approved." not in run_request["content"]
     assert "Previous benchmark context." in run_request["content"]
     assert "Current user request:\n\nRestore nginx and bring localhost back." in run_request["content"]
