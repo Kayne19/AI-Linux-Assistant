@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
 from pathlib import Path
+import re
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -34,6 +35,60 @@ def to_primitive(value: Any) -> Any:
 class VerificationMatchMode(str, Enum):
     ALL = "all"
     ANY = "any"
+
+
+_SYSTEMCTL_IS_ACTIVE_RE = re.compile(r"^systemctl is-active\s+([A-Za-z0-9@_.:-]+)(?:\s*\|\|\s*true)?$")
+_STATEFUL_SYSTEMCTL_STATES = frozenset({"active", "inactive", "failed", "activating", "deactivating", "reloading"})
+
+
+def _normalize_verification_shape(
+    *,
+    command: str,
+    expected_substrings: tuple[str, ...],
+    expected_exit_code: int | None,
+    match_mode: VerificationMatchMode,
+) -> tuple[str, tuple[str, ...], int | None, VerificationMatchMode]:
+    normalized_command = str(command).strip()
+    normalized_expected_substrings = tuple(item.strip() for item in expected_substrings if item.strip())
+    normalized_expected_exit_code = expected_exit_code
+    normalized_match_mode = match_mode
+
+    systemctl_match = _SYSTEMCTL_IS_ACTIVE_RE.match(normalized_command)
+    if systemctl_match is not None:
+        unit = systemctl_match.group(1)
+        normalized_command = (
+            "bash -lc '"
+            f"state=$(systemctl show -p ActiveState --value {unit} 2>/dev/null || true); "
+            'printf "%s\\n" "$state"; '
+            f"systemctl is-active {unit} >/dev/null 2>&1; "
+            "exit $?'"
+        )
+        if (
+            normalized_match_mode == VerificationMatchMode.ALL
+            and len(normalized_expected_substrings) > 1
+            and {item.lower() for item in normalized_expected_substrings}.issubset(_STATEFUL_SYSTEMCTL_STATES)
+        ):
+            normalized_match_mode = VerificationMatchMode.ANY
+
+    if "nginx -t" in normalized_command and "/usr/sbin/nginx -t" not in normalized_command:
+        normalized_command = re.sub(r"\bnginx -t\b", "/usr/sbin/nginx -t", normalized_command)
+    if (
+        "/usr/sbin/nginx -t" in normalized_command
+        and ">/tmp/nginx-test.out 2>/tmp/nginx-test.err" in normalized_command
+        and "cat /tmp/nginx-test.err" in normalized_command
+    ):
+        normalized_command = normalized_command.replace(
+            ">/tmp/nginx-test.out 2>/tmp/nginx-test.err",
+            ">/tmp/nginx-test.out 2>&1",
+        )
+        normalized_command = normalized_command.replace("cat /tmp/nginx-test.err", "cat /tmp/nginx-test.out")
+
+    return (
+        normalized_command,
+        normalized_expected_substrings,
+        normalized_expected_exit_code,
+        normalized_match_mode,
+    )
 
 
 class PlannerReviewOutcome(str, Enum):
@@ -110,13 +165,22 @@ class VerificationCheck:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "VerificationCheck":
-        match_mode = payload.get("match_mode", VerificationMatchMode.ALL.value)
+        match_mode = VerificationMatchMode(str(payload.get("match_mode", VerificationMatchMode.ALL.value)))
+        command = str(payload.get("command", "")).strip()
+        expected_substrings = tuple(str(item).strip() for item in payload.get("expected_substrings", []) or [])
+        expected_exit_code = payload.get("expected_exit_code")
+        normalized = _normalize_verification_shape(
+            command=command,
+            expected_substrings=expected_substrings,
+            expected_exit_code=expected_exit_code,
+            match_mode=match_mode,
+        )
         return cls(
             name=str(payload.get("name", "")).strip(),
-            command=str(payload.get("command", "")).strip(),
-            expected_substrings=tuple(str(item).strip() for item in payload.get("expected_substrings", []) or []),
-            expected_exit_code=payload.get("expected_exit_code"),
-            match_mode=VerificationMatchMode(str(match_mode)),
+            command=normalized[0],
+            expected_substrings=normalized[1],
+            expected_exit_code=normalized[2],
+            match_mode=normalized[3],
             timeout_seconds=int(payload.get("timeout_seconds", 60)),
         )
 

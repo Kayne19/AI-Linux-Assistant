@@ -84,6 +84,8 @@ def test_generate_scenario_repairs_invalid_initial_payload() -> None:
     assert scenario.title == "Nginx service fails after a bad override"
     assert len(planner.calls) == 2
     assert "validation_errors" in planner.calls[1][1]
+    assert scenario.verification_probes[0].command.startswith("bash -lc 'state=$(systemctl show -p ActiveState --value nginx")
+    assert scenario.verification_probes[0].match_mode.value == "any"
 
 
 def test_generate_scenario_raises_if_repair_is_still_invalid() -> None:
@@ -96,3 +98,22 @@ def test_generate_scenario_raises_if_repair_is_still_invalid() -> None:
 
     with pytest.raises(ScenarioValidationError, match="planner_payload="):
         planner.generate_scenario(_request())
+
+
+def test_generate_scenario_normalizes_nginx_test_probe_path() -> None:
+    payload = _valid_payload()
+    payload["verification_probes"] = [
+        {
+            "name": "nginx-config-broken",
+            "command": "bash -lc 'nginx -t >/tmp/nginx-test.out 2>&1; rc=$?; cat /tmp/nginx-test.out; exit $rc'",
+            "expected_exit_code": 1,
+            "expected_substrings": ["emerg", "/etc/nginx/"],
+        }
+    ]
+    planner = FakePlanner([payload])
+
+    scenario = planner.generate_scenario(_request())
+
+    assert "/usr/sbin/nginx -t" in scenario.verification_probes[0].command
+    assert "cat /tmp/nginx-test.out" in scenario.verification_probes[0].command
+    assert "2>/tmp/nginx-test.err" not in scenario.verification_probes[0].command
