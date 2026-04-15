@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
@@ -20,6 +21,7 @@ from eval_harness.models import (
     PlannerScenarioRequest,
     RunEvent,
     RunEventType,
+    ScenarioSetupStatus,
     ScenarioSpec,
     SubjectSpec,
     TurnSeed,
@@ -157,6 +159,8 @@ class FakeBackend(SandboxBackend):
     collected_failure_handles: list[str] = field(default_factory=list)
     configured_runtime_handles: list[str] = field(default_factory=list)
     cleared_runtime_handles: list[str] = field(default_factory=list)
+    broken_image_wait_progress: list[dict] = field(default_factory=list)
+    broken_image_wait_exception: Exception | None = None
 
     def launch_staging(self, group_id: str, scenario_id: str, *, target_image: str | None = None) -> SandboxHandle:
         self.requested_target_images.append(str(target_image or ""))
@@ -179,11 +183,19 @@ class FakeBackend(SandboxBackend):
         del timeout_seconds
         self.wait_calls.append(handle.remote_id)
 
-    def create_broken_image(self, staging: SandboxHandle, group_id: str, scenario_id: str) -> str:
+    def request_broken_image(self, staging: SandboxHandle, group_id: str, scenario_id: str) -> str:
         del staging, scenario_id
         image_id = f"broken-{group_id}"
         self.created_broken_images.append(image_id)
         return image_id
+
+    def wait_for_broken_image(self, image_id: str, *, progress_callback=None) -> None:
+        self.wait_calls.append(f"wait-image:{image_id}")
+        for metadata in self.broken_image_wait_progress:
+            if progress_callback is not None:
+                progress_callback(dict(metadata))
+        if self.broken_image_wait_exception is not None:
+            raise self.broken_image_wait_exception
 
     def launch_subject_clones(
         self,
@@ -677,6 +689,83 @@ def test_setup_orchestrator_clears_runtime_before_creating_broken_image() -> Non
     assert result.broken_image_id == "broken-group-1"
     assert backend.configured_runtime_handles == ["staging-nginx-recovery"]
     assert backend.cleared_runtime_handles == ["staging-nginx-recovery"]
+
+
+def test_setup_orchestrator_persists_broken_image_progress_metadata() -> None:
+    store = _build_store()
+    backend = FakeBackend(
+        broken_image_wait_progress=[
+            {
+                "broken_image_state": "pending",
+                "broken_image_last_checked_at": datetime.now(timezone.utc).isoformat(),
+                "broken_image_wait_elapsed_seconds": 0,
+                "broken_image_wait_timeout_seconds": 1800,
+            },
+            {
+                "broken_image_state": "available",
+                "broken_image_last_checked_at": datetime.now(timezone.utc).isoformat(),
+                "broken_image_wait_elapsed_seconds": 15,
+                "broken_image_wait_timeout_seconds": 1800,
+            },
+        ]
+    )
+    controller = FakeController(send_responses=["applied sabotage"])
+    orchestrator = ScenarioSetupOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([controller]),
+        planner=FakePlanner(),
+        store=store,
+    )
+
+    result = orchestrator.run(
+        PlannerScenarioRequest(planning_brief="break nginx", target_image="ami-golden"),
+        group_id="group-1",
+    )
+
+    setup_run = store.get_setup_run(result.setup_run_id)
+    assert setup_run is not None
+    assert setup_run.status == ScenarioSetupStatus.VERIFIED.value
+    assert setup_run.broken_image_id == "broken-group-1"
+    assert setup_run.backend_metadata_json["broken_image_id"] == "broken-group-1"
+    assert setup_run.backend_metadata_json["broken_image_state"] == "available"
+    assert setup_run.backend_metadata_json["broken_image_requested_at"]
+    assert setup_run.backend_metadata_json["broken_image_last_checked_at"]
+    assert setup_run.planner_approved_at is not None
+
+
+def test_setup_orchestrator_marks_broken_image_timeout_as_failed_infra() -> None:
+    store = _build_store()
+    backend = FakeBackend(
+        broken_image_wait_progress=[
+            {
+                "broken_image_state": "pending",
+                "broken_image_last_checked_at": datetime.now(timezone.utc).isoformat(),
+                "broken_image_wait_elapsed_seconds": 0,
+                "broken_image_wait_timeout_seconds": 1800,
+            }
+        ],
+        broken_image_wait_exception=TimeoutError("ami wait timed out"),
+    )
+    controller = FakeController(send_responses=["applied sabotage"])
+    orchestrator = ScenarioSetupOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([controller]),
+        planner=FakePlanner(),
+        store=store,
+    )
+
+    with pytest.raises(ScenarioSetupFailedError, match="Timed out waiting for broken image creation"):
+        orchestrator.run(
+            PlannerScenarioRequest(planning_brief="break nginx", target_image="ami-golden"),
+            group_id="group-1",
+        )
+
+    with store._session_factory() as session:
+        setup_run = session.scalars(select(ScenarioSetupRunRecord)).one()
+    assert setup_run.status == ScenarioSetupStatus.FAILED_INFRA.value
+    assert setup_run.failure_reason == "broken_image_creation_timeout"
+    assert setup_run.broken_image_id == "broken-group-1"
+    assert setup_run.backend_metadata_json["broken_image_state"] == "timeout"
 
 
 def test_judge_job_blinds_subject_identity() -> None:

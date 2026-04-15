@@ -27,6 +27,7 @@ class FakeEc2Client:
         self.images = list(images or [])
         self.launched_images: list[str] = []
         self.run_instances_calls: list[dict] = []
+        self.create_image_calls: list[dict] = []
 
     def describe_images(self, *, Owners=None, Filters=None, ImageIds=None):
         del Owners
@@ -47,6 +48,10 @@ class FakeEc2Client:
         self.run_instances_calls.append(dict(params))
         self.launched_images.append(str(params["ImageId"]))
         return {"Instances": [{"InstanceId": "i-1234567890", "State": {"Name": "pending"}}]}
+
+    def create_image(self, **kwargs) -> dict:
+        self.create_image_calls.append(dict(kwargs))
+        return {"ImageId": "ami-broken"}
 
     def get_waiter(self, name: str):
         del name
@@ -521,3 +526,49 @@ def test_create_broken_image_deregisters_on_timeout() -> None:
         backend.create_broken_image(staging, "group-1", "scenario-1")
 
     assert deregistered == ["ami-broken"]
+
+
+def test_request_broken_image_returns_image_id_before_waiting() -> None:
+    backend, ec2, _ = _backend()
+    staging = SandboxHandle(handle_id="s1", kind="instance", backend_name="aws_ec2", remote_id="i-staging")
+
+    image_id = backend.request_broken_image(staging, "group-1", "scenario-1")
+
+    assert image_id == "ami-broken"
+    assert ec2.create_image_calls[-1]["InstanceId"] == "i-staging"
+    assert ec2.create_image_calls[-1]["Name"] == "eval-broken-scenario-1-group-1"
+
+
+def test_wait_for_broken_image_emits_progress_until_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    class ProgressEc2(FakeEc2Client):
+        def __init__(self) -> None:
+            super().__init__(images=[{"ImageId": "ami-broken", "State": "pending", "BlockDeviceMappings": []}])
+            self._states = iter(("pending", "available"))
+
+        def describe_images(self, *, Owners=None, Filters=None, ImageIds=None):
+            if ImageIds is not None:
+                state = next(self._states, "available")
+                return {"Images": [{"ImageId": "ami-broken", "State": state, "BlockDeviceMappings": []}]}
+            return super().describe_images(Owners=Owners, Filters=Filters, ImageIds=ImageIds)
+
+    ec2 = ProgressEc2()
+    ssm = FakeSsmClient()
+    config = AwsEc2BackendConfig(
+        region="us-west-2",
+        subnet_id="subnet-123",
+        security_group_ids=("sg-123",),
+        instance_profile_name="EvalSSMInstanceProfile",
+        default_target_image="debian-12-openclaw-golden",
+        target_images={"debian-12-openclaw-golden": _target_image_config()},
+        image_wait_timeout_seconds=31,
+        openclaw_eval_token="token-123",
+        openclaw_runtime=OpenClawRuntimeConfig(provider="openai", model="gpt-5.4-mini", api_key="sk-test"),
+    )
+    backend = AwsEc2Backend(config, ec2_client=ec2, ssm_client=ssm)
+    progress_updates: list[dict] = []
+    monkeypatch.setattr("eval_harness.backends.aws.time.sleep", lambda _: None)
+
+    backend.wait_for_broken_image("ami-broken", progress_callback=lambda metadata: progress_updates.append(dict(metadata)))
+
+    assert [item["broken_image_state"] for item in progress_updates] == ["pending", "available"]
+    assert all(item["broken_image_id"] == "ami-broken" for item in progress_updates)

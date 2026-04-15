@@ -980,7 +980,17 @@ systemctl stop openclaw-gateway.service
             "openclaw_runtime_cleared": True,
         }
 
-    def create_broken_image(self, staging: SandboxHandle, group_id: str, scenario_id: str) -> str:
+    def _broken_image_progress_metadata(self, image_id: str, state: str, *, started_at: float) -> dict[str, Any]:
+        now = time.time()
+        return {
+            "broken_image_state": state,
+            "broken_image_last_checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "broken_image_wait_elapsed_seconds": max(0, int(now - started_at)),
+            "broken_image_wait_timeout_seconds": self.config.image_wait_timeout_seconds,
+            "broken_image_id": image_id,
+        }
+
+    def request_broken_image(self, staging: SandboxHandle, group_id: str, scenario_id: str) -> str:
         image_name = f"eval-broken-{scenario_id}-{group_id}"
         response = self.ec2.create_image(
             InstanceId=staging.remote_id,
@@ -989,12 +999,23 @@ systemctl stop openclaw-gateway.service
             NoReboot=True,
             TagSpecifications=[{"ResourceType": "image", "Tags": self._base_tags(group_id, scenario_id, "broken-image", {"Name": image_name})}],
         )
-        image_id = response["ImageId"]
+        return str(response["ImageId"])
+
+    def wait_for_broken_image(
+        self,
+        image_id: str,
+        *,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        started_at = time.time()
         deadline = time.time() + self.config.image_wait_timeout_seconds
         while time.time() < deadline:
             state = self.ec2.describe_images(ImageIds=[image_id])["Images"][0]["State"]
+            progress_metadata = self._broken_image_progress_metadata(image_id, state, started_at=started_at)
+            if progress_callback is not None:
+                progress_callback(progress_metadata)
             if state == "available":
-                return image_id
+                return
             if state in {"failed", "deregistered"}:
                 self._best_effort_destroy_broken_image(image_id)
                 raise RuntimeError(f"Broken image {image_id} entered terminal state {state}.")

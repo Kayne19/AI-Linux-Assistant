@@ -106,6 +106,7 @@ class ScenarioLifecycleStatus(str, Enum):
 class ScenarioSetupStatus(str, Enum):
     RUNNING = "running"
     NEEDS_CORRECTION = "needs_correction"
+    CREATING_BROKEN_IMAGE = "creating_broken_image"
     VERIFIED = "verified"
     FAILED_MAX_CORRECTIONS = "failed_max_corrections"
     FAILED_INFRA = "failed_infra"

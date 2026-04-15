@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 
 from ..backends.base import SandboxBackend, SandboxHandle
 from ..controllers.base import SandboxController, SandboxControllerFactory
@@ -25,6 +26,13 @@ class ScenarioSetupResult:
 
 
 class ScenarioSetupOrchestrator:
+    _TERMINAL_SETUP_STATUSES = frozenset(
+        {
+            ScenarioSetupStatus.VERIFIED.value,
+            ScenarioSetupStatus.FAILED_MAX_CORRECTIONS.value,
+            ScenarioSetupStatus.FAILED_INFRA.value,
+        }
+    )
     _REFUSAL_PATTERNS = (
         re.compile(r"\bi can[’']?t help\b", re.IGNORECASE),
         re.compile(r"\bi cannot help\b", re.IGNORECASE),
@@ -296,17 +304,88 @@ class ScenarioSetupOrchestrator:
                             correction_count=correction_count,
                             backend_metadata=cleanup_metadata,
                         )
-                    broken_image_id = self.backend.create_broken_image(
-                        staging_handle,
-                        group_id,
-                        scenario_row.scenario_name,
+                    self.store.update_setup_run_status(
+                        setup_run_id=setup_run.id,
+                        status=ScenarioSetupStatus.CREATING_BROKEN_IMAGE.value,
+                        correction_count=correction_count,
+                        planner_approved=True,
                     )
+                    broken_image_id = ""
+                    try:
+                        broken_image_id = self.backend.request_broken_image(
+                            staging_handle,
+                            group_id,
+                            scenario_row.scenario_name,
+                        )
+                        requested_at = datetime.now(timezone.utc).isoformat()
+                        self.store.update_setup_run_status(
+                            setup_run_id=setup_run.id,
+                            status=ScenarioSetupStatus.CREATING_BROKEN_IMAGE.value,
+                            correction_count=correction_count,
+                            broken_image_id=broken_image_id,
+                            backend_metadata={
+                                "broken_image_id": broken_image_id,
+                                "broken_image_state": "pending",
+                                "broken_image_requested_at": requested_at,
+                                "broken_image_last_checked_at": requested_at,
+                            },
+                        )
+                        self.backend.wait_for_broken_image(
+                            broken_image_id,
+                            progress_callback=lambda metadata: self.store.update_setup_run_status(
+                                setup_run_id=setup_run.id,
+                                status=ScenarioSetupStatus.CREATING_BROKEN_IMAGE.value,
+                                correction_count=correction_count,
+                                broken_image_id=broken_image_id,
+                                backend_metadata=metadata,
+                            ),
+                        )
+                    except TimeoutError as exc:
+                        self.store.update_setup_run_status(
+                            setup_run_id=setup_run.id,
+                            status=ScenarioSetupStatus.FAILED_INFRA.value,
+                            correction_count=correction_count,
+                            broken_image_id=broken_image_id or None,
+                            failure_reason="broken_image_creation_timeout",
+                            backend_metadata={
+                                "broken_image_id": broken_image_id,
+                                "broken_image_state": "timeout",
+                            },
+                        )
+                        self.store.update_scenario_status(
+                            scenario_id=scenario_row.id,
+                            lifecycle_status=ScenarioLifecycleStatus.FAILED_SETUP.value,
+                            verification_status="failed",
+                        )
+                        raise ScenarioSetupFailedError(
+                            f"Timed out waiting for broken image creation for {scenario_row.scenario_name}."
+                        ) from exc
+                    except Exception as exc:
+                        self.store.update_setup_run_status(
+                            setup_run_id=setup_run.id,
+                            status=ScenarioSetupStatus.FAILED_INFRA.value,
+                            correction_count=correction_count,
+                            broken_image_id=broken_image_id or None,
+                            failure_reason="broken_image_creation_failed",
+                            backend_metadata={
+                                "broken_image_id": broken_image_id,
+                                "broken_image_state": "failed",
+                            },
+                        )
+                        self.store.update_scenario_status(
+                            scenario_id=scenario_row.id,
+                            lifecycle_status=ScenarioLifecycleStatus.FAILED_SETUP.value,
+                            verification_status="failed",
+                        )
+                        raise ScenarioSetupFailedError(
+                            f"Broken image creation failed for {scenario_row.scenario_name}."
+                        ) from exc
                     self.store.update_setup_run_status(
                         setup_run_id=setup_run.id,
                         status=ScenarioSetupStatus.VERIFIED.value,
                         correction_count=correction_count,
                         broken_image_id=broken_image_id,
-                        planner_approved=True,
+                        backend_metadata={"broken_image_state": "available"},
                     )
                     self.store.mark_scenario_verified(
                         scenario_id=scenario_row.id,
@@ -382,7 +461,7 @@ class ScenarioSetupOrchestrator:
                         backend_metadata=failure_metadata,
                     )
             current_setup = self.store.get_setup_run(setup_run.id)
-            if current_setup and current_setup.status == ScenarioSetupStatus.RUNNING.value:
+            if current_setup and current_setup.status not in self._TERMINAL_SETUP_STATUSES:
                 self.store.update_setup_run_status(
                     setup_run_id=setup_run.id,
                     status=ScenarioSetupStatus.FAILED_INFRA.value,
