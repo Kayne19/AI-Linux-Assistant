@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from .adapters.ai_linux_assistant_http import AILinuxAssistantHttpAdapter, AILinuxAssistantHttpConfig
 from .artifacts import ArtifactStore, PostgresArtifactExporter
@@ -71,6 +72,24 @@ def _resolve_project_path(path_value: str | Path) -> Path:
     if path.is_absolute():
         return path
     return (PROJECT_ROOT / path).resolve()
+
+
+def _redact_database_url(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlsplit(raw)
+    hostname = parsed.hostname or ""
+    port = f":{parsed.port}" if parsed.port else ""
+    username = parsed.username or ""
+    password = parsed.password
+    if parsed.username is None and parsed.password is None:
+        return raw
+    userinfo = username
+    if password is not None:
+        userinfo = f"{userinfo}:***"
+    netloc = f"{userinfo}@{hostname}{port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 def _store_from_config(config: dict[str, Any]) -> EvalHarnessStore:
@@ -205,7 +224,7 @@ def _command_init_db(args: argparse.Namespace) -> int:
     database_config = dict(config.get("database", {}) or {})
     engine = build_engine(database_config.get("url"))
     create_all_tables(engine)
-    print(json.dumps({"database_url": database_config.get("url", "env"), "status": "initialized"}, indent=2))
+    print(json.dumps({"database_url": _redact_database_url(database_config.get("url", "env")), "status": "initialized"}, indent=2))
     return 0
 
 

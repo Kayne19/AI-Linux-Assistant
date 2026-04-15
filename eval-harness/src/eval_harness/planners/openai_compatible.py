@@ -13,6 +13,7 @@ from ..models import (
     PlannerScenarioRequest,
     ScenarioSpec,
 )
+from ..scenario import ScenarioValidationError, validate_scenario
 
 
 def _extract_text(payload: dict[str, Any]) -> str:
@@ -77,15 +78,64 @@ class OpenAICompatibleScenarioPlanner(ScenarioPlanner):
         response.raise_for_status()
         return _extract_json_object(_extract_text(response.json()))
 
-    def generate_scenario(self, request: PlannerScenarioRequest) -> ScenarioSpec:
-        system_prompt = (
-            "You are a benchmark planner for troubleshooting environments. "
-            "Return JSON only. Design the scenario so the broken state is objectively verifiable. "
-            "You must output sabotage steps, verification probes, repair checks, an observable user-facing problem statement, "
-            "what the scenario tests, and a judge rubric."
+    def _scenario_generation_prompt(self) -> str:
+        return (
+            "You are a benchmark planner for Linux troubleshooting environments. "
+            "Return JSON only and include every required field. "
+            "Required top-level keys: "
+            "scenario_name, title, summary, what_it_tests, target_image, observable_problem_statement, "
+            "sabotage_procedure, verification_probes, repair_checks, judge_rubric, turn_budget. "
+            "what_it_tests, sabotage_procedure, judge_rubric must be non-empty arrays of strings. "
+            "verification_probes and repair_checks must be non-empty arrays of objects with: "
+            "name, command, and at least one of expected_exit_code or expected_substrings. "
+            "The observable problem statement must not reveal the sabotage method. "
+            "Keep the broken state objectively verifiable before cloning."
         )
-        payload = self._request_json(system_prompt, json.dumps(request.to_dict(), indent=2))
-        return ScenarioSpec.from_dict(payload)
+
+    def _scenario_repair_prompt(self) -> str:
+        return (
+            "You previously returned invalid scenario JSON. "
+            "Return corrected JSON only. "
+            "Do not explain or comment. "
+            "Preserve the user's target_image and produce a fully runnable scenario object that passes validation."
+        )
+
+    def _validated_scenario_from_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        request: PlannerScenarioRequest,
+        allow_repair: bool,
+    ) -> ScenarioSpec:
+        scenario = ScenarioSpec.from_dict(payload)
+        try:
+            validate_scenario(scenario)
+            return scenario
+        except ScenarioValidationError as exc:
+            if not allow_repair:
+                raise ScenarioValidationError(
+                    f"{exc}; planner_payload={json.dumps(payload, sort_keys=True)}"
+                ) from exc
+            repaired_payload = self._request_json(
+                self._scenario_repair_prompt(),
+                json.dumps(
+                    {
+                        "request": request.to_dict(),
+                        "validation_errors": str(exc),
+                        "invalid_payload": payload,
+                    },
+                    indent=2,
+                ),
+            )
+            return self._validated_scenario_from_payload(
+                repaired_payload,
+                request=request,
+                allow_repair=False,
+            )
+
+    def generate_scenario(self, request: PlannerScenarioRequest) -> ScenarioSpec:
+        payload = self._request_json(self._scenario_generation_prompt(), json.dumps(request.to_dict(), indent=2))
+        return self._validated_scenario_from_payload(payload, request=request, allow_repair=True)
 
     def review_sabotage(
         self,
