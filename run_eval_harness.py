@@ -1,5 +1,6 @@
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 HARNESS_DIR = ROOT_DIR / "eval-harness"
 DEFAULT_CONFIG = HARNESS_DIR / "examples" / "aws_ai_linux_assistant_config.json"
 DEFAULT_REQUEST = HARNESS_DIR / "examples" / "planner_requests" / "nginx_recovery_request.json"
+DEFAULT_CONDA_ENV = "AI-Linux-Assistant"
 
 
 def _require_path(path: Path, label: str) -> None:
@@ -21,7 +23,11 @@ def _run_harness_command(args: list[str]) -> int:
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH", "").strip()
     env["PYTHONPATH"] = "src" if not existing_pythonpath else f"src{os.pathsep}{existing_pythonpath}"
-    command = [sys.executable, "-m", "eval_harness", *args]
+    active_conda_env = str(env.get("CONDA_DEFAULT_ENV", "")).strip()
+    if active_conda_env == DEFAULT_CONDA_ENV or shutil.which("conda") is None:
+        command = [sys.executable, "-m", "eval_harness", *args]
+    else:
+        command = ["conda", "run", "-n", DEFAULT_CONDA_ENV, "python", "-m", "eval_harness", *args]
     process = subprocess.run(command, cwd=str(HARNESS_DIR), env=env)
     return int(process.returncode)
 

@@ -13,6 +13,7 @@ if "eval_harness" not in sys.modules:
 
 from eval_harness.backends.aws_packer import (
     AwsPackerBuildRequest,
+    _load_exported_aws_credentials,
     build_packer_commands,
     parse_manifest_ami_id,
     render_build_vars,
@@ -73,3 +74,19 @@ def test_parse_manifest_ami_id_reads_last_build_artifact(tmp_path: Path) -> None
     )
 
     assert parse_manifest_ami_id(manifest_path) == "ami-1234567890"
+
+
+def test_load_exported_aws_credentials_parses_process_json(monkeypatch) -> None:
+    class Result:
+        stdout = '{"AccessKeyId":"AKIA123","SecretAccessKey":"secret","SessionToken":"token"}'
+
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/aws" if name == "aws" else None)
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Result())
+
+    credentials = _load_exported_aws_credentials()
+
+    assert credentials["AWS_ACCESS_KEY_ID"] == "AKIA123"
+    assert credentials["AWS_SECRET_ACCESS_KEY"] == "secret"
+    assert credentials["AWS_SESSION_TOKEN"] == "token"
+    assert credentials["AWS_DEFAULT_REGION"] == "us-west-2"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -72,10 +74,46 @@ def build_packer_commands(request: AwsPackerBuildRequest, temp_vars_path: Path) 
     return init_command, build_command
 
 
-def _stream_subprocess(command: list[str], *, cwd: Path, timeout_seconds: int, output_stream: TextIO) -> None:
+def _load_exported_aws_credentials() -> dict[str, str]:
+    if shutil.which("aws") is None:
+        return {}
+    command = ["aws", "configure", "export-credentials", "--format", "process"]
+    profile = str(os.environ.get("AWS_PROFILE", "")).strip()
+    if profile:
+        command.extend(["--profile", profile])
+    result = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    env_updates = {
+        "AWS_ACCESS_KEY_ID": str(payload.get("AccessKeyId", "")).strip(),
+        "AWS_SECRET_ACCESS_KEY": str(payload.get("SecretAccessKey", "")).strip(),
+        "AWS_SESSION_TOKEN": str(payload.get("SessionToken", "")).strip(),
+    }
+    region = str(os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "").strip()
+    if profile:
+        env_updates["AWS_PROFILE"] = profile
+    if region:
+        env_updates["AWS_REGION"] = region
+        env_updates["AWS_DEFAULT_REGION"] = region
+    return {key: value for key, value in env_updates.items() if value}
+
+
+def _stream_subprocess(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: int,
+    output_stream: TextIO,
+    env: dict[str, str] | None = None,
+) -> None:
     process = subprocess.Popen(
         command,
         cwd=str(cwd),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -99,6 +137,8 @@ def build_golden_ami(
     output_stream: TextIO | None = None,
 ) -> AwsPackerBuildResult:
     stream = output_stream or sys.stderr
+    subprocess_env = os.environ.copy()
+    subprocess_env.update(_load_exported_aws_credentials())
     with tempfile.TemporaryDirectory(prefix="eval-harness-packer-") as temp_dir:
         temp_path = Path(temp_dir)
         manifest_path = temp_path / "packer-manifest.json"
@@ -106,8 +146,20 @@ def build_golden_ami(
         temp_vars_path.write_text(render_build_vars(request, manifest_path), encoding="utf-8")
 
         init_command, build_command = build_packer_commands(request, temp_vars_path)
-        _stream_subprocess(init_command, cwd=request.packer_template_dir, timeout_seconds=request.timeout_seconds, output_stream=stream)
-        _stream_subprocess(build_command, cwd=request.packer_template_dir, timeout_seconds=request.timeout_seconds, output_stream=stream)
+        _stream_subprocess(
+            init_command,
+            cwd=request.packer_template_dir,
+            timeout_seconds=request.timeout_seconds,
+            output_stream=stream,
+            env=subprocess_env,
+        )
+        _stream_subprocess(
+            build_command,
+            cwd=request.packer_template_dir,
+            timeout_seconds=request.timeout_seconds,
+            output_stream=stream,
+            env=subprocess_env,
+        )
 
         image_id = parse_manifest_ami_id(manifest_path)
         return AwsPackerBuildResult(image_id=image_id)
