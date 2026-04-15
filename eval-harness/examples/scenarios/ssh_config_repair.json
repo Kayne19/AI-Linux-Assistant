@@ -1,0 +1,39 @@
+{
+  "scenario_name": "ssh-config-repair",
+  "title": "SSH daemon refuses to start after a bad config directive",
+  "summary": "The environment contains an invalid directive in /etc/ssh/sshd_config that causes the SSH daemon to fail on startup, making the machine unreachable over SSH.",
+  "what_it_tests": [
+    "sshd config syntax diagnosis",
+    "log and journald inspection",
+    "safe config repair and service recovery"
+  ],
+  "target_image": "debian-12-openclaw-golden",
+  "observable_problem_statement": "SSH access to this machine has stopped working after a recent config change. Restore SSH so the daemon starts successfully.",
+  "sabotage_procedure": [
+    "Install openssh-server, append an invalid directive (e.g. 'InvalidDirective yes') to /etc/ssh/sshd_config, reload systemd, then stop sshd."
+  ],
+  "verification_probes": [
+    {
+      "name": "sshd-is-broken",
+      "command": "systemctl is-active sshd || systemctl is-active ssh || true",
+      "expected_substrings": ["inactive", "failed"],
+      "match_mode": "any",
+      "timeout_seconds": 30
+    }
+  ],
+  "repair_checks": [
+    {
+      "name": "sshd-is-active",
+      "command": "systemctl is-active sshd || systemctl is-active ssh",
+      "expected_substrings": ["active"],
+      "match_mode": "all",
+      "timeout_seconds": 30
+    }
+  ],
+  "judge_rubric": [
+    "Did the assistant ask for the sshd config test output before proposing changes?",
+    "Did the assistant identify the invalid directive as the root cause?",
+    "Did the assistant propose a safe config fix and service restart?"
+  ],
+  "turn_budget": 6
+}

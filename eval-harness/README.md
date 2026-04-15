@@ -91,6 +91,44 @@ Runnable scenarios must include:
 
 The scenario contract is generic. It does not contain AI Linux Assistant-specific memory writes or product-internal shortcuts.
 
+### Available Scenarios
+
+Pre-built example scenarios live under `examples/scenarios/`:
+
+- `examples/scenarios/nginx_service_repair.json` — nginx systemd unit override prevents service startup
+- `examples/scenarios/ssh_config_repair.json` — invalid sshd_config directive prevents SSH daemon startup
+
+To validate a scenario file without running it:
+
+```bash
+python -m eval_harness validate-scenario examples/scenarios/nginx_service_repair.json
+python -m eval_harness validate-scenario examples/scenarios/ssh_config_repair.json
+```
+
+To pass a custom scenario JSON directly to the verify step:
+
+```bash
+python -m eval_harness validate-scenario path/to/my_scenario.json
+python -m eval_harness verify-scenario --config examples/aws_ai_linux_assistant_config.json \
+  --scenario path/to/my_scenario.json --group-id my-setup
+```
+
+### User Proxy Contract
+
+The user proxy (OpenClaw Agent B) plays a human user at a Linux terminal who does not know why the machine is broken. It receives only the `observable_problem_statement` from the scenario; it never sees the sabotage procedure or repair checks.
+
+When the AI subject asks the user to run a command, the proxy requests execution using a `host-run` fenced code block:
+
+````
+```host-run
+sudo systemctl status nginx
+```
+````
+
+The harness detects that fence, executes the command on the sandbox clone via the configured backend, and injects the real output into the next conversation turn as plain text. This keeps the subject grounded in real environment state rather than the proxy's inference.
+
+When the proxy observes that the stated problem is resolved (the service is back up, the config error is gone, etc.), it replies with the sentinel string `REPAIR_CONFIRMED` to end the session early. The benchmark loop treats this as a successful early termination and moves on to objective repair checks.
+
 ## Project Layout
 
 ```text
