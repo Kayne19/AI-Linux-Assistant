@@ -114,6 +114,6 @@ def test_generate_scenario_normalizes_nginx_test_probe_path() -> None:
 
     scenario = planner.generate_scenario(_request())
 
-    assert "/usr/sbin/nginx -t" in scenario.verification_probes[0].command
+    assert "sudo -n /usr/sbin/nginx -t" in scenario.verification_probes[0].command
     assert "cat /tmp/nginx-test.out" in scenario.verification_probes[0].command
     assert "2>/tmp/nginx-test.err" not in scenario.verification_probes[0].command

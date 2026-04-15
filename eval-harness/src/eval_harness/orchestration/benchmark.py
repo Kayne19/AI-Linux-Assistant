@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import re
 
 from ..adapters.base import SubjectAdapter, SubjectSession
 from ..backends.base import SandboxBackend, SandboxHandle
@@ -9,6 +10,14 @@ from ..controllers.base import SandboxController, SandboxControllerFactory
 from ..mapping import scenario_spec_from_records, subject_spec_from_record
 from ..models import EvaluationRunStatus
 from ..persistence.store import EvalHarnessStore
+
+_NGINX_PID_PERMISSION_DENIED = 'open() "/run/nginx.pid" failed (13: Permission denied)'
+_APPROVAL_LEAK_PATTERNS = (
+    re.compile(r"\bapprove these first\b", re.IGNORECASE),
+    re.compile(r"\buse these read-only diagnostics only\b", re.IGNORECASE),
+    re.compile(r"\bthey map like this\b", re.IGNORECASE),
+    re.compile(r"\b[a-f0-9]{8}\b\s*[→-]", re.IGNORECASE),
+)
 
 
 def _role_for_subject_message() -> str:
@@ -57,6 +66,51 @@ class BenchmarkRunOrchestrator:
                 for check, result in zip(scenario.repair_checks, command_results, strict=True)
             ]
         }
+
+    def _looks_like_approval_leak(self, subject_reply: str) -> bool:
+        reply = str(subject_reply or "")
+        if not reply.strip():
+            return False
+        return any(pattern.search(reply) for pattern in _APPROVAL_LEAK_PATTERNS)
+
+    def _benchmark_tool_policy_follow_up(self) -> str:
+        return (
+            "All commands needed to solve this benchmark are pre-approved. "
+            "If you have tool access, act directly instead of asking the user to approve commands. "
+            "Do not expose internal command ids, approval tokens, or tool-routing details, "
+            "and do not ask the user to paste outputs you can gather yourself."
+        )
+
+    def _is_known_nginx_permission_false_negative(self, check, result) -> bool:
+        combined_output = result.combined_output()
+        return (
+            "nginx -t" in str(check.command)
+            and "nginx -t" in str(result.command)
+            and _NGINX_PID_PERMISSION_DENIED in combined_output
+            and "syntax is ok" in str(result.stdout).lower()
+        )
+
+    def _repair_checks_pass(self, scenario, command_results) -> bool:
+        pairs = tuple(zip(scenario.repair_checks, command_results, strict=True))
+        if not pairs:
+            return False
+        passed = [check.is_satisfied_by(result) for check, result in pairs]
+        if all(passed):
+            return True
+        fallback_indexes = [
+            index
+            for index, ((check, result), check_passed) in enumerate(zip(pairs, passed, strict=True))
+            if not check_passed and self._is_known_nginx_permission_false_negative(check, result)
+        ]
+        if not fallback_indexes:
+            return False
+        if any(not check_passed and index not in fallback_indexes for index, check_passed in enumerate(passed)):
+            return False
+        return any(
+            check_passed
+            for index, check_passed in enumerate(passed)
+            if index not in fallback_indexes
+        )
 
     def _run_subject(
         self,
@@ -137,7 +191,7 @@ class BenchmarkRunOrchestrator:
                     )
                     seq += 1
 
-                if all(check.is_satisfied_by(result) for check, result in zip(scenario.repair_checks, repair_results, strict=True)):
+                if self._repair_checks_pass(scenario, repair_results):
                     session_metadata = session.close()
                     session = None
                     self.store.update_evaluation_run_status(
@@ -150,15 +204,18 @@ class BenchmarkRunOrchestrator:
                     )
                     return
 
-                user_message = controller.send(
-                    agent_id=user_proxy_agent_id,
-                    message=self._build_proxy_message(
-                        scenario.observable_problem_statement,
-                        tuple(transcript_pairs),
-                        turn_result.assistant_message,
-                    ),
-                    session_key=f"{evaluation_run_id}-proxy",
-                )
+                if self._looks_like_approval_leak(turn_result.assistant_message):
+                    user_message = self._benchmark_tool_policy_follow_up()
+                else:
+                    user_message = controller.send(
+                        agent_id=user_proxy_agent_id,
+                        message=self._build_proxy_message(
+                            scenario.observable_problem_statement,
+                            tuple(transcript_pairs),
+                            turn_result.assistant_message,
+                        ),
+                        session_key=f"{evaluation_run_id}-proxy",
+                    )
 
             session_metadata = session.close()
             session = None

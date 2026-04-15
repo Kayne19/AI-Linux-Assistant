@@ -39,6 +39,7 @@ class VerificationMatchMode(str, Enum):
 
 _SYSTEMCTL_IS_ACTIVE_RE = re.compile(r"^systemctl is-active\s+([A-Za-z0-9@_.:-]+)(?:\s*\|\|\s*true)?$")
 _STATEFUL_SYSTEMCTL_STATES = frozenset({"active", "inactive", "failed", "activating", "deactivating", "reloading"})
+_NGINX_TEST_RE = re.compile(r"(?<!sudo -n )/usr/sbin/nginx -t\b")
 
 
 def _normalize_verification_shape(
@@ -72,6 +73,8 @@ def _normalize_verification_shape(
 
     if "nginx -t" in normalized_command and "/usr/sbin/nginx -t" not in normalized_command:
         normalized_command = re.sub(r"\bnginx -t\b", "/usr/sbin/nginx -t", normalized_command)
+    if "/usr/sbin/nginx -t" in normalized_command and "sudo -n /usr/sbin/nginx -t" not in normalized_command:
+        normalized_command = _NGINX_TEST_RE.sub("sudo -n /usr/sbin/nginx -t", normalized_command)
     if (
         "/usr/sbin/nginx -t" in normalized_command
         and ">/tmp/nginx-test.out 2>/tmp/nginx-test.err" in normalized_command

@@ -601,6 +601,209 @@ def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair()
     assert backend.configured_runtime_handles == ["clone-system-a"]
 
 
+def test_benchmark_orchestrator_treats_nginx_pid_permission_denied_as_repaired_when_other_checks_pass() -> None:
+    store = _build_store()
+    scenario = store.create_scenario(title="Nginx recovery", scenario_name_hint="nginx-recovery")
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-golden",
+        summary="Recover nginx",
+        what_it_tests={"items": ["systemd recovery"]},
+        observable_problem_statement="The website is down and nginx will not start.",
+        sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
+        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        judge_rubric={"items": ["diagnosis", "actionability"]},
+        planner_metadata={
+            "repair_checks": [
+                {
+                    "name": "nginx-active",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["active"],
+                },
+                {
+                    "name": "nginx-config-valid",
+                    "command": "bash -lc '/usr/sbin/nginx -t'",
+                    "expected_exit_code": 0,
+                },
+                {
+                    "name": "localhost-up",
+                    "command": "curl -I http://127.0.0.1/",
+                    "expected_substrings": ["200 OK"],
+                },
+            ],
+            "turn_budget": 3,
+        },
+    )
+    setup = store.create_setup_run(scenario_revision_id=revision.id, status="running")
+    store.update_setup_run_status(
+        setup_run_id=setup.id,
+        status="verified",
+        broken_image_id="ami-broken",
+        planner_approved=True,
+    )
+    store.upsert_subject(
+        subject_name="system-a",
+        adapter_type="fake_adapter",
+        display_name="System A",
+        adapter_config={"max_turns": 3},
+    )
+
+    clone_controller = FakeController(
+        execute_batches=[
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
+                CommandExecutionResult(
+                    command="bash -lc 'sudo -n /usr/sbin/nginx -t'",
+                    stdout="nginx: the configuration file /etc/nginx/nginx.conf syntax is ok",
+                    stderr=(
+                        '2026/04/15 20:03:28 [emerg] 879#879: open() "/run/nginx.pid" failed '
+                        '(13: Permission denied)\n'
+                        "nginx: configuration file /etc/nginx/nginx.conf test failed"
+                    ),
+                    exit_code=1,
+                ),
+                CommandExecutionResult(
+                    command="curl -I http://127.0.0.1/",
+                    stdout="HTTP/1.1 200 OK",
+                    stderr="",
+                    exit_code=0,
+                ),
+            ),
+        ],
+    )
+    backend = FakeBackend()
+    adapter = FakeSubjectAdapter(
+        session=FakeSubjectSession(
+            turn_results=[
+                AdapterTurnResult(
+                    user_message="",
+                    assistant_message="Nginx should be fixed now.",
+                    run_id="run-1",
+                    status="completed",
+                    terminal_event_type="done",
+                    events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+                ),
+            ]
+        )
+    )
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([clone_controller]),
+        subject_adapters={"fake_adapter": adapter},
+        store=store,
+    )
+
+    result = orchestrator.run(
+        scenario_revision_id=revision.id,
+        verified_setup_run_id=setup.id,
+        user_proxy_agent_id="user_proxy_agent",
+        verification_agent_id="verification_executor",
+    )
+
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+    assert evaluation_runs[0].repair_success is True
+    assert evaluation_runs[0].status == "completed"
+    assert clone_controller.sent_messages == []
+
+
+def test_benchmark_orchestrator_replies_to_read_only_approval_leak_without_proxy() -> None:
+    store = _build_store()
+    scenario = store.create_scenario(title="Nginx recovery", scenario_name_hint="nginx-recovery")
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-golden",
+        summary="Recover nginx",
+        what_it_tests={"items": ["systemd recovery"]},
+        observable_problem_statement="The website is down and nginx will not start.",
+        sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
+        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        judge_rubric={"items": ["diagnosis", "actionability"]},
+        planner_metadata={
+            "repair_checks": [
+                {
+                    "name": "nginx-fixed",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["active"],
+                }
+            ],
+            "turn_budget": 2,
+        },
+    )
+    setup = store.create_setup_run(scenario_revision_id=revision.id, status="running")
+    store.update_setup_run_status(
+        setup_run_id=setup.id,
+        status="verified",
+        broken_image_id="ami-broken",
+        planner_approved=True,
+    )
+    store.upsert_subject(
+        subject_name="system-a",
+        adapter_type="fake_adapter",
+        display_name="System A",
+        adapter_config={"max_turns": 2},
+    )
+
+    clone_controller = FakeController(
+        send_responses=["this should not be used"],
+        execute_batches=[
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),
+            ),
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
+            ),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message=(
+                    "Use these read-only diagnostics only:\n\n"
+                    "- `systemctl status nginx --no-pager -l`\n"
+                    "- `nginx -t`\n\n"
+                    "Approve these first.\n\n"
+                    "They map like this:\n\n"
+                    "- 70068ec3 -> `systemctl status nginx --no-pager -l`"
+                ),
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Fixed. nginx is active now.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    adapter = FakeSubjectAdapter(session=session)
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=FakeBackend(),
+        controller_factory=FakeControllerFactory([clone_controller]),
+        subject_adapters={"fake_adapter": adapter},
+        store=store,
+    )
+
+    result = orchestrator.run(
+        scenario_revision_id=revision.id,
+        verified_setup_run_id=setup.id,
+        user_proxy_agent_id="user_proxy_agent",
+        verification_agent_id="verification_executor",
+    )
+
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+    assert evaluation_runs[0].repair_success is True
+    assert session.submitted_messages[1].startswith("All commands needed to solve this benchmark are pre-approved.")
+    assert clone_controller.sent_messages == []
+
+
 def test_benchmark_orchestrator_marks_run_failed_when_clone_launch_raises() -> None:
     store = _build_store()
     scenario = store.create_scenario(title="Nginx recovery", scenario_name_hint="nginx-recovery")
