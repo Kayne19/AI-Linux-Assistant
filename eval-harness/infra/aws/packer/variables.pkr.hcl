@@ -57,6 +57,11 @@ variable "openclaw_version" {
   default = "2026.4.11"
 }
 
+variable "openclaw_bundle_path" {
+  type        = string
+  description = "Absolute path to a preinstalled OpenClaw bundle tarball on the machine running Packer."
+}
+
 variable "openclaw_eval_token" {
   type      = string
   sensitive = true

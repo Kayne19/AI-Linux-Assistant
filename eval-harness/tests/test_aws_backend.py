@@ -25,6 +25,7 @@ class FakeEc2Client:
     def __init__(self, *, images: list[dict] | None = None):
         self.images = list(images or [])
         self.launched_images: list[str] = []
+        self.run_instances_calls: list[dict] = []
 
     def describe_images(self, *, Owners=None, Filters=None, ImageIds=None):
         del Owners
@@ -42,6 +43,7 @@ class FakeEc2Client:
         return {"Images": matched}
 
     def run_instances(self, **params):
+        self.run_instances_calls.append(dict(params))
         self.launched_images.append(str(params["ImageId"]))
         return {"Instances": [{"InstanceId": "i-1234567890", "State": {"Name": "pending"}}]}
 
@@ -115,6 +117,25 @@ def test_launch_staging_uses_existing_tagged_golden_ami() -> None:
     assert handle.metadata["resolved_golden_ami_id"] == "ami-existing"
     assert handle.metadata["golden_image_build_triggered"] is False
     assert handle.metadata["golden_image_build_source"] == "existing_ami"
+
+
+def test_launch_staging_uses_root_volume_size_from_image_when_larger_than_default() -> None:
+    backend, ec2 = _backend(
+        images=[
+            {
+                "ImageId": "ami-existing",
+                "CreationDate": "2026-04-14T12:00:00.000Z",
+                "State": "available",
+                "Tags": {"EvalTargetImage": "debian-12-openclaw-golden"},
+                "BlockDeviceMappings": [{"DeviceName": "/dev/xvda", "Ebs": {"VolumeSize": 20}}],
+            }
+        ]
+    )
+
+    backend.launch_staging("group-1", "scenario-1", target_image="debian-12-openclaw-golden")
+
+    launched_call = ec2.run_instances_calls[-1]
+    assert launched_call["BlockDeviceMappings"][0]["Ebs"]["VolumeSize"] == 20
 
 
 def test_launch_staging_builds_missing_golden_ami() -> None:

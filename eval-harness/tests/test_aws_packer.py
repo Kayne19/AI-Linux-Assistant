@@ -15,6 +15,7 @@ from eval_harness.backends.aws_packer import (
     AwsPackerBuildRequest,
     _load_exported_aws_credentials,
     build_packer_commands,
+    openclaw_tarball_url,
     parse_manifest_ami_id,
     render_build_vars,
 )
@@ -34,13 +35,19 @@ def _request() -> AwsPackerBuildRequest:
 
 def test_render_build_vars_includes_expected_runtime_values(tmp_path: Path) -> None:
     manifest_path = tmp_path / "packer-manifest.json"
-    rendered = render_build_vars(_request(), manifest_path)
+    openclaw_bundle_path = tmp_path / "openclaw-bundle.tgz"
+    rendered = render_build_vars(_request(), manifest_path, openclaw_bundle_path)
 
     assert 'aws_region = "us-west-2"' in rendered
     assert 'subnet_id = "subnet-123"' in rendered
     assert 'iam_instance_profile = "EvalSSMInstanceProfile"' in rendered
+    assert f'openclaw_bundle_path = "{openclaw_bundle_path}"' in rendered
     assert 'openclaw_eval_token = "token-123"' in rendered
     assert f'manifest_output = "{manifest_path}"' in rendered
+
+
+def test_openclaw_tarball_url_is_pinned_to_the_exact_release() -> None:
+    assert openclaw_tarball_url("2026.4.11") == "https://registry.npmjs.org/openclaw/-/openclaw-2026.4.11.tgz"
 
 
 def test_build_packer_commands_use_generated_and_distro_var_files(tmp_path: Path) -> None:

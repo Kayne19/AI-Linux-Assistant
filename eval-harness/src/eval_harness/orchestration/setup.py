@@ -262,7 +262,18 @@ class ScenarioSetupOrchestrator:
                     )
                 instructions = decision.correction_instructions
                 round_index += 1
-        except Exception:
+        except Exception as exc:
+            if staging_handle is not None:
+                diagnostics = self.backend.collect_failure_diagnostics(staging_handle)
+                if diagnostics:
+                    self.store.update_setup_run_status(
+                        setup_run_id=setup_run.id,
+                        status=ScenarioSetupStatus.RUNNING.value,
+                        backend_metadata={
+                            "failure_exception": f"{type(exc).__name__}: {exc}",
+                            "failure_diagnostics": diagnostics,
+                        },
+                    )
             current_setup = self.store.get_setup_run(setup_run.id)
             if current_setup and current_setup.status == ScenarioSetupStatus.RUNNING.value:
                 self.store.update_setup_run_status(

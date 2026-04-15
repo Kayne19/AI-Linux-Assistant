@@ -63,6 +63,11 @@ source "amazon-ebs" "golden" {
 build {
   sources = ["source.amazon-ebs.golden"]
 
+  provisioner "file" {
+    source      = var.openclaw_bundle_path
+    destination = "/tmp/openclaw-bundle.tgz"
+  }
+
   provisioner "shell" {
     environment_vars = [
       "DISTRO_FAMILY=${var.distro_family}",

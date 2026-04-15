@@ -13,6 +13,7 @@ Golden images are now target-image driven:
 - scenarios name a `target_image`
 - the AWS backend resolves that alias to the newest tagged golden AMI
 - if the AMI is missing, `verify-scenario` auto-builds it with Packer and prints build progress to `stderr`
+- if staging setup fails after launch, the harness captures backend diagnostics before teardown so setup-run metadata includes the failure context
 
 ## Methodology
 

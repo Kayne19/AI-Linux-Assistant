@@ -106,11 +106,14 @@ class FakeController(SandboxController):
     sent_messages: list[str] = field(default_factory=list)
     session_keys: list[str] = field(default_factory=list)
     closed: bool = False
+    send_exception: Exception | None = None
 
     def send(self, *, agent_id: str, message: str, session_key: str | None = None) -> str:
         del agent_id
         self.sent_messages.append(message)
         self.session_keys.append(session_key or "")
+        if self.send_exception is not None:
+            raise self.send_exception
         if self.send_responses:
             return self.send_responses.pop(0)
         return "ack"
@@ -150,6 +153,8 @@ class FakeBackend(SandboxBackend):
     destroyed_handles: list[str] = field(default_factory=list)
     wait_calls: list[str] = field(default_factory=list)
     requested_target_images: list[str] = field(default_factory=list)
+    diagnostics: dict = field(default_factory=lambda: {"service": "ok"})
+    collected_failure_handles: list[str] = field(default_factory=list)
 
     def launch_staging(self, group_id: str, scenario_id: str, *, target_image: str | None = None) -> SandboxHandle:
         self.requested_target_images.append(str(target_image or ""))
@@ -201,6 +206,10 @@ class FakeBackend(SandboxBackend):
 
     def destroy_broken_image(self, image_id: str) -> None:
         del image_id
+
+    def collect_failure_diagnostics(self, handle: SandboxHandle) -> dict:
+        self.collected_failure_handles.append(handle.remote_id)
+        return dict(self.diagnostics)
 
 
 @dataclass
@@ -331,6 +340,35 @@ def test_setup_orchestrator_kills_after_second_planner_correction() -> None:
     with store._session_factory() as session:
         failed_setup_run = session.scalars(select(ScenarioSetupRunRecord)).one()
     assert failed_setup_run.backend_metadata_json["resolved_golden_ami_id"] == "ami-resolved"
+
+
+def test_setup_orchestrator_collects_failure_diagnostics_before_teardown() -> None:
+    store = _build_store()
+    backend = FakeBackend(diagnostics={"journal": "gateway crashed", "status": "failed"})
+    controller = FakeController(send_exception=ConnectionError("gateway closed connection"))
+    orchestrator = ScenarioSetupOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([controller]),
+        planner=FakePlanner(),
+        store=store,
+    )
+
+    with pytest.raises(ConnectionError, match="gateway closed connection"):
+        orchestrator.run(
+            PlannerScenarioRequest(planning_brief="break nginx", target_image="ami-golden"),
+            group_id="group-1",
+        )
+
+    with store._session_factory() as session:
+        failed_setup_run = session.scalars(select(ScenarioSetupRunRecord)).one()
+    assert failed_setup_run.status == "failed_infra"
+    assert failed_setup_run.backend_metadata_json["failure_exception"] == "ConnectionError: gateway closed connection"
+    assert failed_setup_run.backend_metadata_json["failure_diagnostics"] == {
+        "journal": "gateway crashed",
+        "status": "failed",
+    }
+    assert backend.collected_failure_handles == ["staging-nginx-recovery"]
+    assert "staging-nginx-recovery" in backend.destroyed_handles
 
 
 def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair() -> None:

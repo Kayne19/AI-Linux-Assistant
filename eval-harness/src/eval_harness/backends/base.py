@@ -50,3 +50,7 @@ class SandboxBackend(ABC):
     @abstractmethod
     def destroy_broken_image(self, image_id: str) -> None:
         raise NotImplementedError
+
+    def collect_failure_diagnostics(self, handle: SandboxHandle) -> dict[str, Any]:
+        del handle
+        return {}

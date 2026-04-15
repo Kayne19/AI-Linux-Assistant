@@ -12,9 +12,10 @@ from ..runtime.ssm import wait_for_ssm_online
 
 try:
     import boto3
-    from botocore.exceptions import WaiterError
+    from botocore.exceptions import ClientError, WaiterError
 except ImportError:  # pragma: no cover - optional dependency
     boto3 = None
+    ClientError = Exception
     WaiterError = Exception
 
 
@@ -114,7 +115,22 @@ class AwsEc2Backend(SandboxBackend):
             tags.update(extra)
         return [{"Key": key, "Value": value} for key, value in tags.items()]
 
+    def _resolved_root_volume_size_gb(self, image_id: str) -> int:
+        response = self.ec2.describe_images(ImageIds=[image_id])
+        images = list(response.get("Images", []))
+        if not images:
+            return self.config.root_volume_size_gb
+        block_mappings = list(images[0].get("BlockDeviceMappings") or [])
+        sizes = [
+            int(mapping.get("Ebs", {}).get("VolumeSize", 0))
+            for mapping in block_mappings
+            if isinstance(mapping, dict)
+        ]
+        largest_snapshot_size = max((size for size in sizes if size > 0), default=0)
+        return max(self.config.root_volume_size_gb, largest_snapshot_size)
+
     def _launch_instance(self, *, image_id: str, name: str, tags: list[dict[str, str]]) -> SandboxHandle:
+        root_volume_size_gb = self._resolved_root_volume_size_gb(image_id)
         params: dict[str, object] = {
             "ImageId": image_id,
             "InstanceType": self.config.instance_type,
@@ -129,7 +145,7 @@ class AwsEc2Backend(SandboxBackend):
                     "DeviceName": "/dev/xvda",
                     "Ebs": {
                         "DeleteOnTermination": True,
-                        "VolumeSize": self.config.root_volume_size_gb,
+                        "VolumeSize": root_volume_size_gb,
                         "VolumeType": "gp3",
                     },
                 }
@@ -270,6 +286,73 @@ class AwsEc2Backend(SandboxBackend):
         waiter = self.ec2.get_waiter("instance_running")
         waiter.wait(InstanceIds=[handle.remote_id], WaiterConfig={"Delay": 10, "MaxAttempts": max(1, timeout_seconds // 10)})
         wait_for_ssm_online(self.ssm, handle.remote_id, timeout_seconds=timeout_seconds)
+
+    def _run_ssm_shell_commands(
+        self,
+        instance_id: str,
+        commands: tuple[str, ...],
+        *,
+        timeout_seconds: int = 180,
+    ) -> list[dict[str, Any]]:
+        response = self.ssm.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": list(commands)},
+            CloudWatchOutputConfig={"CloudWatchOutputEnabled": False},
+        )
+        command_id = str(response["Command"]["CommandId"])
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            try:
+                invocation = self.ssm.get_command_invocation(
+                    CommandId=command_id,
+                    InstanceId=instance_id,
+                )
+            except ClientError as exc:
+                error_code = str(exc.response.get("Error", {}).get("Code", "")).strip()
+                if error_code == "InvocationDoesNotExist":
+                    time.sleep(2)
+                    continue
+                raise
+            status = str(invocation.get("Status", "")).strip()
+            if status in {"Pending", "InProgress", "Delayed"}:
+                time.sleep(3)
+                continue
+            return [
+                {
+                    "command_id": command_id,
+                    "status": status,
+                    "status_details": str(invocation.get("StatusDetails", "")),
+                    "exit_code": invocation.get("ResponseCode"),
+                    "stdout": str(invocation.get("StandardOutputContent", "")),
+                    "stderr": str(invocation.get("StandardErrorContent", "")),
+                }
+            ]
+        raise TimeoutError(f"Timed out collecting diagnostics from instance {instance_id} over SSM.")
+
+    def collect_failure_diagnostics(self, handle: SandboxHandle) -> dict[str, Any]:
+        commands = (
+            "systemctl is-active openclaw-gateway.service || true",
+            "systemctl status openclaw-gateway.service --no-pager --full || true",
+            "systemctl show openclaw-gateway.service --property=ActiveState,SubState,ExecMainStatus,ExecMainCode,ExecMainPID --no-pager || true",
+            "ss -ltnp | grep 18789 || true",
+            "cat /home/eval/.openclaw/gateway.yaml || true",
+            "journalctl -u openclaw-gateway.service -n 200 --no-pager || true",
+        )
+        try:
+            invocations = self._run_ssm_shell_commands(handle.remote_id, commands)
+            return {
+                "instance_id": handle.remote_id,
+                "collected_via": "ssm",
+                "commands": list(commands),
+                "invocations": invocations,
+            }
+        except Exception as exc:
+            return {
+                "instance_id": handle.remote_id,
+                "collected_via": "ssm",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     def create_broken_image(self, staging: SandboxHandle, group_id: str, scenario_id: str) -> str:
         image_name = f"eval-broken-{scenario_id}-{group_id}"

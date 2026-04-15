@@ -15,7 +15,7 @@ The harness uses these assets in two ways:
 - include `amazon-ssm-agent`
 - install OpenClaw into `/opt/openclaw`
 - pin the OpenClaw version during image build
-- skip bundled-plugin postinstall during the AMI bake and log the package install to `/var/log/openclaw-install.log`
+- build a preinstalled OpenClaw bundle on the machine running Packer and upload that bundle to the builder instead of resolving OpenClaw live inside the EC2 instance
 - bind the gateway to loopback only on port `18789`
 - bake three named agents: `setup`, `verifier`, and `proxy`
 - require an IAM instance profile with `AmazonSSMManagedInstanceCore`
