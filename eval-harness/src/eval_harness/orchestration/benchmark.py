@@ -225,12 +225,16 @@ class BenchmarkRunOrchestrator:
             subject_ids=[item.id for item in subject_rows],
             metadata={"scenario_name": scenario_row.scenario_name},
         )
-        clone_handles = self.backend.launch_subject_clones(
-            benchmark_run.id,
-            scenario_row.scenario_name,
-            setup_run.broken_image_id,
-            [item.subject_name for item in subject_rows],
-        )
+        try:
+            clone_handles = self.backend.launch_subject_clones(
+                benchmark_run.id,
+                scenario_row.scenario_name,
+                setup_run.broken_image_id,
+                [item.subject_name for item in subject_rows],
+            )
+        except Exception:
+            self.store.update_benchmark_run_status(benchmark_run_id=benchmark_run.id, status="failed", finished=True)
+            raise
         evaluation_run_ids: list[str] = []
         futures = []
         with ThreadPoolExecutor(max_workers=max(1, len(subject_rows))) as executor:

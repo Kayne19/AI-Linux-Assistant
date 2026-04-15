@@ -171,7 +171,7 @@ def _controller_factory_from_config(config: dict[str, Any]) -> OpenClawControlle
     factory_config = OpenClawControllerFactoryConfig(
         token=str(config["token"]),
         default_session_key_prefix=str(config.get("default_session_key_prefix", "eval-harness")),
-        request_timeout_seconds=int(config.get("request_timeout_seconds", 180)),
+        request_timeout_seconds=int(config.get("request_timeout_seconds", 900)),
         fixed_base_url=(str(config["fixed_base_url"]).strip() if config.get("fixed_base_url") else None),
         aws_region=(str(config["aws_region"]).strip() if config.get("aws_region") else None),
         remote_port=int(config.get("remote_port", 18789)),
