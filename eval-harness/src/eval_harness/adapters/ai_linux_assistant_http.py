@@ -305,6 +305,47 @@ class AILinuxAssistantHttpSession(SubjectSession):
             },
         )
 
+    def _cancel_active_run_if_needed(self) -> dict[str, Any]:
+        if not self.latest_run_id:
+            return {"latest_run_id": "", "cancel_attempted": False, "cancelled_active_run": False}
+        try:
+            run_snapshot = self._request_json("GET", f"/runs/{self.latest_run_id}")
+        except Exception as exc:
+            return {
+                "latest_run_id": self.latest_run_id,
+                "cancel_attempted": False,
+                "cancelled_active_run": False,
+                "cancel_error": str(exc),
+            }
+        status = str(run_snapshot.get("status", "")).strip()
+        if status in TERMINAL_RUN_STATUSES:
+            return {
+                "latest_run_id": self.latest_run_id,
+                "latest_run_status": status,
+                "cancel_attempted": False,
+                "cancelled_active_run": False,
+            }
+        try:
+            cancel_payload = self._request_json("POST", f"/runs/{self.latest_run_id}/cancel", payload={})
+        except Exception as exc:
+            return {
+                "latest_run_id": self.latest_run_id,
+                "latest_run_status": status,
+                "cancel_attempted": True,
+                "cancelled_active_run": False,
+                "cancel_error": str(exc),
+            }
+        cancel_status = ""
+        if isinstance(cancel_payload, dict):
+            cancel_status = str(cancel_payload.get("status", "")).strip()
+        return {
+            "latest_run_id": self.latest_run_id,
+            "latest_run_status": status,
+            "cancel_attempted": True,
+            "cancelled_active_run": True,
+            "cancel_response_status": cancel_status,
+        }
+
     def close(self) -> dict[str, Any]:
         self.client.close()
         return {
@@ -312,6 +353,15 @@ class AILinuxAssistantHttpSession(SubjectSession):
             "chat_id": self.chat_id,
             "latest_run_id": self.latest_run_id,
         }
+
+    def abort(self) -> dict[str, Any]:
+        metadata = {
+            "project_id": self.project_id,
+            "chat_id": self.chat_id,
+            **self._cancel_active_run_if_needed(),
+        }
+        self.client.close()
+        return metadata
 
 
 class AILinuxAssistantHttpAdapter(SubjectAdapter):

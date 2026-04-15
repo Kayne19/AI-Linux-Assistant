@@ -25,6 +25,9 @@ class SubjectSession(ABC):
     def close(self) -> dict[str, Any]:
         raise NotImplementedError
 
+    def abort(self) -> dict[str, Any]:
+        return self.close()
+
 
 class SubjectAdapter(ABC):
     """Adapter owns product-specific subject semantics only."""

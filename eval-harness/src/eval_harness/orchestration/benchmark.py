@@ -67,6 +67,12 @@ class BenchmarkRunOrchestrator:
             ]
         }
 
+    def _exception_reason(self, exc: BaseException) -> str:
+        message = str(exc).strip()
+        if message:
+            return message
+        return exc.__class__.__name__
+
     def _looks_like_approval_leak(self, subject_reply: str) -> bool:
         reply = str(subject_reply or "")
         if not reply.strip():
@@ -227,10 +233,10 @@ class BenchmarkRunOrchestrator:
                 adapter_session_metadata=session_metadata,
                 finished=True,
             )
-        except Exception as exc:
+        except BaseException as exc:
             if session is not None:
                 try:
-                    session_metadata = session.close()
+                    session_metadata = session.abort()
                 except Exception:
                     session_metadata = {}
             else:
@@ -239,7 +245,7 @@ class BenchmarkRunOrchestrator:
                 evaluation_run_id=evaluation_run_id,
                 status=EvaluationRunStatus.FAILED.value,
                 repair_success=False,
-                resolution_result={"reason": str(exc)},
+                resolution_result={"reason": self._exception_reason(exc), "exception_type": exc.__class__.__name__},
                 adapter_session_metadata=session_metadata,
                 finished=True,
             )
@@ -294,7 +300,8 @@ class BenchmarkRunOrchestrator:
             raise
         evaluation_run_ids: list[str] = []
         futures = []
-        with ThreadPoolExecutor(max_workers=max(1, len(subject_rows))) as executor:
+        executor = ThreadPoolExecutor(max_workers=max(1, len(subject_rows)))
+        try:
             for subject_row in subject_rows:
                 clone_handle = clone_handles[subject_row.subject_name]
                 evaluation_run = self.store.create_evaluation_run(
@@ -316,14 +323,31 @@ class BenchmarkRunOrchestrator:
                         verification_agent_id=verification_agent_id,
                     )
                 )
-            failure: Exception | None = None
+            failure: BaseException | None = None
             for future in futures:
                 try:
                     future.result()
-                except Exception as exc:  # pragma: no cover - exercised in tests through failure paths
+                except BaseException as exc:  # pragma: no cover - exercised in tests through failure paths
                     failure = exc
-        if failure is not None:
-            self.store.update_benchmark_run_status(benchmark_run_id=benchmark_run.id, status="failed", finished=True)
-            raise failure
-        self.store.update_benchmark_run_status(benchmark_run_id=benchmark_run.id, status="completed", finished=True)
-        return BenchmarkRunResult(benchmark_run_id=benchmark_run.id, evaluation_run_ids=tuple(evaluation_run_ids))
+                    break
+            if failure is not None:
+                for evaluation_run in self.store.list_evaluation_runs(benchmark_run.id):
+                    if evaluation_run.finished_at is not None:
+                        continue
+                    self.store.update_evaluation_run_status(
+                        evaluation_run_id=evaluation_run.id,
+                        status=EvaluationRunStatus.FAILED.value,
+                        repair_success=False,
+                        resolution_result={
+                            "reason": self._exception_reason(failure),
+                            "exception_type": failure.__class__.__name__,
+                            "benchmark_interrupted": True,
+                        },
+                        finished=True,
+                    )
+                self.store.update_benchmark_run_status(benchmark_run_id=benchmark_run.id, status="failed", finished=True)
+                raise failure
+            self.store.update_benchmark_run_status(benchmark_run_id=benchmark_run.id, status="completed", finished=True)
+            return BenchmarkRunResult(benchmark_run_id=benchmark_run.id, evaluation_run_ids=tuple(evaluation_run_ids))
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)

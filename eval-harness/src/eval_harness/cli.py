@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import signal
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -311,14 +312,27 @@ def _command_run_benchmark(args: argparse.Namespace) -> int:
         subject_adapters=subject_adapters,
         store=store,
     )
-    result = orchestrator.run(
-        scenario_revision_id=setup_run.scenario_revision_id,
-        verified_setup_run_id=args.setup_run_id,
-        user_proxy_agent_id=args.user_proxy_agent_id,
-        verification_agent_id=args.verification_agent_id,
-    )
-    print(json.dumps(result.__dict__, indent=2))
-    return 0
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _interrupt_benchmark(signum, frame):  # type: ignore[no-untyped-def]
+        del frame
+        raise KeyboardInterrupt(f"Benchmark interrupted by signal {signum}")
+
+    signal.signal(signal.SIGINT, _interrupt_benchmark)
+    signal.signal(signal.SIGTERM, _interrupt_benchmark)
+    try:
+        result = orchestrator.run(
+            scenario_revision_id=setup_run.scenario_revision_id,
+            verified_setup_run_id=args.setup_run_id,
+            user_proxy_agent_id=args.user_proxy_agent_id,
+            verification_agent_id=args.verification_agent_id,
+        )
+        print(json.dumps(result.__dict__, indent=2))
+        return 0
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def _command_run_judge_job(args: argparse.Namespace) -> int:

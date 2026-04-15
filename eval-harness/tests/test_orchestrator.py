@@ -245,6 +245,7 @@ class FakeSubjectSession(SubjectSession):
     turn_results: list[AdapterTurnResult]
     seeded: tuple[TurnSeed, ...] = ()
     submitted_messages: list[str] = field(default_factory=list)
+    abort_called: bool = False
 
     def seed_context(self, context_seed: tuple[TurnSeed, ...]) -> None:
         self.seeded = context_seed
@@ -264,6 +265,10 @@ class FakeSubjectSession(SubjectSession):
 
     def close(self) -> dict[str, str]:
         return {"closed": "true"}
+
+    def abort(self) -> dict[str, str]:
+        self.abort_called = True
+        return {"closed": "true", "aborted": "true"}
 
 
 @dataclass
@@ -871,6 +876,79 @@ def test_benchmark_orchestrator_marks_run_failed_when_clone_launch_raises() -> N
         with store._session_factory() as session:
             row = session.scalars(select(BenchmarkRunRecord)).one()
         assert row.status == "failed"
+
+
+def test_benchmark_orchestrator_marks_interrupting_runs_failed_and_aborts_session() -> None:
+    store = _build_store()
+    scenario = store.create_scenario(title="Nginx recovery", scenario_name_hint="nginx-recovery")
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-golden",
+        summary="Recover nginx",
+        what_it_tests={"items": ["systemd recovery"]},
+        observable_problem_statement="The website is down and nginx will not start.",
+        sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
+        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        judge_rubric={"items": ["diagnosis"]},
+        planner_metadata={
+            "repair_checks": [
+                {
+                    "name": "nginx-fixed",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["active"],
+                }
+            ],
+            "turn_budget": 3,
+        },
+    )
+    setup = store.create_setup_run(scenario_revision_id=revision.id, status="running")
+    store.update_setup_run_status(
+        setup_run_id=setup.id,
+        status="verified",
+        broken_image_id="ami-broken",
+        planner_approved=True,
+    )
+    store.upsert_subject(
+        subject_name="system-a",
+        adapter_type="fake_adapter",
+        display_name="System A",
+        adapter_config={"max_turns": 3},
+    )
+
+    interrupting_session = FakeSubjectSession(turn_results=[])
+
+    def _raise_interrupt(message: str) -> AdapterTurnResult:
+        del message
+        raise KeyboardInterrupt("stop benchmark")
+
+    interrupting_session.submit_user_message = _raise_interrupt  # type: ignore[method-assign]
+    adapter = FakeSubjectAdapter(session=interrupting_session)
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=FakeBackend(),
+        controller_factory=FakeControllerFactory([FakeController()]),
+        subject_adapters={"fake_adapter": adapter},
+        store=store,
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="stop benchmark"):
+        orchestrator.run(
+            scenario_revision_id=revision.id,
+            verified_setup_run_id=setup.id,
+            user_proxy_agent_id="user_proxy_agent",
+            verification_agent_id="verification_executor",
+        )
+
+    from eval_harness.persistence.postgres_models import BenchmarkRunRecord, EvaluationRunRecord
+
+    with store._session_factory() as session:
+        benchmark_row = session.scalars(select(BenchmarkRunRecord)).one()
+        evaluation_row = session.scalars(select(EvaluationRunRecord)).one()
+    assert benchmark_row.status == "failed"
+    assert benchmark_row.finished_at is not None
+    assert evaluation_row.status == "failed"
+    assert evaluation_row.finished_at is not None
+    assert evaluation_row.resolution_result_json["exception_type"] == "KeyboardInterrupt"
+    assert interrupting_session.abort_called is True
 
 
 def test_setup_orchestrator_clears_runtime_before_creating_broken_image() -> None:
