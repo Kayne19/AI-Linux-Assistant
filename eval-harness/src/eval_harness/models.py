@@ -289,11 +289,16 @@ class PlannerReviewDecision:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PlannerReviewDecision":
+        raw_correction_instructions = payload.get("correction_instructions", [])
+        if isinstance(raw_correction_instructions, str):
+            correction_items = (raw_correction_instructions,)
+        else:
+            correction_items = tuple(raw_correction_instructions or ())
         return cls(
             outcome=PlannerReviewOutcome(str(payload.get("outcome", PlannerReviewOutcome.CORRECT.value))),
             summary=str(payload.get("summary", "")).strip(),
             correction_instructions=tuple(
-                str(item).strip() for item in payload.get("correction_instructions", []) or [] if str(item).strip()
+                str(item).strip() for item in correction_items if str(item).strip()
             ),
             updated_observable_problem_statement=str(payload.get("updated_observable_problem_statement", "")).strip(),
             metadata=dict(payload.get("metadata", {}) or {}),

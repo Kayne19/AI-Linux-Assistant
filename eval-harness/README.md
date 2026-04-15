@@ -13,7 +13,7 @@ Golden images are now target-image driven:
 - scenarios name a `target_image`
 - the AWS backend resolves that alias to the newest tagged golden AMI
 - if the AMI is missing, `verify-scenario` auto-builds it with Packer and prints build progress to `stderr`
-- before the first OpenClaw request on staging or a benchmark clone, the backend injects runtime model/provider config, verifies the local gateway is up, runs a model-backed probe, then runs a verifier command-exec probe against the host path
+- before the first OpenClaw request on staging or a benchmark clone, the backend injects runtime model/provider config, enables elevated host exec for webchat sessions, verifies the local gateway is up, runs a model-backed probe, then runs verifier and setup-agent command-exec probes against the host path
 - before the verified broken-image snapshot is created, the backend removes the injected provider secret from staging so it is not baked into the transient AMI
 - if staging setup fails after launch, the harness captures backend diagnostics before teardown so setup-run metadata includes the failure context
 
@@ -24,7 +24,8 @@ V1 benchmark flow:
 - planner must define both sabotage and objective verification procedures, including any prerequisite installation or provisioning needed to create the failure
 - OpenClaw Agent A applies sabotage on staging and runs the planner’s probes
 - the setup agent is explicitly told it is operating inside a disposable benchmark sandbox and must not refuse bounded sabotage on generic safety grounds
-- the verifier is explicitly told to use the normal host execution path and not `exec host=sandbox`; the runtime probe also validates that host command execution still works before setup continues
+- the setup runtime enables elevated host exec for the `webchat` provider and defaults setup sessions to elevated host mode so the sabotage path does not fall back to `/approve`
+- the verifier is explicitly told to use the normal host execution path and not `exec host=sandbox`; runtime probes now validate both verifier and setup-agent command execution before setup continues
 - planner reviews raw probe output and either approves or issues a correction
 - if the planner has to correct sabotage twice, the setup run fails
 - only planner-approved broken environments are cloned

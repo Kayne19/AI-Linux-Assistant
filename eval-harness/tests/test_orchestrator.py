@@ -424,7 +424,7 @@ def test_setup_orchestrator_fails_fast_when_setup_agent_refuses_authorized_sabot
         store=store,
     )
 
-    with pytest.raises(ScenarioSetupFailedError, match="refused authorized sabotage"):
+    with pytest.raises(ScenarioSetupFailedError, match="could not apply authorized sabotage"):
         orchestrator.run(
             PlannerScenarioRequest(planning_brief="break nginx", target_image="ami-golden"),
             group_id="group-1",
@@ -436,6 +436,49 @@ def test_setup_orchestrator_fails_fast_when_setup_agent_refuses_authorized_sabot
     assert failed_setup_run.failure_reason == "setup_agent_refused_authorized_sabotage"
     assert failed_setup_run.backend_metadata_json["sabotage_refusal_detected"] is True
     assert failed_setup_run.backend_metadata_json["failure_exception"].startswith("ScenarioSetupFailedError:")
+
+
+def test_setup_orchestrator_marks_sandbox_runtime_block_as_failed_infra() -> None:
+    store = _build_store()
+    backend = FakeBackend(diagnostics={"journal": "gateway healthy", "status": "running"})
+    controller = FakeController(
+        send_responses=[
+            "Blocked by the sandbox, not by the plan.\n"
+            "- root filesystem is read-only.\n"
+            "- elevated exec is disabled here.\n"
+            "If you can give me a writable/root-enabled sandbox, I can do the exact sabotage sequence.\n"
+        ]
+    )
+    orchestrator = ScenarioSetupOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([controller]),
+        planner=FakePlanner(),
+        store=store,
+    )
+
+    with pytest.raises(ScenarioSetupFailedError, match="could not apply authorized sabotage"):
+        orchestrator.run(
+            PlannerScenarioRequest(planning_brief="break nginx", target_image="ami-golden"),
+            group_id="group-1",
+        )
+
+    with store._session_factory() as session:
+        failed_setup_run = session.scalars(select(ScenarioSetupRunRecord)).one()
+    assert failed_setup_run.status == "failed_infra"
+    assert failed_setup_run.failure_reason == "setup_agent_blocked_by_runtime"
+    assert failed_setup_run.backend_metadata_json["sabotage_runtime_block_detected"] is True
+
+
+def test_planner_review_decision_normalizes_string_correction_instructions() -> None:
+    decision = PlannerReviewDecision.from_dict(
+        {
+            "outcome": "correct",
+            "summary": "Need to retry",
+            "correction_instructions": "Install nginx and retry sabotage.",
+        }
+    )
+
+    assert decision.correction_instructions == ("Install nginx and retry sabotage.",)
 
 
 def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair() -> None:
@@ -508,6 +551,75 @@ def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair()
     assert evaluation_runs[0].status == "completed"
     assert "bad unit override" not in clone_controller.sent_messages[0].lower()
     assert backend.configured_runtime_handles == ["clone-system-a"]
+
+
+def test_benchmark_orchestrator_marks_run_failed_when_clone_launch_raises() -> None:
+    store = _build_store()
+    scenario = store.create_scenario(title="Nginx recovery", scenario_name_hint="nginx-recovery")
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-golden",
+        summary="Recover nginx",
+        what_it_tests={"items": ["systemd recovery"]},
+        observable_problem_statement="The website is down and nginx will not start.",
+        sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
+        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        judge_rubric={"items": ["diagnosis"]},
+        planner_metadata={
+            "repair_checks": [
+                {
+                    "name": "nginx-fixed",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["active"],
+                }
+            ],
+            "turn_budget": 3,
+        },
+    )
+    setup = store.create_setup_run(scenario_revision_id=revision.id, status="running")
+    store.update_setup_run_status(
+        setup_run_id=setup.id,
+        status="verified",
+        broken_image_id="ami-broken",
+        planner_approved=True,
+    )
+    store.upsert_subject(
+        subject_name="system-a",
+        adapter_type="fake_adapter",
+        display_name="System A",
+        adapter_config={"max_turns": 3},
+    )
+
+    class FailingBackend(FakeBackend):
+        def launch_subject_clones(self, group_id, scenario_id, broken_image_id, subject_names):
+            del group_id, scenario_id, broken_image_id, subject_names
+            raise RuntimeError("EC2 quota exceeded")
+
+    backend = FailingBackend()
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([]),
+        subject_adapters={"fake_adapter": FakeSubjectAdapter()},
+        store=store,
+    )
+
+    with pytest.raises(RuntimeError, match="EC2 quota exceeded"):
+        orchestrator.run(
+            scenario_revision_id=revision.id,
+            verified_setup_run_id=setup.id,
+            user_proxy_agent_id="user_proxy_agent",
+            verification_agent_id="verification_executor",
+        )
+
+    benchmark_runs = store.list_benchmark_runs_for_revision(revision.id) if hasattr(store, "list_benchmark_runs_for_revision") else []
+    if benchmark_runs:
+        assert benchmark_runs[0].status == "failed"
+    else:
+        # Fall back to direct table inspection — status must not be left as "running".
+        from eval_harness.persistence.postgres_models import BenchmarkRunRecord
+        with store._session_factory() as session:
+            row = session.scalars(select(BenchmarkRunRecord)).one()
+        assert row.status == "failed"
 
 
 def test_setup_orchestrator_clears_runtime_before_creating_broken_image() -> None:

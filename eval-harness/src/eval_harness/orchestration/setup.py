@@ -33,6 +33,15 @@ class ScenarioSetupOrchestrator:
         re.compile(r"\bneed approval\b", re.IGNORECASE),
         re.compile(r"\b/approve\b", re.IGNORECASE),
     )
+    _RUNTIME_BLOCK_PATTERNS = (
+        re.compile(r"\bblocked by the sandbox\b", re.IGNORECASE),
+        re.compile(r"\bread-only\b", re.IGNORECASE),
+        re.compile(r"\broot filesystem is read-only\b", re.IGNORECASE),
+        re.compile(r"\belevated exec is disabled\b", re.IGNORECASE),
+        re.compile(r"\belevated is not available\b", re.IGNORECASE),
+        re.compile(r"\bwritable/root-enabled sandbox\b", re.IGNORECASE),
+        re.compile(r"\b/approve\b", re.IGNORECASE),
+    )
 
     def __init__(
         self,
@@ -110,6 +119,12 @@ class ScenarioSetupOrchestrator:
         if not normalized:
             return False
         return any(pattern.search(normalized) for pattern in self._REFUSAL_PATTERNS)
+
+    def _is_runtime_block(self, response: str) -> bool:
+        normalized = str(response or "").strip()
+        if not normalized:
+            return False
+        return any(pattern.search(normalized) for pattern in self._RUNTIME_BLOCK_PATTERNS)
 
     def run(
         self,
@@ -206,13 +221,20 @@ class ScenarioSetupOrchestrator:
                     role="sabotage_agent",
                     content=sabotage_response,
                 )
-                if self._is_sabotage_refusal(sabotage_response):
+                sabotage_refusal = self._is_sabotage_refusal(sabotage_response)
+                runtime_block = self._is_runtime_block(sabotage_response)
+                if sabotage_refusal or runtime_block:
+                    failure_reason = "setup_agent_refused_authorized_sabotage"
+                    refusal_metadata = {"sabotage_refusal_detected": True}
+                    if runtime_block:
+                        failure_reason = "setup_agent_blocked_by_runtime"
+                        refusal_metadata["sabotage_runtime_block_detected"] = True
                     self.store.update_setup_run_status(
                         setup_run_id=setup_run.id,
                         status=ScenarioSetupStatus.FAILED_INFRA.value,
                         correction_count=correction_count,
-                        failure_reason="setup_agent_refused_authorized_sabotage",
-                        backend_metadata={"sabotage_refusal_detected": True},
+                        failure_reason=failure_reason,
+                        backend_metadata=refusal_metadata,
                     )
                     self.store.update_scenario_status(
                         scenario_id=scenario_row.id,
@@ -220,7 +242,7 @@ class ScenarioSetupOrchestrator:
                         verification_status="failed",
                     )
                     raise ScenarioSetupFailedError(
-                        f"Setup agent refused authorized sabotage for {scenario_row.scenario_name}."
+                        f"Setup agent could not apply authorized sabotage for {scenario_row.scenario_name}."
                     )
                 command_results = controller.execute_commands(
                     tuple(item.command for item in scenario.verification_probes),
@@ -334,16 +356,21 @@ class ScenarioSetupOrchestrator:
         except Exception as exc:
             if staging_handle is not None:
                 diagnostics = self.backend.collect_failure_diagnostics(staging_handle)
-                if diagnostics:
+                partial_phase_summaries = list(getattr(exc, "phase_summaries", []) or [])
+                if diagnostics or partial_phase_summaries:
                     current_setup = self.store.get_setup_run(setup_run.id)
                     current_status = current_setup.status if current_setup is not None else ScenarioSetupStatus.RUNNING.value
+                    failure_metadata: dict = {
+                        "failure_exception": f"{type(exc).__name__}: {exc}",
+                    }
+                    if diagnostics:
+                        failure_metadata["failure_diagnostics"] = diagnostics
+                    if partial_phase_summaries:
+                        failure_metadata["openclaw_runtime_phase_summaries"] = partial_phase_summaries
                     self.store.update_setup_run_status(
                         setup_run_id=setup_run.id,
                         status=current_status,
-                        backend_metadata={
-                            "failure_exception": f"{type(exc).__name__}: {exc}",
-                            "failure_diagnostics": diagnostics,
-                        },
+                        backend_metadata=failure_metadata,
                     )
             current_setup = self.store.get_setup_run(setup_run.id)
             if current_setup and current_setup.status == ScenarioSetupStatus.RUNNING.value:

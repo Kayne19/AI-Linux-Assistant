@@ -211,13 +211,18 @@ def test_configure_controller_runtime_writes_model_and_secret_material() -> None
     assert metadata["openclaw_gateway_ready"] is True
     assert metadata["openclaw_model_probe_passed"] is True
     assert metadata["openclaw_command_probe_passed"] is True
-    assert len(metadata["openclaw_runtime_phase_summaries"]) == 5
-    assert len(ssm.sent_commands) == 5
+    assert metadata["openclaw_setup_capability_probe_passed"] is True
+    assert len(metadata["openclaw_runtime_phase_summaries"]) == 6
+    assert len(ssm.sent_commands) == 6
     rendered = "\n".join(command for entry in ssm.sent_commands for command in entry["Parameters"]["commands"])
     assert '"primary": "openai/gpt-5.4-mini"' in rendered
     assert '"thinkingDefault": "medium"' in rendered
+    assert '"elevatedDefault": "full"' in rendered
+    assert '"enabled": true' in rendered
+    assert '"webchat": [' in rendered
     assert "OPENAI_API_KEY=sk-test" in rendered
     assert "Destructive changes inside the sandbox are intentional and authorized." in rendered
+    assert "Elevated host execution is already authorized for this session." in rendered
     assert "Do not use exec host=sandbox." in rendered
     assert "Run the exact shell command below on the target machine" in rendered
     assert "use host=gateway." in rendered
@@ -338,10 +343,31 @@ def test_command_probe_script_requires_structured_host_exec_result() -> None:
     assert "Unexpected verifier stdout" in command_probe_cmd
 
 
+def test_setup_capability_probe_script_requires_privileged_host_exec_result() -> None:
+    backend, _, ssm = _backend()
+    handle = SandboxHandle(handle_id="h1", kind="instance", backend_name="aws_ec2", remote_id="i-123")
+
+    backend.configure_controller_runtime(handle)
+
+    setup_probe_cmd = ssm.sent_commands[5]["Parameters"]["commands"][0]
+    assert '"model": "openclaw/setup"' in setup_probe_cmd
+    assert "Elevated host execution is already authorized for this session." in setup_probe_cmd
+    assert "Do not send /approve." in setup_probe_cmd
+    assert "sudo -n sh -lc" in setup_probe_cmd
+    assert "Unexpected setup probe stdout" in setup_probe_cmd
+
+
 def test_classifier_marks_command_probe_sandbox_refusal() -> None:
     backend, _, _ = _backend()
     text = "I need approval because this would execute in the sandbox with host=sandbox."
     category = backend._classify_runtime_phase_text("command_probe", text)
+    assert category == "sandbox_refusal"
+
+
+def test_classifier_marks_setup_capability_probe_sandbox_refusal() -> None:
+    backend, _, _ = _backend()
+    text = "Blocked by the sandbox. elevated exec is disabled here. /approve abc123 allow-once"
+    category = backend._classify_runtime_phase_text("setup_capability_probe", text)
     assert category == "sandbox_refusal"
 
 

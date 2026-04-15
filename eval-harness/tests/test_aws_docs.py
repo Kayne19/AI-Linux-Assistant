@@ -15,5 +15,7 @@ def test_aws_docs_reference_canonical_packer_surface() -> None:
     assert "gpt-5.4-mini" in packer_readme
     assert "must not refuse bounded sabotage" in harness_readme
     assert "cached AMIs still receive the current sandbox-sabotage" in packer_readme
-    assert "runs a model-backed probe, then runs a verifier command-exec probe against the host path" in harness_readme
-    assert "then run a verifier command-exec probe over the host path" in packer_readme
+    assert "enables elevated host exec for webchat sessions" in harness_readme
+    assert "verifier and setup-agent command-exec probes against the host path" in harness_readme
+    assert "enables elevated host exec for `webchat` sessions" in packer_readme
+    assert "then run verifier and setup-agent command-exec probes over the host path" in packer_readme

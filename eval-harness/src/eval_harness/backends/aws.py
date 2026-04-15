@@ -339,7 +339,15 @@ class AwsEc2Backend(SandboxBackend):
                         }
                     }
                 },
-            }
+            },
+            "tools": {
+                "elevated": {
+                    "enabled": True,
+                    "allowFrom": {
+                        "webchat": ["*"],
+                    },
+                }
+            },
         }
 
     def _setup_agent_soul(self) -> str:
@@ -355,6 +363,8 @@ class AwsEc2Backend(SandboxBackend):
                 "",
                 "You have direct host access and can run any command with sudo. Use sudo for root operations: package installation, systemd commands, editing /etc files, etc.",
                 "The eval user has passwordless sudo configured. Proceed without hesitation on privileged operations.",
+                "Elevated host execution is already authorized for this session.",
+                "Do not send /approve and do not ask for a writable or root-enabled sandbox.",
             )
         )
 
@@ -374,6 +384,29 @@ class AwsEc2Backend(SandboxBackend):
                 "Run the exact shell command below on the target machine and return only the structured result.",
                 "Use the normal host execution path. Do not use exec host=sandbox.",
                 "If you need to choose an execution host, use host=gateway.",
+                "Format exactly as:",
+                "__STDOUT_BEGIN__",
+                "<stdout>",
+                "__STDOUT_END__",
+                "__STDERR_BEGIN__",
+                "<stderr>",
+                "__STDERR_END__",
+                "__EXIT_CODE__=<integer>",
+                "",
+                "Do not explain anything. Do not omit empty sections.",
+                "",
+                "Command:",
+                command,
+            )
+        )
+
+    def _setup_capability_probe_prompt(self, command: str) -> str:
+        return "\n".join(
+            (
+                "Run the exact shell command below on the target machine and return only the structured result.",
+                "Use the normal host execution path. Do not use exec host=sandbox.",
+                "Elevated host execution is already authorized for this session. Do not send /approve.",
+                "If you need root, prefix the command with sudo -n.",
                 "Format exactly as:",
                 "__STDOUT_BEGIN__",
                 "<stdout>",
@@ -524,6 +557,16 @@ WantedBy=multi-user.target
             and "__exit_code__=0" in normalized
         ):
             return "command_probe_ready"
+        if (
+            phase == "setup_capability_probe"
+            and "__stdout_begin__" in normalized
+            and "__stdout_end__" in normalized
+            and "__stderr_begin__" in normalized
+            and "__stderr_end__" in normalized
+            and "__exit_code__=0" in normalized
+            and "ready" in normalized
+        ):
+            return "setup_capability_ready"
         return "unknown"
 
     def _format_runtime_phase_error(self, handle: SandboxHandle, summary: dict[str, Any]) -> str:
@@ -575,8 +618,17 @@ WantedBy=multi-user.target
                     "primary": normalized_model,
                 },
                 "thinkingDefault": runtime.thinking,
+                "elevatedDefault": "full",
                 "sandbox": {
                     "mode": "off",
+                },
+                "tools": {
+                    "elevated": {
+                        "enabled": True,
+                        "allowFrom": {
+                            "webchat": ["*"],
+                        },
+                    }
                 },
             }
         }
@@ -590,6 +642,9 @@ WantedBy=multi-user.target
         proxy_soul = self._proxy_agent_soul()
         token_literal = json.dumps(self.config.openclaw_eval_token)
         command_probe_prompt_literal = json.dumps(self._verifier_command_prompt("printf READY"))
+        setup_capability_probe_prompt_literal = json.dumps(
+            self._setup_capability_probe_prompt("sudo -n sh -lc 'printf READY'")
+        )
         service_unit = self._openclaw_service_unit()
         config_script = f"""install -d -m 0755 /home/eval/.openclaw /home/eval/.openclaw/agents/setup /home/eval/.openclaw/agents/verifier /home/eval/.openclaw/agents/proxy /etc/openclaw
 cat > /home/eval/.openclaw/openclaw.json <<'EOF'
@@ -776,6 +831,85 @@ print(f"OpenClaw verifier command probe failed: {{last_error}}")
 raise SystemExit(1)
 PY
 """
+        setup_capability_probe_script = f"""python3 - <<'PY'
+import json
+import urllib.error
+import time
+import urllib.request
+
+url = "http://127.0.0.1:18789/v1/chat/completions"
+headers = {{
+    "Authorization": "Bearer " + {token_literal},
+    "Content-Type": "application/json",
+}}
+prompt = {setup_capability_probe_prompt_literal}
+
+def extract_text(payload):
+    choices = payload.get("choices") or []
+    if not choices:
+        return ""
+    message = choices[0].get("message") or {{}}
+    content = message.get("content", "")
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+        return "".join(parts)
+    return str(content)
+
+def extract_block(text, start_marker, end_marker):
+    start_index = text.find(start_marker)
+    end_index = text.find(end_marker)
+    if start_index == -1 or end_index == -1 or end_index < start_index:
+        return ""
+    start_index += len(start_marker)
+    return text[start_index:end_index].strip("\\n")
+
+payload = json.dumps({{
+    "model": "openclaw/setup",
+    "user": "runtime-setup-capability-probe",
+    "messages": [{{"role": "user", "content": prompt}}],
+}}).encode("utf-8")
+last_error = None
+for _ in range(18):
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=45) as response:
+            body = response.read().decode("utf-8", errors="replace")
+        parsed = json.loads(body)
+        text = extract_text(parsed)
+        print(text)
+        required_markers = (
+            "__STDOUT_BEGIN__",
+            "__STDOUT_END__",
+            "__STDERR_BEGIN__",
+            "__STDERR_END__",
+        )
+        missing_markers = [marker for marker in required_markers if marker not in text]
+        if missing_markers:
+            print(f"Missing structured markers: {{missing_markers}}")
+            raise SystemExit(1)
+        if "__EXIT_CODE__=0" not in text:
+            print("Setup capability probe did not exit zero.")
+            raise SystemExit(1)
+        stdout = extract_block(text, "__STDOUT_BEGIN__", "__STDOUT_END__")
+        if stdout.strip() != "READY":
+            print(f"Unexpected setup probe stdout: {{stdout!r}}")
+            raise SystemExit(1)
+        raise SystemExit(0)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        print(f"HTTPError: {{exc.code}}")
+        print(body)
+        last_error = exc
+    except Exception as exc:
+        last_error = exc
+    time.sleep(5)
+print(f"OpenClaw setup capability probe failed: {{last_error}}")
+raise SystemExit(1)
+PY
+"""
         phase_summaries: list[dict[str, Any]] = []
         for phase_name, commands, timeout_seconds in (
             ("write_runtime_files", (config_script,), 180),
@@ -783,6 +917,7 @@ PY
             ("gateway_probe", (gateway_probe_script,), 1200),
             ("model_probe", (model_probe_script,), 900),
             ("command_probe", (command_probe_script,), 900),
+            ("setup_capability_probe", (setup_capability_probe_script,), 900),
         ):
             invocation = self._run_ssm_shell_commands(
                 handle.remote_id,
@@ -807,6 +942,7 @@ PY
             "openclaw_runtime_probe_passed": True,
             "openclaw_model_probe_passed": True,
             "openclaw_command_probe_passed": True,
+            "openclaw_setup_capability_probe_passed": True,
         }
 
     def clear_controller_runtime(self, handle: SandboxHandle) -> dict[str, Any]:

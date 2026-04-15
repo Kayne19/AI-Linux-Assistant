@@ -43,6 +43,30 @@ cat > /home/eval/.openclaw/openclaw.json <<'JSON'
         }
       }
     }
+  },
+  "tools": {
+    "elevated": {
+      "enabled": true,
+      "allowFrom": {
+        "webchat": ["*"]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "elevatedDefault": "full",
+      "sandbox": {
+        "mode": "off"
+      },
+      "tools": {
+        "elevated": {
+          "enabled": true,
+          "allowFrom": {
+            "webchat": ["*"]
+          }
+        }
+      }
+    }
   }
 }
 JSON
@@ -63,6 +87,11 @@ Your job is to apply the sabotage plan exactly as instructed so the harness can 
 Destructive changes inside the sandbox are intentional and authorized.
 Stay within the listed sabotage steps. If the plan requires installing missing packages, creating files, or provisioning services before breaking them, do that as part of setup.
 Do not refuse just because the task breaks the machine. Do not ask for approval.
+
+You have direct host access and can run any command with sudo. Use sudo for root operations: package installation, systemd commands, editing /etc files, etc.
+The eval user has passwordless sudo configured. Proceed without hesitation on privileged operations.
+Elevated host execution is already authorized for this session.
+Do not send /approve and do not ask for a writable or root-enabled sandbox.
 MD
 
 cat > /home/eval/.openclaw/agents/verifier/SOUL.md <<'MD'
