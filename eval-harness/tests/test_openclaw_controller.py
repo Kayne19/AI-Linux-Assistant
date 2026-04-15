@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from eval_harness.controllers.openclaw import OpenClawController, OpenClawControllerConfig
 
 
@@ -17,7 +19,27 @@ def test_command_prompt_forces_non_sandbox_exec_host() -> None:
     assert "in the sandbox" not in prompt
     assert "Do not use exec host=sandbox." in prompt
     assert "use host=gateway." in prompt
+    assert "Do not send /approve." in prompt
+    assert "Do not rely on OpenClaw elevated exec mode." in prompt
+    assert "prefix it with sudo -n." in prompt
     assert "host=auto" not in prompt
+
+    controller.close()
+
+
+def test_require_structured_command_result_rejects_approval_output() -> None:
+    controller = OpenClawController(
+        OpenClawControllerConfig(
+            base_url="http://127.0.0.1:18789",
+            token="token-123",
+            default_session_key="session-1",
+        )
+    )
+    raw_output = "/approve b8ac523b allow-once"
+    parsed = controller._parse_command_result("systemctl is-active nginx", raw_output)
+
+    with pytest.raises(RuntimeError, match="sandbox restrictions"):
+        controller._require_structured_command_result("systemctl is-active nginx", raw_output, parsed)
 
     controller.close()
 

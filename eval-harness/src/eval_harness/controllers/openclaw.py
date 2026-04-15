@@ -86,6 +86,8 @@ class OpenClawController(SandboxController):
             "Run the exact shell command below on the target machine and return only the structured result.\n"
             "Use the normal host execution path. Do not use exec host=sandbox.\n"
             "If you need to choose an execution host, use host=gateway.\n"
+            "Do not rely on OpenClaw elevated exec mode. Do not send /approve.\n"
+            "If the command truly requires root, run the normal host command and prefix it with sudo -n.\n"
             f"Format exactly as:\n{_STDOUT_BEGIN}\n<stdout>\n{_STDOUT_END}\n"
             f"{_STDERR_BEGIN}\n<stderr>\n{_STDERR_END}\n"
             f"{_EXIT_CODE_PREFIX}<integer>\n\n"
@@ -124,21 +126,22 @@ class OpenClawController(SandboxController):
 
     def _looks_like_sandbox_refusal(self, output: str) -> bool:
         normalized = str(output or "").lower()
+        markers = (
+            "permission",
+            "approval",
+            "/approve",
+            "cannot",
+            "can't",
+            "cant",
+            "refus",
+            "host=sandbox",
+            "elevated is not available",
+        )
+        if "/approve" in normalized or "elevated is not available" in normalized:
+            return True
         if "sandbox" not in normalized:
             return False
-        return any(
-            marker in normalized
-            for marker in (
-                "permission",
-                "approval",
-                "/approve",
-                "cannot",
-                "can't",
-                "cant",
-                "refus",
-                "host=sandbox",
-            )
-        )
+        return any(marker in normalized for marker in markers)
 
     def _require_structured_command_result(self, command: str, output: str, parsed: CommandExecutionResult) -> CommandExecutionResult:
         missing_markers = [marker for marker in _REQUIRED_RESULT_MARKERS if marker not in output]

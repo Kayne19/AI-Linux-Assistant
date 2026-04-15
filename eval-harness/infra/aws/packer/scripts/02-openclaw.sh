@@ -57,14 +57,6 @@ cat > /home/eval/.openclaw/openclaw.json <<'JSON'
       "elevatedDefault": "full",
       "sandbox": {
         "mode": "off"
-      },
-      "tools": {
-        "elevated": {
-          "enabled": true,
-          "allowFrom": {
-            "webchat": ["*"]
-          }
-        }
       }
     }
   }
@@ -125,9 +117,6 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/home/eval /etc/openclaw
 PrivateTmp=true
 
 [Install]

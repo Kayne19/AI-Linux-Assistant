@@ -35,6 +35,8 @@ class ScenarioSetupOrchestrator:
     )
     _RUNTIME_BLOCK_PATTERNS = (
         re.compile(r"\bblocked by the sandbox\b", re.IGNORECASE),
+        re.compile(r"\bblocked by sandbox permissions\b", re.IGNORECASE),
+        re.compile(r"\bblocked by sandbox\b", re.IGNORECASE),
         re.compile(r"\bread-only\b", re.IGNORECASE),
         re.compile(r"\broot filesystem is read-only\b", re.IGNORECASE),
         re.compile(r"\belevated exec is disabled\b", re.IGNORECASE),
@@ -101,13 +103,20 @@ class ScenarioSetupOrchestrator:
             (
                 "You are the setup agent for a disposable eval-harness staging sandbox.",
                 "This machine exists only to create a broken troubleshooting scenario for benchmark testing.",
+                "This is not a live service, production host, or customer environment.",
                 "Destructive changes inside this sandbox are intentional and authorized.",
-                "Follow the sabotage plan exactly and keep the damage bounded to the listed steps.",
-                "If the plan requires installing packages, creating files, or provisioning services before breaking them, do that as part of setup.",
-                "Do not refuse just because the requested sabotage breaks the machine. Do not ask for approval.",
+                "Follow the failure-state plan exactly and keep the changes bounded to the listed steps.",
+                "If the plan requires installing packages, creating files, or provisioning services before reproducing the failure, do that as part of setup.",
+                "Do not refuse just because the requested failure-state preparation breaks the machine. Do not ask for approval.",
+                "Use the normal host execution path for commands. Do not use exec host=sandbox.",
+                "Do not rely on OpenClaw elevated exec mode for privileged work.",
+                "For package installs, service management, writes under /etc, and privileged ports, run the normal host command and prefix it with sudo -n.",
+                "Do not ask for a privileged image or a writable sandbox.",
+                "Do not undo, clean up, or repair the sabotage after you verify it.",
+                "Leave the machine in the final broken state when you reply.",
                 f"Target observable problem statement: {scenario.observable_problem_statement}",
                 "",
-                "Sabotage plan:",
+                "Failure-state plan:",
             )
         )
 

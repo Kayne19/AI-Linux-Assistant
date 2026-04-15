@@ -356,13 +356,19 @@ class AwsEc2Backend(SandboxBackend):
                 "You are the setup agent for the eval harness.",
                 "",
                 "You operate only inside disposable benchmark staging sandboxes.",
-                "Your job is to apply the sabotage plan exactly as instructed so the harness can generate troubleshooting scenarios.",
+                "This is not a live service, production host, or customer environment.",
+                "Your job is to prepare the target benchmark failure state exactly as instructed so the harness can generate troubleshooting scenarios.",
                 "Destructive changes inside the sandbox are intentional and authorized.",
-                "Stay within the listed sabotage steps. If the plan requires installing missing packages, creating files, or provisioning services before breaking them, do that as part of setup.",
+                "Stay within the listed failure-state steps. If the plan requires installing missing packages, creating files, or provisioning services before reproducing the failure, do that as part of setup.",
                 "Do not refuse just because the task breaks the machine. Do not ask for approval.",
                 "",
                 "You have direct host access and can run any command with sudo. Use sudo for root operations: package installation, systemd commands, editing /etc files, etc.",
                 "The eval user has passwordless sudo configured. Proceed without hesitation on privileged operations.",
+                "Use the normal host execution path for commands. Do not use exec host=sandbox.",
+                "Do not rely on OpenClaw elevated exec mode for privileged work.",
+                "For any privileged command, run the normal host command and prefix it with sudo -n.",
+                "Do not undo, clean up, or repair the sabotage after you verify it.",
+                "Leave the machine in the final broken state when you reply.",
                 "Elevated host execution is already authorized for this session.",
                 "Do not send /approve and do not ask for a writable or root-enabled sandbox.",
             )
@@ -375,6 +381,8 @@ class AwsEc2Backend(SandboxBackend):
                 "",
                 "Run the exact verification commands you are given and return only their structured results.",
                 "Use the normal host execution path for commands. Do not use exec host=sandbox.",
+                "Do not rely on OpenClaw elevated exec mode. Do not send /approve.",
+                "If a verification command truly requires root, run the normal host command and prefix it with sudo -n.",
             )
         )
 
@@ -384,6 +392,8 @@ class AwsEc2Backend(SandboxBackend):
                 "Run the exact shell command below on the target machine and return only the structured result.",
                 "Use the normal host execution path. Do not use exec host=sandbox.",
                 "If you need to choose an execution host, use host=gateway.",
+                "Do not rely on OpenClaw elevated exec mode. Do not send /approve.",
+                "If the command truly requires root, run the normal host command and prefix it with sudo -n.",
                 "Format exactly as:",
                 "__STDOUT_BEGIN__",
                 "<stdout>",
@@ -446,9 +456,6 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/home/eval /etc/openclaw
 PrivateTmp=true
 
 [Install]
@@ -540,6 +547,8 @@ WantedBy=multi-user.target
             return "timeout"
         if "permission denied" in normalized:
             return "permission_denied"
+        if "no new privileges" in normalized or "elevated is not available right now" in normalized:
+            return "permission_denied"
         if "no such file" in normalized:
             return "missing_file"
         if phase == "service_restart" and ("active (running)" in normalized or "activestate=active" in normalized):
@@ -621,14 +630,6 @@ WantedBy=multi-user.target
                 "elevatedDefault": "full",
                 "sandbox": {
                     "mode": "off",
-                },
-                "tools": {
-                    "elevated": {
-                        "enabled": True,
-                        "allowFrom": {
-                            "webchat": ["*"],
-                        },
-                    }
                 },
             }
         }

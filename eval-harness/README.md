@@ -24,7 +24,7 @@ V1 benchmark flow:
 - planner must define both sabotage and objective verification procedures, including any prerequisite installation or provisioning needed to create the failure
 - OpenClaw Agent A applies sabotage on staging and runs the planner’s probes
 - the setup agent is explicitly told it is operating inside a disposable benchmark sandbox and must not refuse bounded sabotage on generic safety grounds
-- the setup runtime enables elevated host exec for the `webchat` provider and defaults setup sessions to elevated host mode so the sabotage path does not fall back to `/approve`
+- the setup runtime enables the host exec path for the `webchat` provider, and the setup agent is instructed to use normal host execution with `sudo -n` for privileged sabotage work instead of relying on elevated exec mode
 - the verifier is explicitly told to use the normal host execution path and not `exec host=sandbox`; runtime probes now validate both verifier and setup-agent command execution before setup continues
 - planner reviews raw probe output and either approves or issues a correction
 - if the planner has to correct sabotage twice, the setup run fails

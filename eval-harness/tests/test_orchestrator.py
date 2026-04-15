@@ -408,9 +408,16 @@ def test_setup_orchestrator_authorizes_sandbox_sabotage_in_prompt() -> None:
 
     sabotage_prompt = controller.sent_messages[0]
     assert "disposable eval-harness staging sandbox" in sabotage_prompt
+    assert "This is not a live service, production host, or customer environment." in sabotage_prompt
     assert "Destructive changes inside this sandbox are intentional and authorized." in sabotage_prompt
     assert "If the plan requires installing packages" in sabotage_prompt
-    assert "Do not refuse just because the requested sabotage breaks the machine." in sabotage_prompt
+    assert "Do not refuse just because the requested failure-state preparation breaks the machine." in sabotage_prompt
+    assert "Use the normal host execution path for commands." in sabotage_prompt
+    assert "Do not rely on OpenClaw elevated exec mode for privileged work." in sabotage_prompt
+    assert "prefix it with sudo -n." in sabotage_prompt
+    assert "Do not undo, clean up, or repair the sabotage after you verify it." in sabotage_prompt
+    assert "Leave the machine in the final broken state when you reply." in sabotage_prompt
+    assert "Failure-state plan:" in sabotage_prompt
 
 
 def test_setup_orchestrator_fails_fast_when_setup_agent_refuses_authorized_sabotage() -> None:
@@ -447,6 +454,35 @@ def test_setup_orchestrator_marks_sandbox_runtime_block_as_failed_infra() -> Non
             "- root filesystem is read-only.\n"
             "- elevated exec is disabled here.\n"
             "If you can give me a writable/root-enabled sandbox, I can do the exact sabotage sequence.\n"
+        ]
+    )
+    orchestrator = ScenarioSetupOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([controller]),
+        planner=FakePlanner(),
+        store=store,
+    )
+
+    with pytest.raises(ScenarioSetupFailedError, match="could not apply authorized sabotage"):
+        orchestrator.run(
+            PlannerScenarioRequest(planning_brief="break nginx", target_image="ami-golden"),
+            group_id="group-1",
+        )
+
+    with store._session_factory() as session:
+        failed_setup_run = session.scalars(select(ScenarioSetupRunRecord)).one()
+    assert failed_setup_run.status == "failed_infra"
+    assert failed_setup_run.failure_reason == "setup_agent_blocked_by_runtime"
+    assert failed_setup_run.backend_metadata_json["sabotage_runtime_block_detected"] is True
+
+
+def test_setup_orchestrator_marks_sandbox_permissions_runtime_block_as_failed_infra() -> None:
+    store = _build_store()
+    backend = FakeBackend(diagnostics={"journal": "gateway healthy", "status": "running"})
+    controller = FakeController(
+        send_responses=[
+            "Blocked by sandbox permissions: this environment has no nginx installed, apt writes are permission-denied, "
+            "and binding to port 80 fails as non-root."
         ]
     )
     orchestrator = ScenarioSetupOrchestrator(

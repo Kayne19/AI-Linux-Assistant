@@ -74,7 +74,7 @@ The golden AMI only bakes the OpenClaw gateway and eval agents. The harness inje
 - `/home/eval/.openclaw/openclaw.json` for the default `provider/model`
 - `/etc/openclaw/eval-runtime.env` for provider secrets such as `OPENAI_API_KEY`
 - refreshed `SOUL.md` files for `setup`, `verifier`, and `proxy` so cached AMIs still receive the current sandbox-sabotage and host-exec instructions
-- runtime config enables elevated host exec for `webchat` sessions and defaults agent sessions to elevated host mode for setup-time sabotage
+- runtime config enables elevated host exec for `webchat` sessions, while setup prompts force privileged sabotage work through normal host execution with `sudo -n`
 - staged runtime checks verify service/listener health before the first model-backed probe, then run verifier and setup-agent command-exec probes over the host path, so setup failures can distinguish gateway boot, provider/model errors, sandbox-routing regressions, and missing elevated-exec capability
 
 For v1 the harness supports `controller.runtime.provider = "openai"`, a single model string such as `gpt-5.4-mini`, and `controller.runtime.thinking`, for example `medium`.
