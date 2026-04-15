@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -14,16 +15,30 @@ class Base(DeclarativeBase):
     """Dedicated declarative base for eval-harness persistence models."""
 
 
+def normalize_database_url(database_url: str) -> str:
+    normalized = str(database_url or "").strip()
+    if normalized.startswith("postgres://"):
+        normalized = "postgresql://" + normalized[len("postgres://") :]
+    parsed = urlparse(normalized)
+    if parsed.query:
+        cleaned_query = urlencode(
+            [(key.strip(), value.strip()) for key, value in parse_qsl(parsed.query, keep_blank_values=True)],
+            doseq=True,
+        )
+        normalized = urlunparse(parsed._replace(query=cleaned_query))
+    return normalized
+
+
 def get_database_url() -> str:
     """Resolve eval-harness DB URL with explicit override precedence."""
     url = os.getenv("EVAL_HARNESS_DATABASE_URL") or os.getenv("DATABASE_URL")
     if not url:
         raise RuntimeError("Missing database URL. Set EVAL_HARNESS_DATABASE_URL or DATABASE_URL.")
-    return url
+    return normalize_database_url(url)
 
 
 def build_engine(database_url: str | None = None, *, echo: bool = False) -> Engine:
-    resolved = database_url or get_database_url()
+    resolved = normalize_database_url(database_url or get_database_url())
     if resolved.startswith("sqlite") and ":memory:" in resolved:
         return create_engine(
             resolved,
