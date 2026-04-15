@@ -25,6 +25,7 @@ _STDOUT_END = "__STDOUT_END__"
 _STDERR_BEGIN = "__STDERR_BEGIN__"
 _STDERR_END = "__STDERR_END__"
 _EXIT_CODE_PREFIX = "__EXIT_CODE__="
+_REQUIRED_RESULT_MARKERS = (_STDOUT_BEGIN, _STDOUT_END, _STDERR_BEGIN, _STDERR_END)
 
 
 @dataclass(frozen=True)
@@ -32,14 +33,14 @@ class OpenClawControllerConfig:
     base_url: str
     token: str
     default_session_key: str
-    request_timeout_seconds: int = 180
+    request_timeout_seconds: int = 900
 
 
 @dataclass(frozen=True)
 class OpenClawControllerFactoryConfig:
     token: str
     default_session_key_prefix: str
-    request_timeout_seconds: int = 180
+    request_timeout_seconds: int = 900
     fixed_base_url: str | None = None
     aws_region: str | None = None
     remote_port: int = 18789
@@ -82,9 +83,9 @@ class OpenClawController(SandboxController):
 
     def _command_prompt(self, command: str) -> str:
         return (
-            "Run the exact shell command below in the sandbox and return only the structured result.\n"
+            "Run the exact shell command below on the target machine and return only the structured result.\n"
             "Use the normal host execution path. Do not use exec host=sandbox.\n"
-            "If you need to choose an execution host, use host=auto or host=gateway.\n"
+            "If you need to choose an execution host, use host=gateway.\n"
             f"Format exactly as:\n{_STDOUT_BEGIN}\n<stdout>\n{_STDOUT_END}\n"
             f"{_STDERR_BEGIN}\n<stderr>\n{_STDERR_END}\n"
             f"{_EXIT_CODE_PREFIX}<integer>\n\n"
@@ -119,6 +120,43 @@ class OpenClawController(SandboxController):
             stderr=stderr,
             exit_code=exit_code,
             metadata={"raw_output": output},
+        )
+
+    def _looks_like_sandbox_refusal(self, output: str) -> bool:
+        normalized = str(output or "").lower()
+        if "sandbox" not in normalized:
+            return False
+        return any(
+            marker in normalized
+            for marker in (
+                "permission",
+                "approval",
+                "/approve",
+                "cannot",
+                "can't",
+                "cant",
+                "refus",
+                "host=sandbox",
+            )
+        )
+
+    def _require_structured_command_result(self, command: str, output: str, parsed: CommandExecutionResult) -> CommandExecutionResult:
+        missing_markers = [marker for marker in _REQUIRED_RESULT_MARKERS if marker not in output]
+        if not missing_markers and parsed.exit_code is not None:
+            return parsed
+
+        raw_preview = " ".join(str(output or "").split())
+        if len(raw_preview) > 400:
+            raw_preview = raw_preview[:397] + "..."
+        if self._looks_like_sandbox_refusal(output):
+            reason = "OpenClaw refused host command execution and mentioned sandbox restrictions."
+        else:
+            reason = "OpenClaw returned an unstructured command result."
+        raise RuntimeError(
+            f"{reason} command={command!r} "
+            f"missing_markers={missing_markers or ['none']} "
+            f"exit_code_present={parsed.exit_code is not None} "
+            f"raw_output={raw_preview!r}"
         )
 
     def send(self, *, agent_id: str, message: str, session_key: str | None = None) -> str:
@@ -156,7 +194,11 @@ class OpenClawController(SandboxController):
                 message=self._command_prompt(command),
                 session_key=session_key,
             )
-            parsed = self._parse_command_result(command, raw_output)
+            parsed = self._require_structured_command_result(
+                command,
+                raw_output,
+                self._parse_command_result(command, raw_output),
+            )
             results.append(
                 CommandExecutionResult(
                     command=parsed.command,
@@ -196,18 +238,27 @@ class OpenClawControllerFactory(SandboxControllerFactory):
         if not self.config.aws_region:
             raise RuntimeError("aws_region is required when fixed_base_url is not configured.")
 
-        local_port = _allocate_local_port()
-        port_forward = SsmPortForwardSession(
-            instance_id=handle.remote_id,
-            local_port=local_port,
-            remote_port=self.config.remote_port,
-            region=self.config.aws_region,
+        last_error: Exception | None = None
+        for _ in range(5):
+            local_port = _allocate_local_port()
+            port_forward = SsmPortForwardSession(
+                instance_id=handle.remote_id,
+                local_port=local_port,
+                remote_port=self.config.remote_port,
+                region=self.config.aws_region,
+            )
+            try:
+                port_forward.start()
+            except Exception as exc:  # noqa: BLE001 - retry on any bind/port-collision failure
+                last_error = exc
+                continue
+            controller_config = OpenClawControllerConfig(
+                base_url=f"http://127.0.0.1:{local_port}",
+                token=self.config.token,
+                default_session_key=session_key,
+                request_timeout_seconds=self.config.request_timeout_seconds,
+            )
+            return OpenClawController(controller_config, port_forward_session=port_forward)
+        raise RuntimeError(
+            f"Failed to start SSM port forward to {handle.remote_id} after 5 attempts: {last_error}"
         )
-        port_forward.start()
-        controller_config = OpenClawControllerConfig(
-            base_url=f"http://127.0.0.1:{local_port}",
-            token=self.config.token,
-            default_session_key=session_key,
-            request_timeout_seconds=self.config.request_timeout_seconds,
-        )
-        return OpenClawController(controller_config, port_forward_session=port_forward)

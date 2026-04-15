@@ -25,6 +25,14 @@ def _require_boto3() -> None:
         raise RuntimeError("boto3 is required for the AWS backend. Install eval-harness[aws].")
 
 
+class _RuntimePhaseFailure(RuntimeError):
+    """Raised by configure_controller_runtime when a phase fails; carries partial summaries."""
+
+    def __init__(self, message: str, phase_summaries: list[dict[str, Any]]):
+        super().__init__(message)
+        self.phase_summaries = list(phase_summaries)
+
+
 @dataclass(frozen=True)
 class AwsTargetImageConfig:
     target_image: str
@@ -344,6 +352,9 @@ class AwsEc2Backend(SandboxBackend):
                 "Destructive changes inside the sandbox are intentional and authorized.",
                 "Stay within the listed sabotage steps. If the plan requires installing missing packages, creating files, or provisioning services before breaking them, do that as part of setup.",
                 "Do not refuse just because the task breaks the machine. Do not ask for approval.",
+                "",
+                "You have direct host access and can run any command with sudo. Use sudo for root operations: package installation, systemd commands, editing /etc files, etc.",
+                "The eval user has passwordless sudo configured. Proceed without hesitation on privileged operations.",
             )
         )
 
@@ -354,6 +365,28 @@ class AwsEc2Backend(SandboxBackend):
                 "",
                 "Run the exact verification commands you are given and return only their structured results.",
                 "Use the normal host execution path for commands. Do not use exec host=sandbox.",
+            )
+        )
+
+    def _verifier_command_prompt(self, command: str) -> str:
+        return "\n".join(
+            (
+                "Run the exact shell command below on the target machine and return only the structured result.",
+                "Use the normal host execution path. Do not use exec host=sandbox.",
+                "If you need to choose an execution host, use host=gateway.",
+                "Format exactly as:",
+                "__STDOUT_BEGIN__",
+                "<stdout>",
+                "__STDOUT_END__",
+                "__STDERR_BEGIN__",
+                "<stderr>",
+                "__STDERR_END__",
+                "__EXIT_CODE__=<integer>",
+                "",
+                "Do not explain anything. Do not omit empty sections.",
+                "",
+                "Command:",
+                command,
             )
         )
 
@@ -447,20 +480,24 @@ WantedBy=multi-user.target
         }
         if phase == "service_restart":
             summary["service_active"] = "active (running)" in text or "activestate=active" in text
-            summary["port_18789_listening"] = "127.0.0.1:18789" in text or ":18789" in text
         return summary
 
     def _classify_runtime_phase_text(self, phase: str, text: str) -> str:
         normalized = str(text or "").lower()
         if not normalized.strip():
             return "empty_output"
+        if "sandbox" in normalized and any(
+            marker in normalized
+            for marker in ("permission", "approval", "/approve", "cannot", "can't", "cant", "refus", "host=sandbox")
+        ):
+            return "sandbox_refusal"
         if "incorrect api key" in normalized or "invalid api key" in normalized or "invalid_api_key" in normalized:
             return "invalid_api_key"
         if "quota" in normalized or "rate limit" in normalized or "429" in normalized:
             return "rate_limited"
         if "model_not_found" in normalized or "model not found" in normalized or "unknown model" in normalized:
             return "model_not_found"
-        if "unauthorized" in normalized or "forbidden" in normalized or "authentication" in normalized:
+        if "unauthorized" in normalized or "forbidden" in normalized or "authentication failed" in normalized or "authentication error" in normalized:
             return "auth_error"
         if "bad request" in normalized or "invalid request" in normalized or "json" in normalized or "schema" in normalized:
             return "bad_request"
@@ -478,6 +515,15 @@ WantedBy=multi-user.target
             return "gateway_http_ready"
         if phase == "model_probe" and ('"choices"' in normalized or "ready" in normalized):
             return "model_probe_ready"
+        if (
+            phase == "command_probe"
+            and "__stdout_begin__" in normalized
+            and "__stdout_end__" in normalized
+            and "__stderr_begin__" in normalized
+            and "__stderr_end__" in normalized
+            and "__exit_code__=0" in normalized
+        ):
+            return "command_probe_ready"
         return "unknown"
 
     def _format_runtime_phase_error(self, handle: SandboxHandle, summary: dict[str, Any]) -> str:
@@ -514,6 +560,11 @@ WantedBy=multi-user.target
             }
 
     def configure_controller_runtime(self, handle: SandboxHandle) -> dict[str, Any]:
+        if not str(self.config.openclaw_eval_token or "").strip():
+            raise RuntimeError(
+                "openclaw_eval_token must be configured before configuring the controller runtime; "
+                "an empty token would deploy the gateway with no authentication."
+            )
         runtime = self._required_openclaw_runtime()
         normalized_model = self._normalized_openclaw_model(runtime)
         openclaw_config = self._openclaw_base_config()
@@ -524,6 +575,9 @@ WantedBy=multi-user.target
                     "primary": normalized_model,
                 },
                 "thinkingDefault": runtime.thinking,
+                "sandbox": {
+                    "mode": "off",
+                },
             }
         }
         config_payload = json.dumps(openclaw_config, indent=2)
@@ -535,6 +589,7 @@ WantedBy=multi-user.target
         verifier_soul = self._verifier_agent_soul()
         proxy_soul = self._proxy_agent_soul()
         token_literal = json.dumps(self.config.openclaw_eval_token)
+        command_probe_prompt_literal = json.dumps(self._verifier_command_prompt("printf READY"))
         service_unit = self._openclaw_service_unit()
         config_script = f"""install -d -m 0755 /home/eval/.openclaw /home/eval/.openclaw/agents/setup /home/eval/.openclaw/agents/verifier /home/eval/.openclaw/agents/proxy /etc/openclaw
 cat > /home/eval/.openclaw/openclaw.json <<'EOF'
@@ -565,20 +620,19 @@ systemctl daemon-reload
 systemctl restart openclaw-gateway.service
 for _ in $(seq 1 30); do
   active=$(systemctl is-active openclaw-gateway.service || true)
-  if [ "${active}" = "active" ] && ss -ltn | grep -q ':18789'; then
+  if [ "${active}" = "active" ]; then
     systemctl is-active openclaw-gateway.service
     systemctl show openclaw-gateway.service --property=ActiveState,SubState --no-pager || true
-    ss -ltnp | grep 18789 || true
     exit 0
   fi
   sleep 2
 done
 systemctl is-active openclaw-gateway.service || true
 systemctl status openclaw-gateway.service --no-pager --full || true
-ss -ltnp | grep 18789 || true
 exit 1
 """
         gateway_probe_script = f"""python3 - <<'PY'
+import time
 import urllib.error
 import urllib.request
 
@@ -587,14 +641,24 @@ headers = {{
     "Authorization": "Bearer " + {token_literal},
     "Content-Type": "application/json",
 }}
-req = urllib.request.Request(url, data=b"{{}}", headers=headers, method="POST")
-try:
-    with urllib.request.urlopen(req, timeout=20) as response:
-        print(f"Gateway HTTP response status={{response.status}}")
+# Deliberately malformed body so the gateway's JSON parser rejects it with a fast 4xx
+# instead of kicking off an upstream completion call. Any HTTP response - including
+# 4xx - proves the gateway's HTTP layer is up and serving requests.
+last_error = None
+for _ in range(60):
+    req = urllib.request.Request(url, data=b"not-json", headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            print(f"Gateway HTTP response status={{response.status}}")
+            raise SystemExit(0)
+    except urllib.error.HTTPError as exc:
+        print(f"Gateway HTTP response status={{exc.code}}")
         raise SystemExit(0)
-except urllib.error.HTTPError as exc:
-    print(f"Gateway HTTP response status={{exc.code}}")
-    raise SystemExit(0)
+    except Exception as exc:
+        last_error = exc
+    time.sleep(10)
+print(f"Gateway HTTP probe failed: {{last_error}}")
+raise SystemExit(1)
 PY
 """
         model_probe_script = f"""python3 - <<'PY'
@@ -633,12 +697,92 @@ print(f"OpenClaw runtime probe failed: {{last_error}}")
 raise SystemExit(1)
 PY
 """
+        command_probe_script = f"""python3 - <<'PY'
+import json
+import urllib.error
+import time
+import urllib.request
+
+url = "http://127.0.0.1:18789/v1/chat/completions"
+headers = {{
+    "Authorization": "Bearer " + {token_literal},
+    "Content-Type": "application/json",
+}}
+prompt = {command_probe_prompt_literal}
+
+def extract_text(payload):
+    choices = payload.get("choices") or []
+    if not choices:
+        return ""
+    message = choices[0].get("message") or {{}}
+    content = message.get("content", "")
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+        return "".join(parts)
+    return str(content)
+
+def extract_block(text, start_marker, end_marker):
+    start_index = text.find(start_marker)
+    end_index = text.find(end_marker)
+    if start_index == -1 or end_index == -1 or end_index < start_index:
+        return ""
+    start_index += len(start_marker)
+    return text[start_index:end_index].strip("\\n")
+
+payload = json.dumps({{
+    "model": "openclaw/verifier",
+    "user": "runtime-command-probe",
+    "messages": [{{"role": "user", "content": prompt}}],
+}}).encode("utf-8")
+last_error = None
+for _ in range(18):
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=45) as response:
+            body = response.read().decode("utf-8", errors="replace")
+        parsed = json.loads(body)
+        text = extract_text(parsed)
+        print(text)
+        required_markers = (
+            "__STDOUT_BEGIN__",
+            "__STDOUT_END__",
+            "__STDERR_BEGIN__",
+            "__STDERR_END__",
+        )
+        missing_markers = [marker for marker in required_markers if marker not in text]
+        if missing_markers:
+            print(f"Missing structured markers: {{missing_markers}}")
+            raise SystemExit(1)
+        if "__EXIT_CODE__=0" not in text:
+            print("Verifier command probe did not exit zero.")
+            raise SystemExit(1)
+        stdout = extract_block(text, "__STDOUT_BEGIN__", "__STDOUT_END__")
+        if stdout.strip() != "READY":
+            print(f"Unexpected verifier stdout: {{stdout!r}}")
+            raise SystemExit(1)
+        raise SystemExit(0)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        print(f"HTTPError: {{exc.code}}")
+        print(body)
+        last_error = exc
+    except Exception as exc:
+        last_error = exc
+    time.sleep(5)
+print(f"OpenClaw verifier command probe failed: {{last_error}}")
+raise SystemExit(1)
+PY
+"""
         phase_summaries: list[dict[str, Any]] = []
         for phase_name, commands, timeout_seconds in (
             ("write_runtime_files", (config_script,), 180),
             ("service_restart", (service_script,), 180),
-            ("gateway_probe", (gateway_probe_script,), 120),
-            ("model_probe", (model_probe_script,), 180),
+            ("gateway_probe", (gateway_probe_script,), 1200),
+            ("model_probe", (model_probe_script,), 900),
+            ("command_probe", (command_probe_script,), 900),
         ):
             invocation = self._run_ssm_shell_commands(
                 handle.remote_id,
@@ -649,7 +793,10 @@ PY
             phase_summaries.append(summary)
             exit_code = invocation.get("exit_code")
             if int(1 if exit_code is None else exit_code) != 0:
-                raise RuntimeError(self._format_runtime_phase_error(handle, summary))
+                raise _RuntimePhaseFailure(
+                    self._format_runtime_phase_error(handle, summary),
+                    phase_summaries,
+                )
         return {
             "openclaw_runtime_provider": runtime.provider,
             "openclaw_runtime_model": normalized_model,
@@ -659,6 +806,7 @@ PY
             "openclaw_gateway_ready": True,
             "openclaw_runtime_probe_passed": True,
             "openclaw_model_probe_passed": True,
+            "openclaw_command_probe_passed": True,
         }
 
     def clear_controller_runtime(self, handle: SandboxHandle) -> dict[str, Any]:
@@ -711,9 +859,17 @@ systemctl stop openclaw-gateway.service
             if state == "available":
                 return image_id
             if state in {"failed", "deregistered"}:
+                self._best_effort_destroy_broken_image(image_id)
                 raise RuntimeError(f"Broken image {image_id} entered terminal state {state}.")
             time.sleep(15)
+        self._best_effort_destroy_broken_image(image_id)
         raise TimeoutError(f"Timed out waiting for broken image {image_id} to become available.")
+
+    def _best_effort_destroy_broken_image(self, image_id: str) -> None:
+        try:
+            self.destroy_broken_image(image_id)
+        except Exception as exc:  # noqa: BLE001 - best-effort cleanup, never mask original error
+            self._emit_progress(f"Warning: failed to clean up broken image {image_id}: {exc}")
 
     def launch_subject_clones(
         self,
@@ -723,11 +879,21 @@ systemctl stop openclaw-gateway.service
         subject_names: list[str],
     ) -> dict[str, SandboxHandle]:
         handles: dict[str, SandboxHandle] = {}
-        for subject_name in subject_names:
-            name = f"{self.config.clone_name_prefix}-{subject_name}-{group_id}"
-            tags = self._base_tags(group_id, scenario_id, "subject-clone", {"Name": name, "EvalSubject": subject_name})
-            handle = self._launch_instance(image_id=broken_image_id, name=name, tags=tags)
-            handles[subject_name] = handle
+        try:
+            for subject_name in subject_names:
+                name = f"{self.config.clone_name_prefix}-{subject_name}-{group_id}"
+                tags = self._base_tags(group_id, scenario_id, "subject-clone", {"Name": name, "EvalSubject": subject_name})
+                handle = self._launch_instance(image_id=broken_image_id, name=name, tags=tags)
+                handles[subject_name] = handle
+        except Exception:
+            for launched_handle in handles.values():
+                try:
+                    self.destroy_handle(launched_handle)
+                except Exception as cleanup_exc:  # noqa: BLE001 - best-effort cleanup
+                    self._emit_progress(
+                        f"Warning: failed to terminate clone {launched_handle.remote_id} during rollback: {cleanup_exc}"
+                    )
+            raise
         return handles
 
     def destroy_handle(self, handle: SandboxHandle) -> None:
