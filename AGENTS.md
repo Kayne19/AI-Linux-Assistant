@@ -55,6 +55,12 @@ conda activate AI-Linux-Assistant
 # Full dev stack
 python run_dev.py
 
+# Frontend only when the API is already running
+python run_dev.py --frontend-only
+
+# API + workers without the frontend
+python run_dev.py --backend-only
+
 # Backend entry points
 cd Back-end && python app/main.py
 cd Back-end && python app/AI_Generated_TUI.py

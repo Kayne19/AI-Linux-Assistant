@@ -36,6 +36,24 @@ That starts:
 - four chat worker processes by default in dev (`CHAT_RUN_WORKER_PROCESS_COUNT`, defaults to `4`)
 - Vite frontend on port `5173`
 
+Useful split modes:
+
+```bash
+# Frontend only, for when the API is already running elsewhere
+python run_dev.py --frontend-only
+
+# API + workers, but no frontend
+python run_dev.py --backend-only
+
+# API only
+python run_dev.py --api-only
+
+# Workers only
+python run_dev.py --workers-only
+```
+
+You can also use skip flags such as `--skip-backend`, `--skip-frontend`, and `--skip-workers`.
+
 For a temporary public API-only stack without `systemd`:
 
 ```bash

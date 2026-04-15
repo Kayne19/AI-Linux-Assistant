@@ -194,6 +194,7 @@ Worker-local reuse boundary:
 Local dev note:
 
 - `run_dev.py` starts `4` worker processes by default
+- `python run_dev.py --frontend-only` is the intended local workflow when the API is already running and you only need the Vite client
 - each dev worker process defaults to `CHAT_RUN_WORKER_CONCURRENCY=1`, so local dev gets four independent claimers unless overridden
 
 ## Cancellation Semantics
