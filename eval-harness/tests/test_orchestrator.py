@@ -1015,3 +1015,626 @@ def test_judge_job_blinds_subject_identity() -> None:
     request = judge.requests[0]
     assert request.blind_label == "candidate-1"
     assert "system-a" not in json.dumps(request.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by the new benchmark proxy tests
+# ---------------------------------------------------------------------------
+
+
+def _build_benchmark_store_and_revision(
+    *,
+    observable_problem_statement: str = "The website is down and nginx will not start.",
+    turn_budget: int = 3,
+    repair_check_command: str = "systemctl is-active nginx",
+    repair_check_expected: list[str] | None = None,
+    subject_max_turns: int = 3,
+) -> tuple[EvalHarnessStore, object, object]:
+    """Return (store, revision, setup) wired up and ready for a benchmark run."""
+    if repair_check_expected is None:
+        repair_check_expected = ["active"]
+    store = _build_store()
+    scenario = store.create_scenario(title="Test scenario", scenario_name_hint="test-scenario")
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-golden",
+        summary="Test",
+        what_it_tests={"items": ["recovery"]},
+        observable_problem_statement=observable_problem_statement,
+        sabotage_plan={"steps": ["Break it."]},
+        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        judge_rubric={"items": ["diagnosis"]},
+        planner_metadata={
+            "repair_checks": [
+                {
+                    "name": "fixed",
+                    "command": repair_check_command,
+                    "expected_substrings": repair_check_expected,
+                }
+            ],
+            "turn_budget": turn_budget,
+        },
+    )
+    setup = store.create_setup_run(scenario_revision_id=revision.id, status="running")
+    store.update_setup_run_status(
+        setup_run_id=setup.id,
+        status="verified",
+        broken_image_id="ami-broken",
+        planner_approved=True,
+    )
+    store.upsert_subject(
+        subject_name="system-a",
+        adapter_type="fake_adapter",
+        display_name="System A",
+        adapter_config={"max_turns": subject_max_turns},
+    )
+    return store, revision, setup
+
+
+def _run_benchmark(
+    store: EvalHarnessStore,
+    revision,
+    setup,
+    clone_controller: FakeController,
+    session: FakeSubjectSession | None = None,
+) -> object:
+    """Run the benchmark orchestrator and return the result."""
+    if session is None:
+        session = FakeSubjectSession(
+            turn_results=[
+                AdapterTurnResult(
+                    user_message="",
+                    assistant_message="Please run systemctl status nginx.",
+                    run_id="run-1",
+                    status="completed",
+                    terminal_event_type="done",
+                    events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+                ),
+            ]
+        )
+    adapter = FakeSubjectAdapter(session=session)
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=FakeBackend(),
+        controller_factory=FakeControllerFactory([clone_controller]),
+        subject_adapters={"fake_adapter": adapter},
+        store=store,
+    )
+    return orchestrator.run(
+        scenario_revision_id=revision.id,
+        verified_setup_run_id=setup.id,
+        user_proxy_agent_id="user_proxy_agent",
+        verification_agent_id="verification_executor",
+    )
+
+
+# ---------------------------------------------------------------------------
+# SSH scenario fixture (non-nginx, Test J)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ssh_scenario_spec() -> ScenarioSpec:
+    """A non-nginx scenario for testing SSH repair logic."""
+    return ScenarioSpec(
+        scenario_name="ssh-recovery",
+        title="SSH recovery",
+        summary="Recover a broken SSH service",
+        what_it_tests=("sshd recovery", "config inspection"),
+        target_image="ami-ssh-golden",
+        observable_problem_statement="I cannot SSH into the server at all.",
+        sabotage_procedure=("Break sshd by injecting a bad config option.",),
+        verification_probes=(
+            VerificationCheck(
+                name="sshd-broken",
+                command="systemctl is-active sshd",
+                expected_substrings=("failed",),
+            ),
+        ),
+        repair_checks=(
+            VerificationCheck(
+                name="sshd-fixed",
+                command="systemctl is-active sshd",
+                expected_substrings=("active",),
+            ),
+        ),
+        judge_rubric=("diagnosis", "config-repair"),
+        context_seed=(TurnSeed(role="system", content="Use concise shell reasoning."),),
+        turn_budget=5,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test C: proxy system prompt is passed to controller.send() on each turn
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_proxy_sends_system_prompt_on_each_turn() -> None:
+    """Test C: Every proxy send() call includes system_prompt containing the problem statement."""
+    problem = "The website is down and nginx will not start."
+    store, revision, setup = _build_benchmark_store_and_revision(
+        observable_problem_statement=problem,
+        turn_budget=2,
+        subject_max_turns=2,
+    )
+
+    # Track system_prompts received by the controller
+    received_system_prompts: list[str | None] = []
+
+    class TrackingController(FakeController):
+        def send(self, *, agent_id: str, message: str, session_key: str | None = None, system_prompt: str | None = None) -> str:
+            received_system_prompts.append(system_prompt)
+            return super().send(agent_id=agent_id, message=message, session_key=session_key, system_prompt=system_prompt)
+
+    clone_controller = TrackingController(
+        send_responses=[
+            "I checked the logs and nginx seems broken.",
+            "The service still seems broken.",
+        ],
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run journalctl -xe.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    _run_benchmark(store, revision, setup, clone_controller, session)
+
+    # Every proxy send() call should have a system_prompt containing the problem statement
+    assert len(received_system_prompts) >= 1
+    for sp in received_system_prompts:
+        assert sp is not None, "system_prompt must not be None for proxy send() calls"
+        assert problem in sp
+
+
+# ---------------------------------------------------------------------------
+# Test D: HOST_RUN commands are executed and output appended to user message
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_host_run_commands_executed_and_appended() -> None:
+    """Test D: proxy replies with a host-run block → commands executed, output appended to subject message."""
+    problem = "The website is down and nginx will not start."
+    store, revision, setup = _build_benchmark_store_and_revision(
+        observable_problem_statement=problem,
+        turn_budget=2,
+        subject_max_turns=2,
+    )
+
+    execute_batches_used: list[tuple] = []
+    submitted_user_messages: list[str] = []
+
+    class TrackingController(FakeController):
+        def execute_commands(
+            self,
+            commands: tuple[str, ...],
+            *,
+            agent_id: str,
+            session_key: str | None = None,
+        ) -> tuple[CommandExecutionResult, ...]:
+            result = super().execute_commands(commands, agent_id=agent_id, session_key=session_key)
+            execute_batches_used.append((agent_id, commands, result))
+            return result
+
+    clone_controller = TrackingController(
+        send_responses=[
+            # First proxy response contains a HOST_RUN block
+            "I see the issue. Can you run:\n```host-run\nsudo systemctl status nginx\n```",
+            # Second proxy response (after exec result appended): clean reply
+            "I see the service is failed. Please restart it.",
+        ],
+        execute_batches=[
+            # Repair check after first subject turn: not fixed
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            # proxy-exec for host-run command
+            (CommandExecutionResult(command="sudo systemctl status nginx", stdout="● nginx.service - NGINX\n   Loaded: loaded", stderr="", exit_code=0),),
+            # Repair check after second subject turn: fixed
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx and show me.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="OK run systemctl restart nginx.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+
+    # Capture submitted user messages
+    original_submit = session.submit_user_message
+    def tracking_submit(message: str):
+        submitted_user_messages.append(message)
+        return original_submit(message)
+    session.submit_user_message = tracking_submit  # type: ignore[method-assign]
+
+    result = _run_benchmark(store, revision, setup, clone_controller, session)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+
+    # proxy-exec agent_id must be "proxy-exec"
+    proxy_exec_calls = [entry for entry in execute_batches_used if entry[0] == "proxy-exec"]
+    assert len(proxy_exec_calls) >= 1, "execute_commands should have been called with agent_id='proxy-exec'"
+    assert proxy_exec_calls[0][1] == ("sudo systemctl status nginx",)
+
+    # The evaluation store must have a user_proxy_exec/command_result event
+    events = store.list_evaluation_events(evaluation_runs[0].id)
+    exec_events = [e for e in events if e.actor_role == "user_proxy_exec" and e.event_kind == "command_result"]
+    assert len(exec_events) >= 1
+
+    # The second user message submitted to the subject should contain the rendered output
+    assert len(submitted_user_messages) >= 2
+    second_message = submitted_user_messages[1]
+    assert "nginx.service" in second_message or "● nginx" in second_message or "[exit 0]" in second_message
+
+
+# ---------------------------------------------------------------------------
+# Test E: /approve in proxy reply is blocked and re-prompted, skipped_turn event
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_proxy_approval_leak_blocked_and_skipped_turn_event() -> None:
+    """Test E: proxy returns /approve twice → skipped_turn event, approval not submitted to subject."""
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=3, subject_max_turns=3)
+
+    clone_controller = FakeController(
+        send_responses=[
+            # First proxy call: approval leak
+            "/approve 70068ec3 allow-once",
+            # Re-prompt (reminder): still leaking
+            "/approve 70068ec3 allow-once",
+            # Second turn proxy call: clean reply
+            "I can see nginx is still not running.",
+        ],
+        execute_batches=[
+            # Turn 1 repair check: not fixed
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            # Turn 2 repair check: fixed
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
+            # Turn 3 repair check (if reached): fixed
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Please run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Fixed. nginx is active now.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    submitted_messages: list[str] = []
+    original_submit = session.submit_user_message
+    def tracking_submit(message: str):
+        submitted_messages.append(message)
+        return original_submit(message)
+    session.submit_user_message = tracking_submit  # type: ignore[method-assign]
+
+    result = _run_benchmark(store, revision, setup, clone_controller, session)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+
+    # A skipped_turn event must have been recorded with the correct reason
+    events = store.list_evaluation_events(evaluation_runs[0].id)
+    skipped = [e for e in events if e.event_kind == "skipped_turn"]
+    assert len(skipped) >= 1
+    assert skipped[0].payload_json["reason"] == "proxy_approval_leak_suppressed"
+
+    # The subject session was still called (the loop continued to the next iteration)
+    assert len(submitted_messages) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Test F: REPAIR_CONFIRMED triggers early exit with repair_success=True
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_repair_confirmed_triggers_early_exit() -> None:
+    """Test F: proxy replies REPAIR_CONFIRMED → eval completes early, repair_success=True."""
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=5, subject_max_turns=5)
+
+    # We need a session with at least enough turns
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl restart nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    submitted_messages: list[str] = []
+    original_submit = session.submit_user_message
+    def tracking_submit(message: str):
+        submitted_messages.append(message)
+        return original_submit(message)
+    session.submit_user_message = tracking_submit  # type: ignore[method-assign]
+
+    clone_controller = FakeController(
+        send_responses=[
+            # Proxy says REPAIR_CONFIRMED after the first subject turn
+            "REPAIR_CONFIRMED",
+        ],
+        execute_batches=[
+            # First repair check (after subject turn): service still failing
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            # REPAIR_CONFIRMED repair check: now passing
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
+        ],
+    )
+    result = _run_benchmark(store, revision, setup, clone_controller, session)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+    assert evaluation_runs[0].repair_success is True
+    assert evaluation_runs[0].status == "completed"
+
+    # After REPAIR_CONFIRMED the subject session should receive no further messages
+    assert len(submitted_messages) == 1, (
+        f"Subject should only receive one message (before REPAIR_CONFIRMED), got {len(submitted_messages)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test G: proxy stall detection → failed with reason=proxy_stalled
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_proxy_stall_detection_marks_failed() -> None:
+    """Test G: proxy returns plain text (no HOST_RUN, no REPAIR_CONFIRMED) 3 times → proxy_stalled."""
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=10, subject_max_turns=10)
+
+    clone_controller = FakeController(
+        send_responses=[
+            # Three plain non-productive proxy replies
+            "I am not sure what to do.",
+            "Maybe you should restart the machine?",
+            "I don't know, sorry.",
+            # Fallback if loop continues (should not be reached)
+            "Extra reply",
+        ],
+        execute_batches=[
+            # All repair checks: not fixed
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="I think nginx is really broken.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Maybe try restarting.",
+                run_id="run-3",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    result = _run_benchmark(store, revision, setup, clone_controller, session)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+    eval_run = evaluation_runs[0]
+    assert eval_run.status == "failed"
+    assert eval_run.repair_success is False
+    resolution = eval_run.resolution_result_json
+    assert resolution.get("reason") == "proxy_stalled", (
+        f"Expected reason='proxy_stalled', got {resolution!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test H: turn budget is min(scenario.turn_budget, subject max_turns)
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_turn_budget_uses_scenario_when_smaller() -> None:
+    """Test H (part 1): scenario.turn_budget=3, subject max_turns=8 → at most 3 turns."""
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=3, subject_max_turns=8)
+
+    # Proxy always returns non-productive text → loop limited by scenario budget
+    clone_controller = FakeController(
+        send_responses=["Plain text"] * 10,
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ] * 10,
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message=f"reply-{i}",
+                run_id=f"run-{i}",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            )
+            for i in range(10)
+        ]
+    )
+    submitted: list[str] = []
+    original = session.submit_user_message
+    def track(msg):
+        submitted.append(msg)
+        return original(msg)
+    session.submit_user_message = track  # type: ignore[method-assign]
+
+    _run_benchmark(store, revision, setup, clone_controller, session)
+
+    assert len(submitted) <= 3, f"Expected at most 3 turns (scenario budget), got {len(submitted)}"
+
+
+def test_benchmark_turn_budget_uses_subject_when_smaller() -> None:
+    """Test H (part 2): scenario.turn_budget=10, subject max_turns=5 → at most 5 turns."""
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=10, subject_max_turns=5)
+
+    clone_controller = FakeController(
+        send_responses=["Plain text"] * 15,
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ] * 15,
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message=f"reply-{i}",
+                run_id=f"run-{i}",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            )
+            for i in range(15)
+        ]
+    )
+    submitted: list[str] = []
+    original = session.submit_user_message
+    def track(msg):
+        submitted.append(msg)
+        return original(msg)
+    session.submit_user_message = track  # type: ignore[method-assign]
+
+    _run_benchmark(store, revision, setup, clone_controller, session)
+
+    assert len(submitted) <= 5, f"Expected at most 5 turns (subject budget), got {len(submitted)}"
+
+
+# ---------------------------------------------------------------------------
+# Test I: _repair_checks_pass returns True only when all checks pass
+# ---------------------------------------------------------------------------
+
+
+def test_repair_checks_pass_with_all_passing_checks() -> None:
+    """Test I: all checks satisfied → True."""
+    store = _build_store()
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=FakeBackend(),
+        controller_factory=FakeControllerFactory([]),
+        subject_adapters={},
+        store=store,
+    )
+    scenario = _scenario()  # has one repair_check: nginx active
+    results = (
+        CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
+    )
+    assert orchestrator._repair_checks_pass(scenario, results) is True
+
+
+def test_repair_checks_pass_returns_false_when_one_check_fails() -> None:
+    """Test I: one failing check → False."""
+    store = _build_store()
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=FakeBackend(),
+        controller_factory=FakeControllerFactory([]),
+        subject_adapters={},
+        store=store,
+    )
+    scenario = _scenario()
+    # stdout "failed" does not contain expected substring "active"
+    results = (
+        CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),
+    )
+    assert orchestrator._repair_checks_pass(scenario, results) is False
+
+
+def test_repair_checks_pass_returns_false_when_no_checks(ssh_scenario_spec: ScenarioSpec) -> None:
+    """Test I: empty checks → False (using ssh_scenario_spec fixture, Test J)."""
+    store = _build_store()
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=FakeBackend(),
+        controller_factory=FakeControllerFactory([]),
+        subject_adapters={},
+        store=store,
+    )
+    # Build a scenario with zero repair checks
+    empty_scenario = ScenarioSpec(
+        scenario_name=ssh_scenario_spec.scenario_name,
+        title=ssh_scenario_spec.title,
+        summary=ssh_scenario_spec.summary,
+        what_it_tests=ssh_scenario_spec.what_it_tests,
+        target_image=ssh_scenario_spec.target_image,
+        observable_problem_statement=ssh_scenario_spec.observable_problem_statement,
+        sabotage_procedure=ssh_scenario_spec.sabotage_procedure,
+        verification_probes=ssh_scenario_spec.verification_probes,
+        repair_checks=(),  # empty
+        judge_rubric=ssh_scenario_spec.judge_rubric,
+        context_seed=ssh_scenario_spec.context_seed,
+        turn_budget=ssh_scenario_spec.turn_budget,
+    )
+    assert orchestrator._repair_checks_pass(empty_scenario, ()) is False
+
+
+# ---------------------------------------------------------------------------
+# Test J (supplemental): ssh_scenario_spec fixture basic shape sanity
+# ---------------------------------------------------------------------------
+
+
+def test_ssh_scenario_spec_fixture(ssh_scenario_spec: ScenarioSpec) -> None:
+    """Test J: the ssh_scenario_spec fixture has the expected shape."""
+    assert ssh_scenario_spec.scenario_name == "ssh-recovery"
+    assert "ssh" in ssh_scenario_spec.observable_problem_statement.lower()
+    assert len(ssh_scenario_spec.repair_checks) == 1
+    assert ssh_scenario_spec.repair_checks[0].command == "systemctl is-active sshd"
+    assert "active" in ssh_scenario_spec.repair_checks[0].expected_substrings

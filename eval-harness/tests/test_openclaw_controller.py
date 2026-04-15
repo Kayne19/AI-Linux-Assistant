@@ -1,8 +1,67 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from eval_harness.controllers.openclaw import OpenClawController, OpenClawControllerConfig
+
+
+def _make_controller() -> OpenClawController:
+    return OpenClawController(
+        OpenClawControllerConfig(
+            base_url="http://127.0.0.1:18789",
+            token="token-123",
+            default_session_key="session-1",
+        )
+    )
+
+
+def _mock_post_response(text: str) -> MagicMock:
+    """Return a mock requests.Response that yields ``text`` via the OpenClaw choices shape."""
+    response = MagicMock()
+    response.json.return_value = {
+        "choices": [{"message": {"content": text, "role": "assistant"}}]
+    }
+    response.raise_for_status = MagicMock()
+    return response
+
+
+def test_send_includes_system_prompt_in_messages() -> None:
+    """Test A: system_prompt is prepended as a system message in the posted payload."""
+    controller = _make_controller()
+    captured: list[dict] = []
+
+    def fake_post(url, *, json=None, timeout=None):
+        captured.append(json or {})
+        return _mock_post_response("ack")
+
+    with patch.object(controller.session, "post", side_effect=fake_post):
+        controller.send(agent_id="x", message="hello", system_prompt="Be a user.")
+
+    assert len(captured) == 1
+    assert captured[0]["messages"] == [
+        {"role": "system", "content": "Be a user."},
+        {"role": "user", "content": "hello"},
+    ]
+    controller.close()
+
+
+def test_send_without_system_prompt_sends_single_user_message() -> None:
+    """Test B: omitting system_prompt produces a single user message (legacy behaviour)."""
+    controller = _make_controller()
+    captured: list[dict] = []
+
+    def fake_post(url, *, json=None, timeout=None):
+        captured.append(json or {})
+        return _mock_post_response("ack")
+
+    with patch.object(controller.session, "post", side_effect=fake_post):
+        controller.send(agent_id="x", message="hello")
+
+    assert len(captured) == 1
+    assert captured[0]["messages"] == [{"role": "user", "content": "hello"}]
+    controller.close()
 
 
 def test_command_prompt_forces_non_sandbox_exec_host() -> None:
