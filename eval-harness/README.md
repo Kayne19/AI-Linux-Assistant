@@ -94,6 +94,20 @@ eval-harness/
 
 ## CLI
 
+For a repo-level convenience runner that does not require installing `eval_harness` into the current Python environment, you can also use:
+
+```bash
+python ../run_eval_harness.py smoke-test
+```
+
+Other convenience commands:
+
+```bash
+python ../run_eval_harness.py init-db
+python ../run_eval_harness.py generate-scenario --output /tmp/nginx_scenario.json
+python ../run_eval_harness.py verify-scenario --group-id demo-setup
+```
+
 Place env vars in:
 
 - [eval-harness/.env](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/.env)
