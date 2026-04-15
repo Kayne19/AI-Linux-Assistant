@@ -110,8 +110,8 @@ class FakeController(SandboxController):
     closed: bool = False
     send_exception: Exception | None = None
 
-    def send(self, *, agent_id: str, message: str, session_key: str | None = None) -> str:
-        del agent_id
+    def send(self, *, agent_id: str, message: str, session_key: str | None = None, system_prompt: str | None = None) -> str:
+        del agent_id, system_prompt
         self.sent_messages.append(message)
         self.session_keys.append(session_key or "")
         if self.send_exception is not None:
@@ -712,7 +712,8 @@ def test_benchmark_orchestrator_treats_nginx_pid_permission_denied_as_repaired_w
     assert clone_controller.sent_messages == []
 
 
-def test_benchmark_orchestrator_replies_to_read_only_approval_leak_without_proxy() -> None:
+def test_benchmark_orchestrator_proxy_approval_leak_skips_turn_after_two_leaks() -> None:
+    """When the proxy returns /approve tokens twice in a row the turn is skipped."""
     store = _build_store()
     scenario = store.create_scenario(title="Nginx recovery", scenario_name_hint="nginx-recovery")
     revision = store.create_scenario_revision(
@@ -732,7 +733,7 @@ def test_benchmark_orchestrator_replies_to_read_only_approval_leak_without_proxy
                     "expected_substrings": ["active"],
                 }
             ],
-            "turn_budget": 2,
+            "turn_budget": 3,
         },
     )
     setup = store.create_setup_run(scenario_revision_id=revision.id, status="running")
@@ -746,15 +747,28 @@ def test_benchmark_orchestrator_replies_to_read_only_approval_leak_without_proxy
         subject_name="system-a",
         adapter_type="fake_adapter",
         display_name="System A",
-        adapter_config={"max_turns": 2},
+        adapter_config={"max_turns": 3},
     )
 
     clone_controller = FakeController(
-        send_responses=["this should not be used"],
+        send_responses=[
+            # First proxy call: approval leak
+            "/approve 70068ec3 allow-once",
+            # Re-prompt (reminder): still leaking
+            "/approve 70068ec3 allow-once",
+            # Second turn proxy call: clean reply
+            "I can see nginx is still not running.",
+        ],
         execute_batches=[
+            # Turn 1 repair check: not fixed
             (
                 CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),
             ),
+            # Turn 2 repair check: fixed
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
+            ),
+            # Turn 3 repair check (if reached): fixed
             (
                 CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
             ),
@@ -764,14 +778,7 @@ def test_benchmark_orchestrator_replies_to_read_only_approval_leak_without_proxy
         turn_results=[
             AdapterTurnResult(
                 user_message="",
-                assistant_message=(
-                    "Use these read-only diagnostics only:\n\n"
-                    "- `systemctl status nginx --no-pager -l`\n"
-                    "- `nginx -t`\n\n"
-                    "Approve these first.\n\n"
-                    "They map like this:\n\n"
-                    "- 70068ec3 -> `systemctl status nginx --no-pager -l`"
-                ),
+                assistant_message="Please run `systemctl status nginx` and show me the output.",
                 run_id="run-1",
                 status="completed",
                 terminal_event_type="done",
@@ -805,8 +812,12 @@ def test_benchmark_orchestrator_replies_to_read_only_approval_leak_without_proxy
     evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
     assert len(evaluation_runs) == 1
     assert evaluation_runs[0].repair_success is True
-    assert session.submitted_messages[1].startswith("All commands needed to solve this benchmark are pre-approved.")
-    assert clone_controller.sent_messages == []
+
+    # Turn 1 should have been skipped (approval leak suppressed) — a skipped_turn event recorded
+    events = store.list_evaluation_events(evaluation_runs[0].id)
+    skipped = [e for e in events if e.event_kind == "skipped_turn"]
+    assert len(skipped) == 1
+    assert skipped[0].payload_json["reason"] == "proxy_approval_leak_suppressed"
 
 
 def test_benchmark_orchestrator_marks_run_failed_when_clone_launch_raises() -> None:

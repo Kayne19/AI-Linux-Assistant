@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-import re
 
 from ..adapters.base import SubjectAdapter, SubjectSession
 from ..backends.base import SandboxBackend, SandboxHandle
@@ -12,12 +12,26 @@ from ..models import EvaluationRunStatus
 from ..persistence.store import EvalHarnessStore
 
 _NGINX_PID_PERMISSION_DENIED = 'open() "/run/nginx.pid" failed (13: Permission denied)'
-_APPROVAL_LEAK_PATTERNS = (
-    re.compile(r"\bapprove these first\b", re.IGNORECASE),
-    re.compile(r"\buse these read-only diagnostics only\b", re.IGNORECASE),
-    re.compile(r"\bthey map like this\b", re.IGNORECASE),
-    re.compile(r"\b[a-f0-9]{8}\b\s*[→-]", re.IGNORECASE),
-)
+_PROXY_APPROVAL_RE = re.compile(r"/approve\s+[a-f0-9]+", re.IGNORECASE)
+
+
+def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
+    return (
+        "You are a frustrated human user at a Linux terminal. You do not know why your machine is broken or what caused it.\n\n"
+        f"Your situation: {observable_problem_statement}\n\n"
+        "Rules:\n"
+        "- Stay in character as a non-expert user who has shell access but limited Linux knowledge.\n"
+        "- When the assistant asks you to run a command, request execution using a host-run fenced block:\n\n"
+        "```host-run\n"
+        "<command here>\n"
+        "```\n\n"
+        "  The harness will run it and give you the real output on the next turn.\n"
+        "- Only request commands the assistant explicitly asked you to run. Do not invent diagnostics.\n"
+        "- Never fabricate command output. Never say \"Fixed\" or \"Done\" unless you have seen actual output confirming repair.\n"
+        "- Do not send /approve tokens, slash commands, or tool-routing syntax.\n"
+        "- Do not write like an AI assistant. Write like a confused user.\n"
+        "- When you have observed output that confirms the problem stated above is resolved, reply with exactly: REPAIR_CONFIRMED"
+    )
 
 
 def _role_for_subject_message() -> str:
@@ -44,15 +58,11 @@ class BenchmarkRunOrchestrator:
         self.subject_adapters = dict(subject_adapters)
         self.store = store
 
-    def _build_proxy_message(self, scenario_problem: str, transcript: tuple[tuple[str, str], ...], subject_reply: str) -> str:
-        rendered_transcript = "\n".join(f"{role}: {content}" for role, content in transcript)
+    def _build_proxy_message(self, transcript: tuple[tuple[str, str], ...], subject_reply: str) -> str:
+        rendered = "\n".join(f"{role}: {content}" for role, content in transcript)
         return (
-            "You are the benchmark user proxy. You do not know how the environment was sabotaged. "
-            "You only know what is observably broken and any observations you can gather directly. "
-            "Respond as the user in the next turn. Do not reveal hidden causes.\n\n"
-            f"Observable problem:\n{scenario_problem}\n\n"
-            f"Conversation so far:\n{rendered_transcript}\n\n"
-            f"Latest subject response:\n{subject_reply}"
+            f"Conversation so far:\n{rendered}\n\n"
+            f"Assistant just said:\n{subject_reply}"
         )
 
     def _repair_result_payload(self, scenario, command_results) -> dict:
@@ -73,19 +83,8 @@ class BenchmarkRunOrchestrator:
             return message
         return exc.__class__.__name__
 
-    def _looks_like_approval_leak(self, subject_reply: str) -> bool:
-        reply = str(subject_reply or "")
-        if not reply.strip():
-            return False
-        return any(pattern.search(reply) for pattern in _APPROVAL_LEAK_PATTERNS)
-
-    def _benchmark_tool_policy_follow_up(self) -> str:
-        return (
-            "All commands needed to solve this benchmark are pre-approved. "
-            "If you have tool access, act directly instead of asking the user to approve commands. "
-            "Do not expose internal command ids, approval tokens, or tool-routing details, "
-            "and do not ask the user to paste outputs you can gather yourself."
-        )
+    def _proxy_reply_has_approval_leak(self, reply: str) -> bool:
+        return bool(_PROXY_APPROVAL_RE.search(reply))
 
     def _is_known_nginx_permission_false_negative(self, check, result) -> bool:
         combined_output = result.combined_output()
@@ -210,18 +209,37 @@ class BenchmarkRunOrchestrator:
                     )
                     return
 
-                if self._looks_like_approval_leak(turn_result.assistant_message):
-                    user_message = self._benchmark_tool_policy_follow_up()
-                else:
+                user_message = controller.send(
+                    agent_id=user_proxy_agent_id,
+                    message=self._build_proxy_message(
+                        tuple(transcript_pairs),
+                        turn_result.assistant_message,
+                    ),
+                    session_key=f"{evaluation_run_id}-proxy",
+                    system_prompt=_user_proxy_system_prompt(scenario.observable_problem_statement),
+                )
+
+                if self._proxy_reply_has_approval_leak(user_message):
+                    reminder = (
+                        "Do not send /approve commands or slash commands. "
+                        "You are a human user. If you need to run a command, use a host-run block."
+                    )
                     user_message = controller.send(
                         agent_id=user_proxy_agent_id,
-                        message=self._build_proxy_message(
-                            scenario.observable_problem_statement,
-                            tuple(transcript_pairs),
-                            turn_result.assistant_message,
-                        ),
+                        message=reminder,
                         session_key=f"{evaluation_run_id}-proxy",
+                        system_prompt=_user_proxy_system_prompt(scenario.observable_problem_statement),
                     )
+                    if self._proxy_reply_has_approval_leak(user_message):
+                        self.store.append_evaluation_event(
+                            evaluation_run_id=evaluation_run_id,
+                            seq=seq,
+                            actor_role="user_proxy",
+                            event_kind="skipped_turn",
+                            payload={"reason": "proxy_approval_leak_suppressed"},
+                        )
+                        seq += 1
+                        continue
 
             session_metadata = session.close()
             session = None
