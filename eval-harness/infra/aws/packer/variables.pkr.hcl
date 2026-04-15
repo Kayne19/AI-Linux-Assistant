@@ -40,7 +40,7 @@ variable "distro_family" {
   type = string
   validation {
     condition     = contains(["debian", "rhel"], var.distro_family)
-    error_message = "distro_family must be 'debian' or 'rhel'."
+    error_message = "Distro family must be either 'debian' or 'rhel'."
   }
 }
 
