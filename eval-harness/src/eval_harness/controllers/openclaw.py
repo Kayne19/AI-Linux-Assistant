@@ -162,11 +162,15 @@ class OpenClawController(SandboxController):
             f"raw_output={raw_preview!r}"
         )
 
-    def send(self, *, agent_id: str, message: str, session_key: str | None = None) -> str:
+    def send(self, *, agent_id: str, message: str, session_key: str | None = None, system_prompt: str | None = None) -> str:
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": message})
         payload = {
             "model": f"openclaw/{agent_id}",
             "user": session_key or self.config.default_session_key,
-            "messages": [{"role": "user", "content": message}],
+            "messages": messages,
         }
         try:
             response = self.session.post(
