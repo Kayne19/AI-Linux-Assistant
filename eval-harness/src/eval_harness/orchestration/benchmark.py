@@ -14,10 +14,20 @@ from ..persistence.store import EvalHarnessStore
 
 _PROXY_APPROVAL_RE = re.compile(r"/approve\s+[a-f0-9]+", re.IGNORECASE)
 _HOST_RUN_RE = re.compile(r"```host-run\s*\n(.*?)```", re.DOTALL)
+_GENERIC_CODE_BLOCK_RE = re.compile(r"```(?:[a-zA-Z0-9_-]+)?\s*\n(.*?)```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _PROXY_CLOSURE_RE = re.compile(
     r"\b("
     r"thanks|thank you|all good|looks good|working now|works now|fixed|resolved|that fixed it|problem solved|we're good"
     r")\b",
+    re.IGNORECASE,
+)
+_ASSISTANT_COMMAND_HINT_RE = re.compile(
+    r"(?:^|[\n:]\s*|\b)(?:please\s+)?(?:run|execute|try|use|paste|send|show)\s+([^\n.?!]+)",
+    re.IGNORECASE,
+)
+_TRAILING_EXPLANATION_RE = re.compile(
+    r"\s+(?:and|then)\s+(?:show|paste|send|share|tell|let)\b.*$",
     re.IGNORECASE,
 )
 _FOLLOW_MODE_COMMAND_PATTERNS = (
@@ -61,6 +71,38 @@ def _is_follow_mode_command(command: str) -> bool:
     return any(pattern.search(normalized) for pattern in _FOLLOW_MODE_COMMAND_PATTERNS)
 
 
+def _normalize_command_text(command: str) -> str:
+    return " ".join(command.strip().split())
+
+
+def _looks_like_shell_command(text: str) -> bool:
+    normalized = _normalize_command_text(text)
+    if not normalized:
+        return False
+    first_token = normalized.split()[0]
+    if " " not in normalized:
+        return re.match(r"^[A-Za-z][A-Za-z0-9_.:-]*$", first_token) is not None
+    return re.match(r"^[A-Za-z0-9_./:+-]+$", first_token) is not None
+
+
+def _extract_subject_command_candidates(reply: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+
+    def _append(text: str) -> None:
+        normalized = _normalize_command_text(text)
+        if normalized and _looks_like_shell_command(normalized) and normalized not in candidates:
+            candidates.append(normalized)
+
+    for match in _GENERIC_CODE_BLOCK_RE.finditer(reply):
+        _append(match.group(1))
+    for match in _INLINE_CODE_RE.finditer(reply):
+        _append(match.group(1))
+    for match in _ASSISTANT_COMMAND_HINT_RE.finditer(reply):
+        candidate = _TRAILING_EXPLANATION_RE.sub("", match.group(1)).strip(" :")
+        _append(candidate)
+    return tuple(candidates)
+
+
 def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
     return (
         "You are a frustrated human user at a Linux terminal. You do not know why your machine is broken or what caused it.\n\n"
@@ -73,6 +115,9 @@ def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
         "```\n\n"
         "  The harness will run it and give you the real output on the next turn.\n"
         "- Only request commands the assistant explicitly asked you to run. Do not invent diagnostics.\n"
+        "- Relay the exact command the assistant requested. Do not add sudo, extra flags, extra subcommands, or a more specific variant on your own.\n"
+        "- Do not combine multiple commands unless the assistant explicitly requested multiple separate commands.\n"
+        "- If the assistant did not give an exact command, ask what exact command to run instead of guessing.\n"
         "- Never fabricate command output. Never say \"Fixed\" or \"Done\" unless you have seen actual output confirming repair.\n"
         "- Do not send /approve tokens, slash commands, or tool-routing syntax.\n"
         "- Do not write like an AI assistant. Write like a confused user.\n"
@@ -139,6 +184,30 @@ class BenchmarkRunOrchestrator:
         if not pairs:
             return False
         return all(check.is_satisfied_by(result) for check, result in pairs)
+
+    def _proxy_host_run_is_authorized(self, subject_reply: str, host_run_commands: tuple[str, ...]) -> bool:
+        if not host_run_commands:
+            return True
+        allowed_commands = _extract_subject_command_candidates(subject_reply)
+        if not allowed_commands:
+            return False
+        allowed = {_normalize_command_text(item) for item in allowed_commands}
+        return all(_normalize_command_text(item) in allowed for item in host_run_commands)
+
+    def _proxy_authorization_reminder(self, subject_reply: str) -> str:
+        allowed_commands = _extract_subject_command_candidates(subject_reply)
+        if allowed_commands:
+            rendered = "\n".join(f"- {item}" for item in allowed_commands)
+            return (
+                "You are a human user relaying commands, not choosing them. "
+                "Use only the exact command(s) the assistant explicitly requested below. "
+                "Do not add sudo, extra flags, extra commands, or a more specific variant.\n\n"
+                f"Allowed command(s):\n{rendered}"
+            )
+        return (
+            "The assistant did not give an exact command to run. "
+            "Do not guess or improvise. Ask what exact command they want you to run."
+        )
 
     def _record_command_results(self, *, evaluation_run_id: str, seq: int, actor_role: str, command_results: tuple) -> int:
         for result in command_results:
@@ -385,6 +454,24 @@ class BenchmarkRunOrchestrator:
 
                 # Execute any HOST_RUN commands the proxy requested
                 host_run_commands = _parse_host_run_commands(user_message)
+                if host_run_commands and not self._proxy_host_run_is_authorized(turn_result.assistant_message, host_run_commands):
+                    user_message = controller.send(
+                        agent_id=user_proxy_agent_id,
+                        message=self._proxy_authorization_reminder(turn_result.assistant_message),
+                        session_key=f"{evaluation_run_id}-proxy",
+                        system_prompt=_user_proxy_system_prompt(scenario.observable_problem_statement),
+                    )
+                    host_run_commands = _parse_host_run_commands(user_message)
+                    if host_run_commands and not self._proxy_host_run_is_authorized(turn_result.assistant_message, host_run_commands):
+                        self.store.append_evaluation_event(
+                            evaluation_run_id=evaluation_run_id,
+                            seq=seq,
+                            actor_role="user_proxy",
+                            event_kind="skipped_turn",
+                            payload={"reason": "proxy_unapproved_host_run_suppressed"},
+                        )
+                        seq += 1
+                        continue
                 proxy_exec_results = ()
                 if host_run_commands and proxy_exec_calls_remaining > 0:
                     n = min(len(host_run_commands), proxy_exec_calls_remaining)

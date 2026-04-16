@@ -104,6 +104,12 @@ Repair checks should describe the observable repaired state directly. They can c
 
 That keeps Linux-specific knowledge in the scenario definition instead of the benchmark orchestrator.
 
+Planner guidance should keep repair checks aligned to the real success condition:
+- validate the repaired end state, not a stricter incidental administrative invariant
+- include user-visible or symptom-level checks whenever the scenario has a user-visible success condition
+- avoid checks that can fail on a repaired system because of missing privileges, stale runtime files, or execution context alone
+- make privilege requirements explicit in the command itself when they are truly required
+
 ### Available Scenarios
 
 Pre-built example scenarios live under `examples/scenarios/`:
@@ -139,6 +145,14 @@ sudo systemctl status nginx
 ````
 
 The harness detects that fence, executes the command on the sandbox clone via the configured backend, and injects the real output into the next conversation turn as plain text. This keeps the subject grounded in real environment state rather than the proxy's inference.
+
+The proxy is a strict command relay, not a diagnostician:
+- it should only relay exact commands the subject explicitly requested
+- it should not add `sudo`, extra flags, extra subcommands, or a more specific variant on its own
+- it should not bundle multiple commands unless the subject explicitly requested multiple commands
+- if the subject does not provide an exact command, the proxy should ask what exact command to run instead of guessing
+
+The benchmark loop enforces those constraints and suppresses proxy turns that keep trying to run unrequested commands.
 
 When the proxy observes that the stated problem is resolved (the service is back up, the config error is gone, etc.), it replies with the sentinel string `REPAIR_CONFIRMED` to end the session early. The benchmark loop treats this as a successful early termination and moves on to objective repair checks.
 

@@ -1203,6 +1203,9 @@ def test_benchmark_proxy_sends_system_prompt_on_each_turn() -> None:
     for sp in received_system_prompts:
         assert sp is not None, "system_prompt must not be None for proxy send() calls"
         assert problem in sp
+        assert "ask what exact command to run" in sp.lower()
+        assert "do not add sudo" in sp.lower()
+        assert "do not combine multiple commands" in sp.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1237,7 +1240,7 @@ def test_benchmark_host_run_commands_executed_and_appended() -> None:
     clone_controller = TrackingController(
         send_responses=[
             # First proxy response contains a HOST_RUN block
-            "I see the issue. Can you run:\n```host-run\nsudo systemctl status nginx\n```",
+            "I see the issue. Can you run:\n```host-run\nsystemctl status nginx\n```",
             # Second proxy response (after exec result appended): clean reply
             "I see the service is failed. Please restart it.",
         ],
@@ -1245,7 +1248,7 @@ def test_benchmark_host_run_commands_executed_and_appended() -> None:
             # Repair check after first subject turn: not fixed
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             # proxy-exec for host-run command
-            (CommandExecutionResult(command="sudo systemctl status nginx", stdout="● nginx.service - NGINX\n   Loaded: loaded", stderr="", exit_code=0),),
+            (CommandExecutionResult(command="systemctl status nginx", stdout="● nginx.service - NGINX\n   Loaded: loaded", stderr="", exit_code=0),),
             # Repair check after second subject turn: fixed
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
         ],
@@ -1285,7 +1288,7 @@ def test_benchmark_host_run_commands_executed_and_appended() -> None:
     # proxy-exec agent_id must be "proxy-exec"
     proxy_exec_calls = [entry for entry in execute_batches_used if entry[0] == "proxy-exec"]
     assert len(proxy_exec_calls) >= 1, "execute_commands should have been called with agent_id='proxy-exec'"
-    assert proxy_exec_calls[0][1] == ("sudo systemctl status nginx",)
+    assert proxy_exec_calls[0][1] == ("systemctl status nginx",)
 
     # The evaluation store must have a user_proxy_exec/command_result event
     events = store.list_evaluation_events(evaluation_runs[0].id)
@@ -1364,6 +1367,58 @@ def test_benchmark_proxy_approval_leak_blocked_and_skipped_turn_event() -> None:
 
     # The subject session was still called (the loop continued to the next iteration)
     assert len(submitted_messages) >= 1
+
+
+def test_benchmark_proxy_rejects_unrequested_command_upgrades() -> None:
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=1, subject_max_turns=1)
+
+    execute_batches_used: list[tuple] = []
+
+    class TrackingController(FakeController):
+        def execute_commands(
+            self,
+            commands: tuple[str, ...],
+            *,
+            agent_id: str,
+            session_key: str | None = None,
+        ) -> tuple[CommandExecutionResult, ...]:
+            result = super().execute_commands(commands, agent_id=agent_id, session_key=session_key)
+            execute_batches_used.append((agent_id, commands, result))
+            return result
+
+    clone_controller = TrackingController(
+        send_responses=[
+            "```host-run\nsudo cat /etc/example.conf\n```",
+            "```host-run\nsudo cat /etc/example.conf\n```",
+        ],
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active exampled", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run `cat /etc/example.conf` and show me the contents.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+
+    result = _run_benchmark(store, revision, setup, clone_controller, session)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+
+    events = store.list_evaluation_events(evaluation_runs[0].id)
+    skipped = [e for e in events if e.event_kind == "skipped_turn"]
+    assert len(skipped) >= 1
+    assert skipped[0].payload_json["reason"] == "proxy_unapproved_host_run_suppressed"
+
+    proxy_exec_calls = [entry for entry in execute_batches_used if entry[0] == "proxy-exec"]
+    assert proxy_exec_calls == []
 
 
 # ---------------------------------------------------------------------------

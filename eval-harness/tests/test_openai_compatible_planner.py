@@ -117,3 +117,16 @@ def test_generate_scenario_does_not_rewrite_nginx_probe_command() -> None:
     scenario = planner.generate_scenario(_request())
 
     assert scenario.verification_probes[0].command == original_command
+
+
+def test_generation_prompt_requires_generic_end_state_checks_without_service_hardcoding() -> None:
+    planner = FakePlanner([_valid_payload()])
+
+    prompt = planner._scenario_generation_prompt()
+
+    assert "repair checks must validate the repaired end state" in prompt.lower()
+    assert "at least one repair check must be user-visible or symptom-level" in prompt.lower()
+    assert "do not include a repair check that can fail on an otherwise repaired system" in prompt.lower()
+    assert "if a check needs elevated privileges" in prompt.lower()
+    assert "before finalizing repair_checks, ask whether any check could fail even though the system is repaired" in prompt.lower()
+    assert "nginx-specific" not in prompt.lower()
