@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -13,6 +14,20 @@ from ..persistence.store import EvalHarnessStore
 
 _PROXY_APPROVAL_RE = re.compile(r"/approve\s+[a-f0-9]+", re.IGNORECASE)
 _HOST_RUN_RE = re.compile(r"```host-run\s*\n(.*?)```", re.DOTALL)
+_PROXY_CLOSURE_RE = re.compile(
+    r"\b("
+    r"thanks|thank you|all good|looks good|working now|works now|fixed|resolved|that fixed it|problem solved|we're good"
+    r")\b",
+    re.IGNORECASE,
+)
+_FOLLOW_MODE_COMMAND_PATTERNS = (
+    re.compile(r"(?:^|\s)journalctl\b.*(?:\s|^)-[A-Za-z]*f[A-Za-z]*(?:\s|$)", re.IGNORECASE),
+    re.compile(r"(?:^|\s)tail\b.*(?:\s|^)-[A-Za-z]*f[A-Za-z]*(?:\s|$)", re.IGNORECASE),
+    re.compile(r"(?:^|\s)tailf(?:\s|$)", re.IGNORECASE),
+    re.compile(r"--follow(?:\s|$)", re.IGNORECASE),
+    re.compile(r"(?:^|\s)watch(?:\s|$)", re.IGNORECASE),
+    re.compile(r"(?:^|\s)less\b.*(?:\s|^)\+F(?:\s|$)", re.IGNORECASE),
+)
 
 
 def _parse_host_run_commands(reply: str) -> tuple[str, ...]:
@@ -39,6 +54,11 @@ def _render_command_outputs(command_results: tuple) -> str:
             + f"[exit {exit_code}]"
         )
     return "\n\n".join(parts)
+
+
+def _is_follow_mode_command(command: str) -> bool:
+    normalized = command.strip()
+    return any(pattern.search(normalized) for pattern in _FOLLOW_MODE_COMMAND_PATTERNS)
 
 
 def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
@@ -113,10 +133,78 @@ class BenchmarkRunOrchestrator:
         return bool(_PROXY_APPROVAL_RE.search(reply))
 
     def _repair_checks_pass(self, scenario, command_results) -> bool:
+        if len(command_results) != len(scenario.repair_checks):
+            return False
         pairs = tuple(zip(scenario.repair_checks, command_results, strict=True))
         if not pairs:
             return False
         return all(check.is_satisfied_by(result) for check, result in pairs)
+
+    def _record_command_results(self, *, evaluation_run_id: str, seq: int, actor_role: str, command_results: tuple) -> int:
+        for result in command_results:
+            self.store.append_evaluation_event(
+                evaluation_run_id=evaluation_run_id,
+                seq=seq,
+                actor_role=actor_role,
+                event_kind="command_result",
+                payload=result.to_dict(),
+            )
+            seq += 1
+        return seq
+
+    def _execute_repair_checks(
+        self,
+        *,
+        controller: SandboxController,
+        scenario,
+        evaluation_run_id: str,
+        seq: int,
+        verification_agent_id: str,
+    ) -> tuple[tuple, int]:
+        repair_results = controller.execute_commands(
+            tuple(item.command for item in scenario.repair_checks),
+            agent_id=verification_agent_id,
+            session_key=f"{evaluation_run_id}-repair",
+        )
+        seq = self._record_command_results(
+            evaluation_run_id=evaluation_run_id,
+            seq=seq,
+            actor_role="controller",
+            command_results=repair_results,
+        )
+        return repair_results, seq
+
+    def _looks_like_closure_reply(self, reply: str) -> bool:
+        stripped = reply.strip()
+        if not stripped:
+            return False
+        if "```host-run" in stripped.lower():
+            return False
+        return bool(_PROXY_CLOSURE_RE.search(stripped))
+
+    def _proxy_turn_made_progress(self, host_run_commands: tuple[str, ...], proxy_exec_results: tuple) -> bool:
+        if not host_run_commands or not proxy_exec_results:
+            return False
+        if any(not _is_follow_mode_command(command) for command in host_run_commands):
+            return True
+        return any(result.exit_code != 124 for result in proxy_exec_results)
+
+    def _benchmark_status_and_summary(self, benchmark_run_id: str, *, interrupted: bool = False) -> tuple[str, dict]:
+        evaluation_runs = self.store.list_evaluation_runs(benchmark_run_id)
+        status_counts = Counter(run.status for run in evaluation_runs)
+        repair_success_count = sum(1 for run in evaluation_runs if run.repair_success is True)
+        failed_evaluation_count = sum(1 for run in evaluation_runs if run.status != EvaluationRunStatus.COMPLETED.value)
+        summary = {
+            "evaluation_count": len(evaluation_runs),
+            "repair_success_count": repair_success_count,
+            "failed_evaluation_count": failed_evaluation_count,
+            "evaluation_status_counts": dict(status_counts),
+        }
+        if interrupted:
+            return "interrupted", summary
+        if repair_success_count == len(evaluation_runs) and failed_evaluation_count == 0:
+            return "completed", summary
+        return "completed_with_failures", summary
 
     def _run_subject(
         self,
@@ -190,20 +278,13 @@ class BenchmarkRunOrchestrator:
                     )
                     seq += 1
 
-                repair_results = controller.execute_commands(
-                    tuple(item.command for item in scenario.repair_checks),
-                    agent_id=verification_agent_id,
-                    session_key=f"{evaluation_run_id}-repair",
+                repair_results, seq = self._execute_repair_checks(
+                    controller=controller,
+                    scenario=scenario,
+                    evaluation_run_id=evaluation_run_id,
+                    seq=seq,
+                    verification_agent_id=verification_agent_id,
                 )
-                for result in repair_results:
-                    self.store.append_evaluation_event(
-                        evaluation_run_id=evaluation_run_id,
-                        seq=seq,
-                        actor_role="controller",
-                        event_kind="command_result",
-                        payload=result.to_dict(),
-                    )
-                    seq += 1
 
                 if self._repair_checks_pass(scenario, repair_results):
                     session_metadata = session.close()
@@ -251,20 +332,13 @@ class BenchmarkRunOrchestrator:
                         continue
 
                 if user_message.strip() == "REPAIR_CONFIRMED":
-                    repair_results = controller.execute_commands(
-                        tuple(item.command for item in scenario.repair_checks),
-                        agent_id=verification_agent_id,
-                        session_key=f"{evaluation_run_id}-repair",
+                    repair_results, seq = self._execute_repair_checks(
+                        controller=controller,
+                        scenario=scenario,
+                        evaluation_run_id=evaluation_run_id,
+                        seq=seq,
+                        verification_agent_id=verification_agent_id,
                     )
-                    for result in repair_results:
-                        self.store.append_evaluation_event(
-                            evaluation_run_id=evaluation_run_id,
-                            seq=seq,
-                            actor_role="controller",
-                            event_kind="command_result",
-                            payload=result.to_dict(),
-                        )
-                        seq += 1
                     session_metadata = session.close()
                     session = None
                     repair_success = self._repair_checks_pass(scenario, repair_results)
@@ -278,8 +352,40 @@ class BenchmarkRunOrchestrator:
                     )
                     return
 
+                if self._looks_like_closure_reply(user_message):
+                    repair_results, seq = self._execute_repair_checks(
+                        controller=controller,
+                        scenario=scenario,
+                        evaluation_run_id=evaluation_run_id,
+                        seq=seq,
+                        verification_agent_id=verification_agent_id,
+                    )
+                    if self._repair_checks_pass(scenario, repair_results):
+                        session_metadata = session.close()
+                        session = None
+                        self.store.update_evaluation_run_status(
+                            evaluation_run_id=evaluation_run_id,
+                            status=EvaluationRunStatus.COMPLETED.value,
+                            repair_success=True,
+                            resolution_result=self._repair_result_payload(scenario, repair_results),
+                            adapter_session_metadata=session_metadata,
+                            finished=True,
+                        )
+                        return
+                    reminder = (
+                        "Do not close the conversation yet. The issue is not objectively verified as fixed. "
+                        "If the assistant asked for a command, request it with a host-run block. Otherwise explain what still seems broken."
+                    )
+                    user_message = controller.send(
+                        agent_id=user_proxy_agent_id,
+                        message=reminder,
+                        session_key=f"{evaluation_run_id}-proxy",
+                        system_prompt=_user_proxy_system_prompt(scenario.observable_problem_statement),
+                    )
+
                 # Execute any HOST_RUN commands the proxy requested
                 host_run_commands = _parse_host_run_commands(user_message)
+                proxy_exec_results = ()
                 if host_run_commands and proxy_exec_calls_remaining > 0:
                     n = min(len(host_run_commands), proxy_exec_calls_remaining)
                     commands_to_run = host_run_commands[:n]
@@ -289,20 +395,17 @@ class BenchmarkRunOrchestrator:
                         agent_id="proxy-exec",
                         session_key=f"{evaluation_run_id}-proxy-exec",
                     )
-                    for exec_result in proxy_exec_results:
-                        self.store.append_evaluation_event(
-                            evaluation_run_id=evaluation_run_id,
-                            seq=seq,
-                            actor_role="user_proxy_exec",
-                            event_kind="command_result",
-                            payload=exec_result.to_dict(),
-                        )
-                        seq += 1
+                    seq = self._record_command_results(
+                        evaluation_run_id=evaluation_run_id,
+                        seq=seq,
+                        actor_role="user_proxy_exec",
+                        command_results=proxy_exec_results,
+                    )
                     # Append real output to the user message that goes to the subject
                     user_message = user_message + "\n\n" + _render_command_outputs(proxy_exec_results)
 
                 # Stall detection: no productive output and repair still failing
-                turn_had_exec = bool(host_run_commands)  # True if any host-run commands were parsed
+                turn_had_exec = self._proxy_turn_made_progress(host_run_commands, proxy_exec_results)
                 if not turn_had_exec and not self._repair_checks_pass(scenario, repair_results):
                     consecutive_stalled_turns += 1
                     if consecutive_stalled_turns >= _PROXY_STALL_LIMIT:
@@ -392,8 +495,22 @@ class BenchmarkRunOrchestrator:
                 setup_run.broken_image_id,
                 [item.subject_name for item in subject_rows],
             )
-        except Exception:
-            self.store.update_benchmark_run_status(benchmark_run_id=benchmark_run.id, status="failed", finished=True)
+        except Exception as exc:
+            self.store.update_benchmark_run_status(
+                benchmark_run_id=benchmark_run.id,
+                status="interrupted",
+                finished=True,
+                metadata={
+                    "summary": {
+                        "evaluation_count": 0,
+                        "repair_success_count": 0,
+                        "failed_evaluation_count": 0,
+                        "evaluation_status_counts": {},
+                    },
+                    "interruption_reason": self._exception_reason(exc),
+                    "exception_type": exc.__class__.__name__,
+                },
+            )
             raise
         evaluation_run_ids: list[str] = []
         futures = []
@@ -442,9 +559,25 @@ class BenchmarkRunOrchestrator:
                         },
                         finished=True,
                     )
-                self.store.update_benchmark_run_status(benchmark_run_id=benchmark_run.id, status="failed", finished=True)
+                benchmark_status, summary = self._benchmark_status_and_summary(benchmark_run.id, interrupted=True)
+                self.store.update_benchmark_run_status(
+                    benchmark_run_id=benchmark_run.id,
+                    status=benchmark_status,
+                    finished=True,
+                    metadata={
+                        "summary": summary,
+                        "interruption_reason": self._exception_reason(failure),
+                        "exception_type": failure.__class__.__name__,
+                    },
+                )
                 raise failure
-            self.store.update_benchmark_run_status(benchmark_run_id=benchmark_run.id, status="completed", finished=True)
+            benchmark_status, summary = self._benchmark_status_and_summary(benchmark_run.id)
+            self.store.update_benchmark_run_status(
+                benchmark_run_id=benchmark_run.id,
+                status=benchmark_status,
+                finished=True,
+                metadata={"summary": summary},
+            )
             return BenchmarkRunResult(benchmark_run_id=benchmark_run.id, evaluation_run_ids=tuple(evaluation_run_ids))
         finally:
             executor.shutdown(wait=False, cancel_futures=True)

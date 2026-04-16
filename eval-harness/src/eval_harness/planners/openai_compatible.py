@@ -87,7 +87,10 @@ class OpenAICompatibleScenarioPlanner(ScenarioPlanner):
             "sabotage_procedure, verification_probes, repair_checks, judge_rubric, turn_budget. "
             "what_it_tests, sabotage_procedure, judge_rubric must be non-empty arrays of strings. "
             "verification_probes and repair_checks must be non-empty arrays of objects with: "
-            "name, command, and at least one of expected_exit_code or expected_substrings. "
+            "name, command, and intent (explaining the explicit verification intent). "
+            "They must also declare robust machine-checkable expectations using at least one of: "
+            "expected_exit_code, expected_substrings, expected_regexes, unexpected_substrings, unexpected_regexes, or expected_exact_match. "
+            "Repair checks must be robust and functionally verify the system rather than relying strictly on generic service states. "
             "The observable problem statement must not reveal the sabotage method. "
             "Keep the broken state objectively verifiable before cloning."
         )

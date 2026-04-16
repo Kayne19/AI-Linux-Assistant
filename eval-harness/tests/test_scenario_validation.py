@@ -78,4 +78,36 @@ def test_validate_scenario_rejects_non_objective_verification_probe():
     with pytest.raises(ScenarioValidationError) as exc_info:
         validate_scenario(spec)
 
-    assert "expected_exit_code or expected_substrings" in str(exc_info.value)
+    assert "machine-checkable expectation" in str(exc_info.value)
+
+
+def test_validate_scenario_accepts_regex_and_negative_expectations() -> None:
+    spec = ScenarioSpec(
+        scenario_name="http-recovery",
+        title="http recovery",
+        summary="Example scenario",
+        what_it_tests=("http validation",),
+        target_image="debian-12-openclaw-golden",
+        sabotage_procedure=("break app",),
+        verification_probes=(
+            VerificationCheck(
+                name="app-broken",
+                command="curl -si http://localhost/health",
+                expected_regexes=(r"^HTTP/1\\.[01] 5\\d\\d",),
+                unexpected_substrings=("200 OK",),
+            ),
+        ),
+        repair_checks=(
+            VerificationCheck(
+                name="app-fixed",
+                command="curl -si http://localhost/health",
+                expected_regexes=(r"^HTTP/1\\.[01] 200",),
+                unexpected_regexes=(r"traceback",),
+            ),
+        ),
+        observable_problem_statement="the health check is failing",
+        judge_rubric=("diagnosis", "repair quality"),
+        turn_budget=6,
+    )
+
+    validate_scenario(spec)

@@ -103,6 +103,8 @@ class BenchmarkRunStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
+    COMPLETED_WITH_FAILURES = "completed_with_failures"
+    INTERRUPTED = "interrupted"
     FAILED = "failed"
 
 
@@ -146,7 +148,12 @@ class TurnSeed:
 class VerificationCheck:
     name: str
     command: str
+    intent: str = ""
     expected_substrings: tuple[str, ...] = ()
+    expected_regexes: tuple[str, ...] = ()
+    unexpected_substrings: tuple[str, ...] = ()
+    unexpected_regexes: tuple[str, ...] = ()
+    expected_exact_match: str | None = None
     expected_exit_code: int | None = None
     match_mode: VerificationMatchMode = VerificationMatchMode.ALL
     timeout_seconds: int = 60
@@ -166,25 +173,55 @@ class VerificationCheck:
         return cls(
             name=str(payload.get("name", "")).strip(),
             command=normalized[0],
+            intent=str(payload.get("intent", "")).strip(),
             expected_substrings=normalized[1],
+            expected_regexes=tuple(str(item).strip() for item in payload.get("expected_regexes", []) or []),
+            unexpected_substrings=tuple(str(item).strip() for item in payload.get("unexpected_substrings", []) or []),
+            unexpected_regexes=tuple(str(item).strip() for item in payload.get("unexpected_regexes", []) or []),
+            expected_exact_match=payload.get("expected_exact_match"),
             expected_exit_code=normalized[2],
             match_mode=normalized[3],
             timeout_seconds=int(payload.get("timeout_seconds", 60)),
         )
 
     def has_machine_expectation(self) -> bool:
-        return bool(self.expected_substrings) or self.expected_exit_code is not None
+        return bool(
+            self.expected_substrings
+            or self.expected_regexes
+            or self.unexpected_substrings
+            or self.unexpected_regexes
+            or self.expected_exact_match is not None
+            or self.expected_exit_code is not None
+        )
 
     def is_satisfied_by(self, result: "CommandExecutionResult") -> bool:
         output = result.combined_output()
         success = True
+
         if self.expected_substrings:
             if self.match_mode == VerificationMatchMode.ALL:
-                success = all(item in output for item in self.expected_substrings)
+                success = success and all(item in output for item in self.expected_substrings)
             else:
-                success = any(item in output for item in self.expected_substrings)
+                success = success and any(item in output for item in self.expected_substrings)
+
+        if self.expected_regexes:
+            if self.match_mode == VerificationMatchMode.ALL:
+                success = success and all(re.search(item, output) is not None for item in self.expected_regexes)
+            else:
+                success = success and any(re.search(item, output) is not None for item in self.expected_regexes)
+
+        if self.unexpected_substrings:
+            success = success and not any(item in output for item in self.unexpected_substrings)
+
+        if self.unexpected_regexes:
+            success = success and not any(re.search(item, output) is not None for item in self.unexpected_regexes)
+
+        if self.expected_exact_match is not None:
+            success = success and (output.strip() == self.expected_exact_match.strip())
+
         if self.expected_exit_code is not None:
-            success = success and result.exit_code == self.expected_exit_code
+            success = success and (result.exit_code == self.expected_exit_code)
+
         return success
 
     def to_dict(self) -> dict[str, Any]:

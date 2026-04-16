@@ -32,7 +32,10 @@ V1 benchmark flow:
 - only planner-approved broken environments are cloned
 - OpenClaw Agent B is the user proxy and does not receive sabotage details
 - benchmark orchestration suppresses approval-loop leakage from subjects and treats all benchmark commands as pre-approved, but that policy is kept out of the API request content sent to the subject backend
-- benchmark repair checks normalize known fragile nginx probes onto the host `sudo -n` path, and the benchmark loop suppresses the known `/run/nginx.pid` permission false negative so repaired runs do not get trapped in endless follow-up turns
+- repair success is defined entirely by scenario-declared machine-checkable repair checks; the benchmark loop does not hard-code service-specific success rules
+- repair checks may use positive and negative expectations, including exact matches, substrings, and regexes, so scenarios can define robust success conditions without teaching the orchestrator about a specific Linux subsystem
+- the benchmark loop treats follow-mode command timeouts such as `tail -f` and `journalctl -f` as non-progress, and closure chatter such as "thanks, it's fixed" triggers one final objective verification instead of another full subject turn
+- benchmark run status distinguishes a fully executed benchmark with subject failures (`completed_with_failures`) from infrastructure or adapter interruptions (`interrupted`)
 - each subject gets its own clone and its own transcript/event stream
 - scenarios, setup runs, benchmark runs, evaluation runs, and judge outputs live in Postgres
 - blind judging is post hoc and separate from objective repair checks
@@ -90,6 +93,16 @@ Runnable scenarios must include:
 - positive turn budget
 
 The scenario contract is generic. It does not contain AI Linux Assistant-specific memory writes or product-internal shortcuts.
+
+Repair checks should describe the observable repaired state directly. They can combine:
+- `expected_exit_code`
+- `expected_substrings`
+- `expected_regexes`
+- `unexpected_substrings`
+- `unexpected_regexes`
+- `expected_exact_match`
+
+That keeps Linux-specific knowledge in the scenario definition instead of the benchmark orchestrator.
 
 ### Available Scenarios
 
@@ -165,6 +178,7 @@ For the public AI Linux Assistant API path:
 
 - point `EVAL_HARNESS_AI_API_BASE_URL` at the public backend hostname, for example `https://api.<your-domain>`
 - use copied Auth0 user access tokens in `bearer_tokens_by_subject` or `default_bearer_token`
+- bearer tokens that decode to an expired JWT `exp` are rejected during adapter session startup, before the benchmark fan-out begins
 - do not rely on `legacy_bootstrap_usernames_by_subject` against a public deployment
 
 Initialize the eval-harness schema:

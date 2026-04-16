@@ -1,7 +1,19 @@
 from __future__ import annotations
 
+import base64
+import json
+
+import pytest
+
 from eval_harness.adapters.ai_linux_assistant_http import AILinuxAssistantHttpConfig, AILinuxAssistantHttpSession
+from eval_harness.adapters.base import AdapterError
 from eval_harness.models import RunEvent, RunEventType, SubjectSpec, TurnSeed
+
+
+def _jwt_with_exp(exp: int) -> str:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+    return f"{header}.{payload}."
 
 
 class FakeAILinuxAssistantHttpSession(AILinuxAssistantHttpSession):
@@ -95,3 +107,19 @@ def test_ai_linux_assistant_http_session_abort_cancels_active_run() -> None:
     assert metadata["cancel_attempted"] is True
     assert metadata["cancelled_active_run"] is True
     assert ("POST", "/runs/run-1/cancel", {}) in session.requests
+
+
+def test_ai_linux_assistant_http_session_rejects_expired_bearer_token() -> None:
+    config = AILinuxAssistantHttpConfig(base_url="https://example.invalid")
+    subject = SubjectSpec(
+        subject_name="regular",
+        adapter_type="ai_linux_assistant_http",
+        adapter_config={"bearer_token": _jwt_with_exp(1)},
+    )
+
+    with pytest.raises(AdapterError, match="expired bearer token"):
+        FakeAILinuxAssistantHttpSession(
+            config=config,
+            benchmark_run_id="bench-1",
+            subject=subject,
+        )

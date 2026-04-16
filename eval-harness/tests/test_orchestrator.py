@@ -774,13 +774,13 @@ def test_benchmark_orchestrator_marks_run_failed_when_clone_launch_raises() -> N
 
     benchmark_runs = store.list_benchmark_runs_for_revision(revision.id) if hasattr(store, "list_benchmark_runs_for_revision") else []
     if benchmark_runs:
-        assert benchmark_runs[0].status == "failed"
+        assert benchmark_runs[0].status == "interrupted"
     else:
         # Fall back to direct table inspection — status must not be left as "running".
         from eval_harness.persistence.postgres_models import BenchmarkRunRecord
         with store._session_factory() as session:
             row = session.scalars(select(BenchmarkRunRecord)).one()
-        assert row.status == "failed"
+        assert row.status == "interrupted"
 
 
 def test_benchmark_orchestrator_marks_interrupting_runs_failed_and_aborts_session() -> None:
@@ -848,7 +848,7 @@ def test_benchmark_orchestrator_marks_interrupting_runs_failed_and_aborts_sessio
     with store._session_factory() as session:
         benchmark_row = session.scalars(select(BenchmarkRunRecord)).one()
         evaluation_row = session.scalars(select(EvaluationRunRecord)).one()
-    assert benchmark_row.status == "failed"
+    assert benchmark_row.status == "interrupted"
     assert benchmark_row.finished_at is not None
     assert evaluation_row.status == "failed"
     assert evaluation_row.finished_at is not None
@@ -1597,6 +1597,207 @@ def test_repair_checks_pass_returns_false_when_one_check_fails() -> None:
         CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),
     )
     assert orchestrator._repair_checks_pass(scenario, results) is False
+
+
+def test_repair_checks_pass_supports_regex_and_negative_expectations() -> None:
+    store = _build_store()
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=FakeBackend(),
+        controller_factory=FakeControllerFactory([]),
+        subject_adapters={},
+        store=store,
+    )
+    scenario = ScenarioSpec(
+        scenario_name="http-recovery",
+        title="HTTP recovery",
+        summary="Recover an HTTP endpoint",
+        what_it_tests=("http validation",),
+        target_image="ami-http",
+        observable_problem_statement="the service is unhealthy",
+        sabotage_procedure=("break the service",),
+        verification_probes=(
+            VerificationCheck(
+                name="probe",
+                command="curl -si http://localhost/health",
+                expected_regexes=(r"HTTP/1\.[01] 5\d\d",),
+            ),
+        ),
+        repair_checks=(
+            VerificationCheck(
+                name="fixed",
+                command="curl -si http://localhost/health",
+                expected_regexes=(r"HTTP/1\.[01] 200",),
+                unexpected_substrings=("Traceback",),
+                unexpected_regexes=(r"error[: ]",),
+            ),
+        ),
+        judge_rubric=("diagnosis",),
+        turn_budget=3,
+    )
+
+    passing = (
+        CommandExecutionResult(
+            command="curl -si http://localhost/health",
+            stdout="HTTP/1.1 200 OK\ncontent-type: text/plain\n\nhealthy",
+            stderr="",
+            exit_code=0,
+        ),
+    )
+    failing = (
+        CommandExecutionResult(
+            command="curl -si http://localhost/health",
+            stdout="HTTP/1.1 200 OK\n\nhealthy",
+            stderr="error: backend not ready",
+            exit_code=0,
+        ),
+    )
+
+    assert orchestrator._repair_checks_pass(scenario, passing) is True
+    assert orchestrator._repair_checks_pass(scenario, failing) is False
+
+
+def test_benchmark_follow_mode_timeout_is_not_counted_as_progress() -> None:
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=5, subject_max_turns=5)
+    clone_controller = FakeController(
+        send_responses=[
+            "Running it now:\n```host-run\njournalctl -fu nginx\n```",
+            "Trying again:\n```host-run\njournalctl -fu nginx\n```",
+            "Still watching logs:\n```host-run\njournalctl -fu nginx\n```",
+        ],
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="journalctl -fu nginx", stdout="", stderr="", exit_code=124),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="journalctl -fu nginx", stdout="", stderr="", exit_code=124),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="journalctl -fu nginx", stdout="", stderr="", exit_code=124),),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Please run journalctl -fu nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Keep following the logs for nginx.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Follow the logs a bit longer.",
+                run_id="run-3",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+
+    result = _run_benchmark(store, revision, setup, clone_controller, session)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    benchmark_run = store.get_benchmark_run(result.benchmark_run_id)
+
+    assert len(evaluation_runs) == 1
+    assert evaluation_runs[0].status == "failed"
+    assert evaluation_runs[0].resolution_result_json["reason"] == "proxy_stalled"
+    assert benchmark_run is not None
+    assert benchmark_run.status == "completed_with_failures"
+
+
+def test_benchmark_closure_reply_triggers_final_verification() -> None:
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=5, subject_max_turns=5)
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="I restarted nginx and the site should be back now.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    clone_controller = FakeController(
+        send_responses=["Thanks, that fixed it. Everything looks good now."],
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
+        ],
+    )
+
+    result = _run_benchmark(store, revision, setup, clone_controller, session)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    benchmark_run = store.get_benchmark_run(result.benchmark_run_id)
+
+    assert len(evaluation_runs) == 1
+    assert evaluation_runs[0].status == "completed"
+    assert evaluation_runs[0].repair_success is True
+    assert benchmark_run is not None
+    assert benchmark_run.status == "completed"
+
+
+def test_benchmark_completed_with_failures_when_subjects_do_not_repair() -> None:
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=3, subject_max_turns=3)
+    clone_controller = FakeController(
+        send_responses=[
+            "I am not sure what to do.",
+            "Maybe try something else?",
+            "Still broken here.",
+        ],
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Check the logs.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="I need more info.",
+                run_id="run-3",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+
+    result = _run_benchmark(store, revision, setup, clone_controller, session)
+    benchmark_run = store.get_benchmark_run(result.benchmark_run_id)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+
+    assert benchmark_run is not None
+    assert benchmark_run.status == "completed_with_failures"
+    assert benchmark_run.metadata_json["summary"]["repair_success_count"] == 0
+    assert benchmark_run.metadata_json["summary"]["failed_evaluation_count"] == 1
+    assert evaluation_runs[0].status == "failed"
 
 
 def test_repair_checks_pass_returns_false_when_no_checks(ssh_scenario_spec: ScenarioSpec) -> None:

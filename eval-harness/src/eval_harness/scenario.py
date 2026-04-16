@@ -52,7 +52,10 @@ def validate_scenario(spec: ScenarioSpec) -> None:
             if check.timeout_seconds <= 0:
                 errors.append(f"{label}[{index}].timeout_seconds must be greater than 0")
             if not check.has_machine_expectation():
-                errors.append(f"{label}[{index}] must include an expected_exit_code or expected_substrings")
+                errors.append(
+                    f"{label}[{index}] must include at least one machine-checkable expectation "
+                    "(e.g., expected_exit_code, expected_substrings, expected_regexes, etc.)"
+                )
 
     if errors:
         raise ScenarioValidationError("; ".join(errors))

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -11,6 +14,25 @@ from .base import AdapterError, SubjectAdapter, SubjectSession
 from ..models import AdapterTurnResult, RunEvent, RunEventType, SubjectSpec, TurnSeed
 
 TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+
+def _decode_unverified_jwt_exp(token: str) -> int | None:
+    parts = token.split(".")
+    if len(parts) != 3 or not parts[1]:
+        return None
+    payload = parts[1]
+    padding = "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload + padding)
+        parsed = json.loads(decoded.decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    exp = parsed.get("exp")
+    if isinstance(exp, int):
+        return exp
+    if isinstance(exp, float):
+        return int(exp)
+    return None
 
 
 def _extract_message_text(message_payload: dict[str, Any]) -> str:
@@ -115,6 +137,7 @@ class AILinuxAssistantHttpSession(SubjectSession):
         self.seed_strategy = "none"
         self.latest_run_id = ""
         self.auth = self._resolve_auth()
+        self._validate_bearer_token_preflight()
         self.default_mode = str(
             self.subject.adapter_config.get("magi_mode", self.subject.metadata.get("magi_mode", "off"))
         ).strip() or "off"
@@ -135,6 +158,16 @@ class AILinuxAssistantHttpSession(SubjectSession):
             if legacy_bootstrap_username is not None
             else None,
         )
+
+    def _validate_bearer_token_preflight(self) -> None:
+        if not self.auth.bearer_token:
+            return
+        exp = _decode_unverified_jwt_exp(self.auth.bearer_token)
+        if exp is None:
+            return
+        if datetime.now(timezone.utc).timestamp() >= exp:
+            expired_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+            raise AdapterError(f"Subject {self.subject.subject_name} has an expired bearer token (exp={expired_at}).")
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/json"}

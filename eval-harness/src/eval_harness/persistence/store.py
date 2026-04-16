@@ -352,7 +352,14 @@ class EvalHarnessStore:
             session.commit()
             return row
 
-    def update_benchmark_run_status(self, *, benchmark_run_id: str, status: str, finished: bool = False) -> None:
+    def update_benchmark_run_status(
+        self,
+        *,
+        benchmark_run_id: str,
+        status: str,
+        finished: bool = False,
+        metadata: dict | None = None,
+    ) -> None:
         with self._session_factory() as session:
             row = session.get(BenchmarkRunRecord, benchmark_run_id)
             if row is None:
@@ -360,12 +367,25 @@ class EvalHarnessStore:
             row.status = status
             if finished:
                 row.finished_at = _utc_now()
+            if metadata is not None:
+                merged = dict(row.metadata_json or {})
+                merged.update(dict(metadata))
+                row.metadata_json = merged
             session.add(row)
             session.commit()
 
     def get_benchmark_run(self, benchmark_run_id: str) -> BenchmarkRunRecord | None:
         with self._session_factory() as session:
             return session.get(BenchmarkRunRecord, benchmark_run_id)
+
+    def list_benchmark_runs_for_revision(self, scenario_revision_id: str) -> list[BenchmarkRunRecord]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(BenchmarkRunRecord)
+                .where(BenchmarkRunRecord.scenario_revision_id == scenario_revision_id)
+                .order_by(BenchmarkRunRecord.started_at.desc(), BenchmarkRunRecord.id.desc())
+            )
+            return list(rows)
 
     def create_evaluation_run(
         self,
