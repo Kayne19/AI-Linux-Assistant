@@ -54,6 +54,12 @@ def _format_line(fsm_name: str, scenario_name: str, details: dict) -> str:
             tool = details.get("tool")
             if tool:
                 transition = f"{transition} ({tool})"
+            command = details.get("command")
+            if command:
+                transition = f"{transition}: {command}"
+            reason = details.get("reason")
+            if reason:
+                transition = f"{transition}: {reason}"
             return f"[{label}] {transition}"
 
         # Generic event line (e.g. benchmark-level events)

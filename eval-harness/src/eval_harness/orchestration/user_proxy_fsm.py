@@ -57,8 +57,16 @@ _MARK_TASK_COMPLETE_TOOL: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
-            "properties": {},
-            "required": [],
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Explain specifically what command output you observed that convinced you the problem is resolved. "
+                        "Be concrete: quote the output or exit code that confirmed success."
+                    ),
+                }
+            },
+            "required": ["reason"],
         },
     },
 }
@@ -112,6 +120,7 @@ class MarkTaskCompleteResult:
     passed_count: int
     total: int
     per_check: tuple[dict[str, Any], ...]
+    reason: str = ""
 
 @dataclass
 class UserProxyContext:
@@ -444,6 +453,7 @@ class UserProxyFSM:
         tool_call: UserProxyToolCall,
     ) -> CommandExecutionResult:
         ctx.completion_claim_attempted = True
+        reason = str(tool_call.arguments.get("reason", "")).strip()
 
         if not self.repair_checks:
             ctx.completion_claim_passed = False
@@ -499,7 +509,8 @@ class UserProxyFSM:
         total = len(self.repair_checks)
         all_passed = passed_count == total
 
-        stdout = "\n".join([f"Verification: {passed_count}/{total} checks passed."] + lines)
+        reason_line = [f"Proxy reason: {reason}"] if reason else []
+        stdout = "\n".join([f"Verification: {passed_count}/{total} checks passed."] + reason_line + lines)
 
         ctx.completion_claim_passed = all_passed
         ctx.completion_claim_result = MarkTaskCompleteResult(
@@ -507,6 +518,7 @@ class UserProxyFSM:
             passed_count=passed_count,
             total=total,
             per_check=tuple(per_check),
+            reason=reason,
         )
 
         return CommandExecutionResult(
@@ -519,6 +531,7 @@ class UserProxyFSM:
                 "passed_count": passed_count,
                 "total": total,
                 "per_check": per_check,
+                "proxy_reason": reason,
             }},
         )
 
@@ -542,9 +555,14 @@ class UserProxyFSM:
             }
             if self.turn is not None:
                 details["turn"] = self.turn
-            # Include the first pending tool name when transitioning into TOOL_EXEC
+            # Include tool name + command when transitioning into TOOL_EXEC
             if to_state == UserProxyState.TOOL_EXEC and ctx._pending_tool_calls:
-                details["tool"] = ctx._pending_tool_calls[0].name
+                tc = ctx._pending_tool_calls[0]
+                details["tool"] = tc.name
+                if tc.name == "run_command":
+                    details["command"] = str(tc.arguments.get("command", ""))
+                elif tc.name == "mark_task_complete":
+                    details["reason"] = str(tc.arguments.get("reason", ""))
             self.progress(
                 fsm_name="user-proxy",
                 scenario_name=self.scenario_name,

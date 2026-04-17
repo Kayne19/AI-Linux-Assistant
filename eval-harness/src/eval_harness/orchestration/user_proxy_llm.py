@@ -24,7 +24,7 @@ class UserProxyLLMClientConfig:
     model: str
     api_key: str
     request_timeout_seconds: float = 60.0
-    max_output_tokens: int = 1024
+    max_output_tokens: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +134,9 @@ class UserProxyLLMClient:
         body: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
-            "max_completion_tokens": self.config.max_output_tokens,
         }
+        if self.config.max_output_tokens is not None:
+            body["max_completion_tokens"] = self.config.max_output_tokens
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
