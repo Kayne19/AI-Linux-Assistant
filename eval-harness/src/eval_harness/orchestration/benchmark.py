@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -15,14 +14,6 @@ from ..persistence.store import EvalHarnessStore
 from .progress import FsmProgressSink
 from .user_proxy_fsm import UserProxyFSM
 from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMClientConfig
-
-# Kept for closure detection (re-exported for UserProxyFSM internal use)
-_PROXY_CLOSURE_RE = re.compile(
-    r"\b("
-    r"thanks|thank you|all good|looks good|working now|works now|fixed|resolved|that fixed it|problem solved|we're good"
-    r")\b",
-    re.IGNORECASE,
-)
 
 
 def _role_for_subject_message() -> str:
@@ -203,6 +194,8 @@ class BenchmarkRunOrchestrator:
 
             consecutive_stalled_turns = 0
             _PROXY_STALL_LIMIT = 3
+            false_completion_claims = 0
+            _PROXY_FALSE_CLOSURE_LIMIT = 3
             turn_index = 0
 
             for _ in range(effective_max_turns):
@@ -278,6 +271,8 @@ class BenchmarkRunOrchestrator:
                     controller=controller,
                     evaluation_run_id=evaluation_run_id,
                     observable_problem_statement=scenario.observable_problem_statement,
+                    repair_checks=scenario.repair_checks,
+                    verification_session_key=f"{evaluation_run_id}-mark-complete",
                     scenario_name=getattr(scenario, "scenario_name", ""),
                     progress=self.progress,
                     turn=turn_index,
@@ -328,22 +323,17 @@ class BenchmarkRunOrchestrator:
                 consecutive_stalled_turns = 0
 
                 if proxy_result.closure:
-                    # Proxy declared repair confirmed — verify with repair checks
-                    repair_results, seq = self._execute_repair_checks(
-                        controller=controller,
-                        scenario=scenario,
-                        evaluation_run_id=evaluation_run_id,
-                        seq=seq,
-                        verification_agent_id=verification_agent_id,
-                    )
+                    # mark_task_complete was called and all repair_checks passed inside the tool
                     session_metadata = session.close()
                     session = None
-                    repair_success = self._repair_checks_pass(scenario, repair_results)
                     self.store.update_evaluation_run_status(
                         evaluation_run_id=evaluation_run_id,
-                        status=EvaluationRunStatus.COMPLETED.value if repair_success else EvaluationRunStatus.FAILED.value,
-                        repair_success=repair_success,
-                        resolution_result=self._repair_result_payload(scenario, repair_results),
+                        status=EvaluationRunStatus.COMPLETED.value,
+                        repair_success=True,
+                        resolution_result={
+                            "reason": "mark_task_complete",
+                            "verification_report": proxy_result.completion_claim_report,
+                        },
                         adapter_session_metadata=session_metadata,
                         finished=True,
                     )
@@ -352,11 +342,39 @@ class BenchmarkRunOrchestrator:
                             self.progress(
                                 fsm_name="benchmark",
                                 scenario_name=getattr(scenario, "scenario_name", ""),
-                                details={"event": "evaluation_completed", "repair_success": repair_success},
+                                details={"event": "evaluation_completed", "repair_success": True},
                             )
                         except Exception:  # noqa: BLE001
                             pass
                     return
+
+                if proxy_result.completion_claim_attempted and not proxy_result.completion_claim_passed:
+                    false_completion_claims += 1
+                    if false_completion_claims >= _PROXY_FALSE_CLOSURE_LIMIT:
+                        session_metadata = session.close()
+                        session = None
+                        self.store.update_evaluation_run_status(
+                            evaluation_run_id=evaluation_run_id,
+                            status=EvaluationRunStatus.FAILED.value,
+                            repair_success=False,
+                            resolution_result={
+                                "reason": "too_many_false_completion_claims",
+                                "claim_count": false_completion_claims,
+                                "last_verification_report": proxy_result.completion_claim_report,
+                            },
+                            adapter_session_metadata=session_metadata,
+                            finished=True,
+                        )
+                        if self.progress is not None:
+                            try:
+                                self.progress(
+                                    fsm_name="benchmark",
+                                    scenario_name=getattr(scenario, "scenario_name", ""),
+                                    details={"event": "evaluation_completed", "repair_success": False},
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+                        return
 
                 user_message = proxy_result.user_message
 

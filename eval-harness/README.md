@@ -153,7 +153,7 @@ The proxy is a strict command relay, not a diagnostician:
 
 The benchmark loop enforces those constraints and suppresses proxy turns that keep trying to run unrequested commands.
 
-When the proxy observes that the stated problem is resolved (the service is back up, the config error is gone, etc.), it replies with the sentinel string `REPAIR_CONFIRMED` to end the session early. The benchmark loop treats this as a successful early termination and moves on to objective repair checks.
+When the proxy believes the stated problem is resolved, it calls the `mark_task_complete` tool. The tool runs the scenario's `repair_checks` against the live sandbox and returns a per-check pass/fail report back to the proxy LLM as a tool message. If every check passes, the benchmark terminates as `COMPLETED` with `repair_success=True`. If any check fails, the proxy sees which ones and is expected to keep troubleshooting; the benchmark force-fails after 3 such false claims (`too_many_false_completion_claims`).
 
 ## Project Layout
 

@@ -6,12 +6,11 @@ from dataclasses import dataclass, field
 import pytest
 
 from eval_harness.controllers.base import SandboxController
-from eval_harness.models import CommandExecutionResult
+from eval_harness.models import CommandExecutionResult, VerificationCheck
 from eval_harness.orchestration.user_proxy_fsm import (
     UserProxyFSM,
     UserProxyState,
     UserProxyTurnResult,
-    _looks_like_closure_reply,
 )
 from eval_harness.orchestration.user_proxy_llm import (
     UserProxyLLMClient,
@@ -83,6 +82,7 @@ def _make_fsm(
     controller: FakeController | None = None,
     *,
     max_tool_calls_per_turn: int = 4,
+    repair_checks: tuple[VerificationCheck, ...] = (),
     transitions: list | None = None,
 ) -> UserProxyFSM:
     if controller is None:
@@ -98,6 +98,8 @@ def _make_fsm(
         controller=controller,
         evaluation_run_id="eval-test-123",
         observable_problem_statement="nginx is down",
+        repair_checks=repair_checks,
+        verification_session_key="test-session",
         max_tool_calls_per_turn=max_tool_calls_per_turn,
         scenario_name="test-scenario",
         progress=progress,
@@ -245,43 +247,88 @@ def test_tool_call_cap_with_no_reply_stalls() -> None:
     assert result.stalled
 
 
-# ---------------------------------------------------------------------------
-# Closure detection: REPAIR_CONFIRMED
-# ---------------------------------------------------------------------------
 
 
-def test_closure_repair_confirmed() -> None:
-    """Proxy returns 'REPAIR_CONFIRMED' → closure=True."""
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# mark_task_complete
+# ---------------------------------------------------------------------------
+
+def test_mark_task_complete_calls_repair_checks_and_passes() -> None:
+    tc = UserProxyToolCall(id="c1", name="mark_task_complete", arguments={})
     llm = FakeUserProxyLLM(
         responses=[
-            UserProxyLLMResponse(content="REPAIR_CONFIRMED", tool_calls=(), finish_reason="stop"),
+            UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
+            UserProxyLLMResponse(content="Looks like it is resolved.", tool_calls=(), finish_reason="stop"),
+        ]
+    )
+    controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="curl -s http://localhost", stdout="Welcome to nginx!", stderr="", exit_code=0),),
+        ]
+    )
+    check = VerificationCheck(
+        name="nginx up",
+        command="curl -s http://localhost",
+        expected_substrings=("nginx",),
+    )
+    fsm = _make_fsm(llm, controller, repair_checks=(check,))
+    result = fsm.run_turn([], "Is it fixed?")
+
+    assert result.closure is True
+    assert result.completion_claim_attempted is True
+    assert result.completion_claim_passed is True
+    assert result.completion_claim_report is not None
+    assert result.completion_claim_report["all_passed"] is True
+
+def test_mark_task_complete_with_failing_checks_returns_report() -> None:
+    tc = UserProxyToolCall(id="c1", name="mark_task_complete", arguments={})
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
+            UserProxyLLMResponse(content="Oh wait, it is still broken.", tool_calls=(), finish_reason="stop"),
+        ]
+    )
+    controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="curl -s http://localhost", stdout="Connection refused", stderr="", exit_code=7),),
+        ]
+    )
+    check = VerificationCheck(
+        name="nginx up",
+        command="curl -s http://localhost",
+        expected_substrings=("nginx",),
+    )
+    fsm = _make_fsm(llm, controller, repair_checks=(check,))
+    result = fsm.run_turn([], "Is it fixed?")
+
+    assert result.closure is False
+    assert result.completion_claim_attempted is True
+    assert result.completion_claim_passed is False
+    assert result.completion_claim_report is not None
+    assert result.completion_claim_report["all_passed"] is False
+    
+    # Check that LLM received the report
+    tool_message = llm.calls[1]["messages"][-1]
+    assert tool_message["role"] == "tool"
+    assert "FAILED: nginx up" in tool_message["content"]
+
+def test_proxy_no_longer_closes_on_phrase() -> None:
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="all good, looks fixed now", tool_calls=(), finish_reason="stop"),
         ]
     )
     fsm = _make_fsm(llm)
-    result = fsm.run_turn([], "All fixed now")
+    result = fsm.run_turn([], "How is it?")
 
-    assert result.closure is True
-    assert result.user_message == "REPAIR_CONFIRMED"
-    assert not result.stalled
-
-
-# ---------------------------------------------------------------------------
-# Soft closure
-# ---------------------------------------------------------------------------
-
-
-def test_closure_soft_match() -> None:
-    """Proxy says 'all good now' → closure=True via regex."""
-    llm = FakeUserProxyLLM(
-        responses=[
-            UserProxyLLMResponse(content="Thanks, looks good now!", tool_calls=(), finish_reason="stop"),
-        ]
-    )
-    fsm = _make_fsm(llm)
-    result = fsm.run_turn([], "Service is running")
-
-    assert result.closure is True
-
+    assert result.closure is False
 
 # ---------------------------------------------------------------------------
 # Stalled: empty content, no tool calls
@@ -390,6 +437,8 @@ def test_session_key_contains_eval_run_id() -> None:
         controller=controller,
         evaluation_run_id="eval-xyz",
         observable_problem_statement="test",
+        repair_checks=(),
+        verification_session_key="test-session",
         terminal_id="term-0",
     )
     fsm.run_turn([], "echo something")
@@ -398,23 +447,11 @@ def test_session_key_contains_eval_run_id() -> None:
     assert any("term-0" in key for key in controller.session_keys)
 
 
-# ---------------------------------------------------------------------------
-# _looks_like_closure_reply helper
-# ---------------------------------------------------------------------------
 
 
-def test_looks_like_closure_reply_positive_cases() -> None:
-    assert _looks_like_closure_reply("Thanks, it works now!") is True
-    assert _looks_like_closure_reply("Looks good to me.") is True
-    assert _looks_like_closure_reply("All good!") is True
-    assert _looks_like_closure_reply("That fixed it.") is True
-    assert _looks_like_closure_reply("REPAIR_CONFIRMED") is False  # exact match, not in closure regex
 
 
-def test_looks_like_closure_reply_negative_cases() -> None:
-    assert _looks_like_closure_reply("") is False
-    assert _looks_like_closure_reply("I'm not sure what's happening.") is False
-
+    
 
 # ---------------------------------------------------------------------------
 # Full UserProxyLLMClient dataclass shape (no network)

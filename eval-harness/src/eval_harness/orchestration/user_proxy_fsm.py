@@ -9,26 +9,14 @@ in tests).  No controller.send() is used.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable
 
 from ..controllers.base import SandboxController
-from ..models import CommandExecutionResult
+from ..models import CommandExecutionResult, VerificationCheck
 from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMResponse, UserProxyToolCall
 
-
-# ---------------------------------------------------------------------------
-# Closure detection (mirrors _PROXY_CLOSURE_RE from the old benchmark.py)
-# ---------------------------------------------------------------------------
-
-_PROXY_CLOSURE_RE = re.compile(
-    r"\b("
-    r"thanks|thank you|all good|looks good|working now|works now|fixed|resolved|that fixed it|problem solved|we're good"
-    r")\b",
-    re.IGNORECASE,
-)
 
 # ---------------------------------------------------------------------------
 # Tool schema registry
@@ -58,7 +46,24 @@ _RUN_COMMAND_TOOL: dict[str, Any] = {
     },
 }
 
-DEFAULT_TOOLS: list[dict[str, Any]] = [_RUN_COMMAND_TOOL]
+_MARK_TASK_COMPLETE_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "mark_task_complete",
+        "description": (
+            "Call this ONLY when you have observed concrete command output proving the user's original problem is fully resolved. "
+            "The host will run hidden verification checks. If any fail, you will be told which checks failed and must continue troubleshooting. "
+            "Do not call speculatively."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
+DEFAULT_TOOLS: list[dict[str, Any]] = [_RUN_COMMAND_TOOL, _MARK_TASK_COMPLETE_TOOL]
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -76,9 +81,9 @@ def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
         "- Relay the exact command the assistant requested. Do not add sudo, extra flags, extra subcommands, or a more specific variant on your own.\n"
         "- Do not combine multiple commands unless the assistant explicitly requested multiple separate commands.\n"
         "- If the assistant did not give an exact command, ask what exact command to run instead of guessing.\n"
-        "- Never fabricate command output. Never say 'Fixed' or 'Done' unless you have seen actual output confirming repair.\n"
+        "- Never fabricate command output. Do not declare the issue fixed in plain text — only the mark_task_complete tool counts.\n"
         "- Do not write like an AI assistant. Write like a confused user.\n"
-        "- When you have observed output that confirms the problem stated above is resolved, reply with exactly: REPAIR_CONFIRMED"
+        "- When you have observed output that confirms the original problem is resolved, call the mark_task_complete tool. Do not call it speculatively — the host will verify your claim and tell you which checks failed if you were wrong, and you must continue troubleshooting from that report."
     )
 
 
@@ -101,6 +106,13 @@ class UserProxyState(Enum):
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class MarkTaskCompleteResult:
+    all_passed: bool
+    passed_count: int
+    total: int
+    per_check: tuple[dict[str, Any], ...]
+
 @dataclass
 class UserProxyContext:
     transcript: list[tuple[str, str]]  # cumulative (role, content) pairs
@@ -114,6 +126,9 @@ class UserProxyContext:
     stalled: bool = False
     # Pending tool calls from last assistant message (set in DECIDE, consumed in TOOL_EXEC)
     _pending_tool_calls: list[UserProxyToolCall] = field(default_factory=list)
+    completion_claim_attempted: bool = False
+    completion_claim_passed: bool = False
+    completion_claim_result: MarkTaskCompleteResult | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +142,9 @@ class UserProxyTurnResult:
     tool_results: tuple[CommandExecutionResult, ...]
     closure: bool
     stalled: bool
+    completion_claim_attempted: bool
+    completion_claim_passed: bool
+    completion_claim_report: dict[str, Any] | None
 
 
 # ---------------------------------------------------------------------------
@@ -147,11 +165,6 @@ def _render_tool_result(result: CommandExecutionResult) -> str:
     return "\n".join(parts)
 
 
-def _looks_like_closure_reply(reply: str) -> bool:
-    stripped = reply.strip()
-    if not stripped:
-        return False
-    return bool(_PROXY_CLOSURE_RE.search(stripped))
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +193,8 @@ class UserProxyFSM:
         controller: SandboxController,
         evaluation_run_id: str,
         observable_problem_statement: str,
+        repair_checks: tuple[VerificationCheck, ...],
+        verification_session_key: str,
         max_tool_calls_per_turn: int = 4,
         terminal_id: str = "term-0",
         progress: Callable[..., None] | None = None,
@@ -190,6 +205,8 @@ class UserProxyFSM:
         self.controller = controller
         self.evaluation_run_id = evaluation_run_id
         self.observable_problem_statement = observable_problem_statement
+        self.repair_checks = repair_checks
+        self.verification_session_key = verification_session_key
         self.max_tool_calls_per_turn = max_tool_calls_per_turn
         self.terminal_id = terminal_id
         self.progress = progress
@@ -200,6 +217,7 @@ class UserProxyFSM:
         # Multi-terminal extension: add open_new_terminal here later.
         self.tool_registry: dict[str, Callable] = {
             "run_command": self._handle_run_command,
+            "mark_task_complete": self._handle_mark_task_complete,
         }
         self.tools = DEFAULT_TOOLS
 
@@ -246,11 +264,22 @@ class UserProxyFSM:
             self._emit_progress(state, next_state, ctx)
             state = next_state
 
+        report = None
+        if ctx.completion_claim_result:
+            report = {
+                "all_passed": ctx.completion_claim_result.all_passed,
+                "passed_count": ctx.completion_claim_result.passed_count,
+                "total": ctx.completion_claim_result.total,
+                "per_check": list(ctx.completion_claim_result.per_check),
+            }
         return UserProxyTurnResult(
             user_message=ctx.final_reply,
             tool_results=tuple(ctx.tool_results),
             closure=ctx.closure,
             stalled=ctx.stalled,
+            completion_claim_attempted=ctx.completion_claim_attempted,
+            completion_claim_passed=ctx.completion_claim_passed,
+            completion_claim_report=report,
         )
 
     # ------------------------------------------------------------------
@@ -335,13 +364,18 @@ class UserProxyFSM:
                 continue
             try:
                 result = handler(ctx, tc)
-                ctx.tool_results.append(result)
-                ctx.tool_call_count += 1
+                if tc.name != "mark_task_complete":
+                    ctx.tool_results.append(result)
+                    ctx.tool_call_count += 1
+                    content_str = _render_tool_result(result)
+                else:
+                    content_str = result.stdout
+                
                 ctx.messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": _render_tool_result(result),
+                        "content": content_str,
                     }
                 )
             except Exception as exc:  # noqa: BLE001
@@ -372,10 +406,7 @@ class UserProxyFSM:
 
         ctx.final_reply = final_content
 
-        # Closure detection
-        if final_content.strip() == "REPAIR_CONFIRMED":
-            ctx.closure = True
-        elif _looks_like_closure_reply(final_content):
+        if ctx.completion_claim_passed:
             ctx.closure = True
 
         return UserProxyState.DONE
@@ -406,6 +437,90 @@ class UserProxyFSM:
         if not results:
             raise RuntimeError(f"execute_commands returned empty for command: {command!r}")
         return results[0]
+
+    def _handle_mark_task_complete(
+        self,
+        ctx: UserProxyContext,
+        tool_call: UserProxyToolCall,
+    ) -> CommandExecutionResult:
+        ctx.completion_claim_attempted = True
+
+        if not self.repair_checks:
+            ctx.completion_claim_passed = False
+            ctx.completion_claim_result = MarkTaskCompleteResult(
+                all_passed=False,
+                passed_count=0,
+                total=0,
+                per_check=(),
+            )
+            return CommandExecutionResult(
+                command="mark_task_complete",
+                stdout="Verification: no repair checks are configured for this scenario; cannot confirm completion.",
+                stderr="",
+                exit_code=1,
+                metadata={"verification_report": {
+                    "all_passed": False,
+                    "passed_count": 0,
+                    "total": 0,
+                    "per_check": [],
+                }},
+            )
+
+        commands = tuple(c.command for c in self.repair_checks)
+        results = self.controller.execute_commands(
+            commands,
+            session_key=self.verification_session_key,
+        )
+
+        per_check: list[dict[str, Any]] = []
+        passed_count = 0
+        lines: list[str] = []
+
+        for check, result in zip(self.repair_checks, results, strict=True):
+            passed = check.is_satisfied_by(result)
+            if passed:
+                passed_count += 1
+
+            check_name = check.name or check.command
+
+            per_check.append({
+                "name": check.name,
+                "command": check.command,
+                "passed": passed,
+                "exit_code": result.exit_code,
+                "output_excerpt": result.combined_output()[:500],
+            })
+
+            if passed:
+                lines.append(f"PASSED: {check_name}")
+            else:
+                lines.append(f"FAILED: {check_name} (exit {result.exit_code})")
+
+        total = len(self.repair_checks)
+        all_passed = passed_count == total
+
+        stdout = "\n".join([f"Verification: {passed_count}/{total} checks passed."] + lines)
+
+        ctx.completion_claim_passed = all_passed
+        ctx.completion_claim_result = MarkTaskCompleteResult(
+            all_passed=all_passed,
+            passed_count=passed_count,
+            total=total,
+            per_check=tuple(per_check),
+        )
+
+        return CommandExecutionResult(
+            command="mark_task_complete",
+            stdout=stdout,
+            stderr="",
+            exit_code=0 if all_passed else 1,
+            metadata={"verification_report": {
+                "all_passed": all_passed,
+                "passed_count": passed_count,
+                "total": total,
+                "per_check": per_check,
+            }},
+        )
 
     # ------------------------------------------------------------------
     # Progress

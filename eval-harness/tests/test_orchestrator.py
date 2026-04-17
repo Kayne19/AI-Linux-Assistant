@@ -1393,12 +1393,12 @@ def test_benchmark_proxy_runs_only_explicit_tool_calls() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test F: REPAIR_CONFIRMED triggers early exit with repair_success=True
+# Test F: mark_task_complete tool call passing triggers early exit
 # ---------------------------------------------------------------------------
 
 
-def test_benchmark_repair_confirmed_triggers_early_exit() -> None:
-    """Test F: proxy returns REPAIR_CONFIRMED → eval completes early, repair_success=True."""
+def test_benchmark_mark_complete_passes_triggers_completion() -> None:
+    """Test F: proxy tool call to mark_task_complete passes → eval completes, repair_success=True."""
     store, revision, setup = _build_benchmark_store_and_revision(turn_budget=5, subject_max_turns=5)
 
     session = FakeSubjectSession(
@@ -1424,21 +1424,27 @@ def test_benchmark_repair_confirmed_triggers_early_exit() -> None:
         execute_batches=[
             # First repair check (after subject turn): service still failing
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
-            # REPAIR_CONFIRMED closure repair check: now passing
+            # mark_task_complete inner verification check: passing
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
         ],
     )
-    # Proxy LLM returns REPAIR_CONFIRMED
-    proxy_llm = _make_proxy_llm(["REPAIR_CONFIRMED"])
+    # Proxy LLM calls mark_task_complete tool, then yields a reply
+    tc = UserProxyToolCall(id="call-1", name="mark_task_complete", arguments={})
+    proxy_llm = FakeUserProxyLLM(responses=[
+        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
+        UserProxyLLMResponse(content="Thanks!", tool_calls=(), finish_reason="stop"),
+    ])
     result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
     evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
     assert len(evaluation_runs) == 1
-    assert evaluation_runs[0].repair_success is True
-    assert evaluation_runs[0].status == "completed"
+    eval_run = evaluation_runs[0]
+    assert eval_run.repair_success is True
+    assert eval_run.status == "completed"
+    assert eval_run.resolution_result_json.get("reason") == "mark_task_complete"
 
-    # After REPAIR_CONFIRMED the subject session should receive no further messages
+    # After completion the subject session should receive no further messages
     assert len(submitted_messages) == 1, (
-        f"Subject should only receive one message (before REPAIR_CONFIRMED), got {len(submitted_messages)}"
+        f"Subject should only receive one message (before completion), got {len(submitted_messages)}"
     )
 
 
@@ -1720,9 +1726,9 @@ def test_benchmark_stall_detection_marks_benchmark_completed_with_failures() -> 
     assert benchmark_run.status == "completed_with_failures"
 
 
-def test_benchmark_closure_reply_triggers_final_verification() -> None:
-    """Soft closure reply ('looks good now') triggers final repair check → success."""
-    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=5, subject_max_turns=5)
+def test_benchmark_polite_phrase_does_not_trigger_completion() -> None:
+    """Soft closure phrase does not trigger early exit."""
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=2, subject_max_turns=2)
     session = FakeSubjectSession(
         turn_results=[
             AdapterTurnResult(
@@ -1733,26 +1739,127 @@ def test_benchmark_closure_reply_triggers_final_verification() -> None:
                 terminal_event_type="done",
                 events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
             ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Checking again...",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
         ]
     )
     clone_controller = FakeController(
         execute_batches=[
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
         ],
     )
-    # Soft closure phrase → FSM detects closure
-    proxy_llm = _make_proxy_llm(["Thanks, that fixed it. Everything looks good now."])
+    # Soft closure phrase → FSM does NOT detect closure, loop continues
+    proxy_llm = _make_proxy_llm(["looks good now, thanks", "still broken though..."])
 
     result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
     evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
-    benchmark_run = store.get_benchmark_run(result.benchmark_run_id)
 
     assert len(evaluation_runs) == 1
-    assert evaluation_runs[0].status == "completed"
-    assert evaluation_runs[0].repair_success is True
-    assert benchmark_run is not None
-    assert benchmark_run.status == "completed"
+    # Run failed because turn budget exhausted (repair_success = False)
+    assert evaluation_runs[0].status == "failed"
+    assert evaluation_runs[0].repair_success is False
+
+
+def test_benchmark_three_false_completion_claims_marks_failed() -> None:
+    """3 failed mark_task_complete calls ends benchmark."""
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=10, subject_max_turns=10)
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message=f"reply-{i}",
+                run_id=f"run-{i}",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            )
+            for i in range(10)
+        ]
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # after subj 1
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # tool 1
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # after subj 2
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # tool 2
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # after subj 3
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # tool 3
+        ]
+    )
+    tc = UserProxyToolCall(id="call-x", name="mark_task_complete", arguments={})
+    proxy_llm = FakeUserProxyLLM(responses=[
+        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
+        UserProxyLLMResponse(content="Oh wait", tool_calls=(), finish_reason="stop"),
+        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
+        UserProxyLLMResponse(content="Still wrong", tool_calls=(), finish_reason="stop"),
+        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
+        UserProxyLLMResponse(content="Failed 3 times!", tool_calls=(), finish_reason="stop"),
+    ])
+    result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+
+    assert len(evaluation_runs) == 1
+    eval_run = evaluation_runs[0]
+    assert eval_run.status == "failed"
+    assert eval_run.repair_success is False
+    resolution = eval_run.resolution_result_json
+    assert resolution.get("reason") == "too_many_false_completion_claims"
+    assert resolution.get("claim_count") == 3
+
+
+def test_benchmark_failed_claim_then_successful_claim_completes() -> None:
+    """First claim fails, second claim passes → success."""
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=10, subject_max_turns=10)
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Try it now.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Okay, what about now?",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            )
+        ]
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # tool 1
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),), # tool 2
+        ]
+    )
+    tc = UserProxyToolCall(id="call-x", name="mark_task_complete", arguments={})
+    proxy_llm = FakeUserProxyLLM(responses=[
+        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
+        UserProxyLLMResponse(content="Oh wait", tool_calls=(), finish_reason="stop"), # turn 1 text reply
+        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
+        UserProxyLLMResponse(content="Thanks!", tool_calls=(), finish_reason="stop"), # turn 2 text reply
+    ])
+    result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+
+    assert len(evaluation_runs) == 1
+    eval_run = evaluation_runs[0]
+    assert eval_run.status == "completed"
+    assert eval_run.repair_success is True
+    assert eval_run.resolution_result_json.get("reason") == "mark_task_complete"
 
 
 def test_benchmark_completed_with_failures_when_subjects_do_not_repair() -> None:

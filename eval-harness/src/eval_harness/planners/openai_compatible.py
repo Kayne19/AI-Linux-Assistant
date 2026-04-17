@@ -96,6 +96,7 @@ class OpenAICompatibleScenarioPlanner(ScenarioPlanner):
             "If a check needs elevated privileges, express that explicitly in the command itself rather than assuming an unprivileged equivalent is acceptable. "
             "Before finalizing repair_checks, ask whether any check could fail even though the system is repaired; if so, replace or remove it. "
             "Repair checks must be robust and functionally verify the system rather than relying strictly on generic service states. "
+            "repair_checks must collectively cover end-to-end functional restoration of the user's stated problem. If the observable problem is a user-visible action (e.g. 'I cannot SSH in,' 'curl to my service times out,' 'my cron job never runs'), at least one repair_check must actually attempt that action and verify it succeeds — not merely assert that a related daemon is loaded or active. State-level checks (systemctl is-active, ss -tlnp, file existence) are allowed in addition to a functional check, but never as the sole evidence of repair. "
             "The observable problem statement must not reveal the sabotage method. "
             "Keep the broken state objectively verifiable before cloning."
         )
@@ -105,7 +106,8 @@ class OpenAICompatibleScenarioPlanner(ScenarioPlanner):
             "You previously returned invalid scenario JSON. "
             "Return corrected JSON only. "
             "Do not explain or comment. "
-            "Preserve the user's target_image and produce a fully runnable scenario object that passes validation."
+            "Preserve the user's target_image and produce a fully runnable scenario object that passes validation. "
+            "Remember: repair_checks must collectively cover end-to-end functional restoration of the user's stated problem. If the observable problem is a user-visible action (e.g. 'I cannot SSH in,' 'curl to my service times out,' 'my cron job never runs'), at least one repair_check must actually attempt that action and verify it succeeds — not merely assert that a related daemon is loaded or active. State-level checks (systemctl is-active, ss -tlnp, file existence) are allowed in addition to a functional check, but never as the sole evidence of repair."
         )
 
     def _validated_scenario_from_payload(

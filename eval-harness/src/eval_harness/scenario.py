@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from .models import CommandExecutionResult, ScenarioSpec, VerificationCheck
+
+logger = logging.getLogger(__name__)
 
 
 class ScenarioValidationError(ValueError):
@@ -56,6 +59,18 @@ def validate_scenario(spec: ScenarioSpec) -> None:
                     f"{label}[{index}] must include at least one machine-checkable expectation "
                     "(e.g., expected_exit_code, expected_substrings, expected_regexes, etc.)"
                 )
+
+    action_verbs = {"curl", "ssh", "nc", "dig", "systemd-run", "wget", "ping", "mysql", "psql"}
+    has_action_verb = False
+    for check in spec.repair_checks:
+        if any(verb in check.command for verb in action_verbs):
+            has_action_verb = True
+            break
+    if not has_action_verb and spec.repair_checks:
+        logger.warning(
+            f"Scenario '{spec.scenario_name}' has no common action verbs (curl, ssh, nc, etc.) "
+            "in repair_checks. Consider adding end-to-end functional verification."
+        )
 
     if errors:
         raise ScenarioValidationError("; ".join(errors))
