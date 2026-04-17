@@ -95,6 +95,28 @@ def _command_verify(args: argparse.Namespace) -> int:
     )
 
 
+def _command_run_benchmark(args: argparse.Namespace) -> int:
+    print(f"\n=== run-benchmark (setup_run_id={args.setup_run_id}) ===")
+    exit_code, benchmark_result = _run_harness_command_capture([
+        "run-benchmark",
+        "--config", str(args.config),
+        "--setup-run-id", args.setup_run_id,
+    ])
+    if exit_code != 0:
+        return exit_code
+    benchmark_run_id = benchmark_result.get("benchmark_run_id", "")
+    if not benchmark_run_id:
+        print("ERROR: run-benchmark did not return a benchmark_run_id.", file=sys.stderr)
+        return 1
+    print(f"\n=== run-judge-job (benchmark_run_id={benchmark_run_id}) ===")
+    exit_code, _ = _run_harness_command_capture([
+        "run-judge-job",
+        "--config", str(args.config),
+        "--benchmark-run-id", benchmark_run_id,
+    ])
+    return exit_code
+
+
 def _command_smoke_test(args: argparse.Namespace) -> int:
     init_exit = _command_init_db(args)
     if init_exit != 0:
@@ -170,6 +192,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--request", type=Path, default=DEFAULT_REQUEST)
     verify_parser.add_argument("--group-id", default=_default_group_id())
     verify_parser.set_defaults(func=_command_verify)
+
+    benchmark_parser = subparsers.add_parser("run-benchmark", help="Run benchmark + judge from an existing setup run.")
+    benchmark_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    benchmark_parser.add_argument("--setup-run-id", required=True)
+    benchmark_parser.set_defaults(func=_command_run_benchmark)
 
     smoke_parser = subparsers.add_parser(
         "smoke-test",

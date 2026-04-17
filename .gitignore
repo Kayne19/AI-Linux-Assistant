@@ -49,3 +49,7 @@ audit_report.md
 Front-end/.test-dist/
 lancedb_data/
 .worktrees/
+
+.claude/
+.gemini/
+graphify-out/

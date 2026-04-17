@@ -2,25 +2,27 @@
 
 Provides a protocol type and two concrete sinks:
 
-  stderr_progress_sink()  — writes one line per transition to stderr (or any
-                            TextIO), flushing after every write.
-  null_progress_sink()    — discards all events; useful in tests or when the
-                            caller has no interest in progress lines.
+  stderr_progress_sink()  — writes one human-readable line per event to stderr.
+  null_progress_sink()    — discards all events; useful in tests.
 
-Line format (left-padded fsm_name to 16 chars):
+Example output:
 
-  [scenario-builder nginx_service_repair] DESIGN → LAUNCH_STAGING
-  [user-proxy       nginx_service_repair turn=3] DECIDE → TOOL_EXEC (run_command)
-  [benchmark        nginx_service_repair] evaluation_completed repair_success=True
+  [benchmark  nginx_service_repair/regular]  T0  Sending message to subject (142 chars)
+  [benchmark  nginx_service_repair/regular]  T0  Waiting for subject to respond...
+  [benchmark  nginx_service_repair/regular]  T0  Subject: "Let's check the service. Run: systemctl status nginx"
+  [benchmark  nginx_service_repair/regular]  T0  Running 2 repair check(s)...
+  [benchmark  nginx_service_repair/regular]  T0  Repair checks: FAILED
+  [user-proxy nginx_service_repair/regular]  T0  Proxy LLM thinking... (3 messages in context)
+  [user-proxy nginx_service_repair/regular]  T0  Proxy LLM done — 1 tool call(s), finish=tool_calls
+  [user-proxy nginx_service_repair/regular]  T0  Proxy running: systemctl status nginx
+  [benchmark  nginx_service_repair/regular]      Evaluation FAILED — proxy_stalled
 """
 from __future__ import annotations
 
 import sys
 from typing import Callable, Protocol, TextIO
 
-# Width to pad fsm_name to inside the bracket prefix.
-# "scenario-builder" is 16 chars; "user-proxy" pads to match.
-_FSM_NAME_WIDTH = 16
+_LABEL_WIDTH = 36  # width of the "[fsm  scenario/subject]" bracket block
 
 
 class FsmProgressSink(Protocol):
@@ -33,46 +35,109 @@ class FsmProgressSink(Protocol):
     def __call__(self, *, fsm_name: str, scenario_name: str, details: dict) -> None: ...
 
 
+def _turn_tag(details: dict) -> str:
+    turn = details.get("turn")
+    return f"T{turn}" if turn is not None else ""
+
+
+def _render_message(fsm_name: str, scenario_name: str, details: dict) -> str:
+    """Return the human-readable body of the progress line."""
+    event = details.get("event")
+    from_state = details.get("from")
+    to_state = details.get("to")
+
+    # ------------------------------------------------------------------ #
+    # State transitions (user-proxy FSM)                                   #
+    # ------------------------------------------------------------------ #
+    if from_state is not None and to_state is not None:
+        tool = details.get("tool", "")
+        command = details.get("command", "")
+        reason = details.get("reason", "")
+
+        if to_state == "TOOL_EXEC":
+            if tool == "run_command" and command:
+                return f"Proxy running: {command}"
+            if tool == "mark_task_complete":
+                snippet = (reason[:80] + "…") if len(reason) > 80 else reason
+                return f"Proxy claiming task complete: \"{snippet}\""
+            return f"Proxy calling tool: {tool}"
+
+        if to_state == "REPLY":
+            return "Proxy composing reply to user"
+        if to_state == "DONE":
+            return "Proxy turn complete"
+        if to_state == "STALLED":
+            return "Proxy stalled — no decision made"
+        if from_state == "TOOL_EXEC" and to_state == "DECIDE":
+            return "Tool executed — proxy deciding next step"
+
+        if from_state == "READ_ASSISTANT" and to_state == "DECIDE":
+            return "Reading subject's reply, deciding how to respond..."
+
+        return f"{from_state} → {to_state}"
+
+    # ------------------------------------------------------------------ #
+    # Named events                                                          #
+    # ------------------------------------------------------------------ #
+
+    # benchmark events
+    if event == "user_turn_start":
+        chars = details.get("msg_len", "?")
+        return f"Sending message to subject ({chars} chars)"
+    if event == "subject_wait":
+        return "Waiting for subject to respond..."
+    if event == "subject_replied":
+        snippet = details.get("reply_snippet", "")
+        return f"Subject: \"{snippet}\""
+    if event == "repair_check_start":
+        n = details.get("check_count", "?")
+        return f"Running {n} repair check(s)..."
+    if event == "repair_check_done":
+        passed = details.get("passed")
+        outcome = "PASSED ✓" if passed else "FAILED ✗"
+        return f"Repair checks: {outcome}"
+    if event == "evaluation_completed":
+        success = details.get("repair_success")
+        reason = details.get("reason", "")
+        outcome = "PASSED ✓" if success else "FAILED ✗"
+        suffix = f" — {reason}" if reason else ""
+        return f"Evaluation {outcome}{suffix}"
+
+    # user-proxy events
+    if event == "llm_wait":
+        n = details.get("msg_count", "?")
+        return f"Proxy LLM thinking... ({n} messages in context)"
+    if event == "llm_done":
+        tc = details.get("tool_calls", 0)
+        finish = details.get("finish_reason", "?")
+        if tc:
+            return f"Proxy LLM done \u2014 {tc} tool call(s), finish={finish}"
+        return f"Proxy LLM done \u2014 text reply, finish={finish}"
+
+    # scenario-builder or other FSMs: fall back to a clean key=value line
+    _SKIP = {"event", "turn", "from", "to", "subject_name", "tool_call_count"}
+    parts = [event] if event else []
+    for k, v in details.items():
+        if k not in _SKIP:
+            parts.append(f"{k}={v}")
+    return "  ".join(parts)
+
+
 def _format_line(fsm_name: str, scenario_name: str, details: dict) -> str:
-    """Return a single formatted progress line.  Never raises."""
+    """Return a single human-readable progress line.  Never raises."""
     try:
-        padded = fsm_name.ljust(_FSM_NAME_WIDTH)
+        subject_name = details.get("subject_name", "")
+        context = f"{scenario_name}/{subject_name}" if subject_name else scenario_name
+        label = f"[{fsm_name}  {context}]".ljust(_LABEL_WIDTH)
 
-        # Build the bracket label: [fsm  scenario_name (turn=N if present)]
-        label_parts = [padded, " ", scenario_name]
-        turn = details.get("turn")
-        if turn is not None:
-            label_parts.append(f" turn={turn}")
-        label = "".join(label_parts)
+        body = _render_message(fsm_name, scenario_name, details)
+        if not body:
+            return ""
 
-        from_state = details.get("from")
-        to_state = details.get("to")
-
-        if from_state is not None and to_state is not None:
-            # State transition line
-            transition = f"{from_state} \u2192 {to_state}"
-            tool = details.get("tool")
-            if tool:
-                transition = f"{transition} ({tool})"
-            command = details.get("command")
-            if command:
-                transition = f"{transition}: {command}"
-            reason = details.get("reason")
-            if reason:
-                transition = f"{transition}: {reason}"
-            return f"[{label}] {transition}"
-
-        # Generic event line (e.g. benchmark-level events)
-        event = details.get("event", "")
-        extra_parts = []
-        for key, value in details.items():
-            if key in ("event", "turn", "from", "to"):
-                continue
-            extra_parts.append(f"{key}={value}")
-        extra = " ".join(extra_parts)
-        if extra:
-            return f"[{label}] {event} {extra}".rstrip()
-        return f"[{label}] {event}".rstrip()
+        turn_tag = _turn_tag(details)
+        if turn_tag:
+            return f"{label}  {turn_tag:<4}  {body}"
+        return f"{label}        {body}"
 
     except Exception:  # noqa: BLE001 — never crash the caller
         return f"[progress format error] fsm={fsm_name!r} scenario={scenario_name!r}"
@@ -89,6 +154,8 @@ def stderr_progress_sink(stream: TextIO | None = None) -> FsmProgressSink:
     def _sink(*, fsm_name: str, scenario_name: str, details: dict) -> None:
         target = _stream if _stream is not None else sys.stderr
         line = _format_line(fsm_name, scenario_name, details)
+        if not line:
+            return
         try:
             print(line, file=target, flush=True)
         except Exception:  # noqa: BLE001 — never crash the caller

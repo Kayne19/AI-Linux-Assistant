@@ -194,11 +194,28 @@ class BenchmarkRunOrchestrator:
 
             consecutive_stalled_turns = 0
             _PROXY_STALL_LIMIT = 3
-            false_completion_claims = 0
-            _PROXY_FALSE_CLOSURE_LIMIT = 3
             turn_index = 0
 
-            for _ in range(effective_max_turns):
+            _scenario_name = getattr(scenario, "scenario_name", "")
+            _subject_name = subject_row.subject_name
+
+            def _emit(event: str, extra: dict | None = None) -> None:
+                if self.progress is None:
+                    return
+                try:
+                    details: dict = {"event": event, "subject_name": _subject_name}
+                    if extra:
+                        details.update(extra)
+                    self.progress(
+                        fsm_name="benchmark",
+                        scenario_name=_scenario_name,
+                        details=details,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+            for turn_index_outer in range(effective_max_turns):
+                _emit("user_turn_start", {"turn": turn_index_outer, "msg_len": len(user_message)})
                 self.store.append_evaluation_event(
                     evaluation_run_id=evaluation_run_id,
                     seq=seq,
@@ -209,7 +226,10 @@ class BenchmarkRunOrchestrator:
                 transcript_pairs.append(("user", user_message))
                 seq += 1
 
+                _emit("subject_wait", {"turn": turn_index_outer})
                 turn_result = session.submit_user_message(user_message)
+                _reply_snippet = (turn_result.assistant_message or "")[:120].replace("\n", " ")
+                _emit("subject_replied", {"turn": turn_index_outer, "reply_snippet": _reply_snippet})
                 self.store.append_evaluation_event(
                     evaluation_run_id=evaluation_run_id,
                     seq=seq,
@@ -235,6 +255,7 @@ class BenchmarkRunOrchestrator:
                     )
                     seq += 1
 
+                _emit("repair_check_start", {"turn": turn_index_outer, "check_count": len(scenario.repair_checks)})
                 repair_results, seq = self._execute_repair_checks(
                     controller=controller,
                     scenario=scenario,
@@ -242,8 +263,10 @@ class BenchmarkRunOrchestrator:
                     seq=seq,
                     verification_agent_id=verification_agent_id,
                 )
+                _passed = self._repair_checks_pass(scenario, repair_results)
+                _emit("repair_check_done", {"turn": turn_index_outer, "passed": _passed})
 
-                if self._repair_checks_pass(scenario, repair_results):
+                if _passed:
                     session_metadata = session.close()
                     session = None
                     self.store.update_evaluation_run_status(
@@ -254,15 +277,7 @@ class BenchmarkRunOrchestrator:
                         adapter_session_metadata=session_metadata,
                         finished=True,
                     )
-                    if self.progress is not None:
-                        try:
-                            self.progress(
-                                fsm_name="benchmark",
-                                scenario_name=getattr(scenario, "scenario_name", ""),
-                                details={"event": "evaluation_completed", "repair_success": True},
-                            )
-                        except Exception:  # noqa: BLE001
-                            pass
+                    _emit("evaluation_completed", {"repair_success": True})
                     return
 
                 # Run the user-proxy FSM to generate the next user message
@@ -271,9 +286,8 @@ class BenchmarkRunOrchestrator:
                     controller=controller,
                     evaluation_run_id=evaluation_run_id,
                     observable_problem_statement=scenario.observable_problem_statement,
-                    repair_checks=scenario.repair_checks,
-                    verification_session_key=f"{evaluation_run_id}-mark-complete",
-                    scenario_name=getattr(scenario, "scenario_name", ""),
+                    scenario_name=_scenario_name,
+                    subject_name=_subject_name,
                     progress=self.progress,
                     turn=turn_index,
                 )
@@ -306,75 +320,13 @@ class BenchmarkRunOrchestrator:
                             adapter_session_metadata=session_metadata,
                             finished=True,
                         )
-                        if self.progress is not None:
-                            try:
-                                self.progress(
-                                    fsm_name="benchmark",
-                                    scenario_name=getattr(scenario, "scenario_name", ""),
-                                    details={"event": "evaluation_completed", "repair_success": False},
-                                )
-                            except Exception:  # noqa: BLE001
-                                pass
+                        _emit("evaluation_completed", {"repair_success": False, "reason": "proxy_stalled"})
                         return
                     # Use the problem statement as the fallback message and continue
                     user_message = scenario.observable_problem_statement
                     continue
 
                 consecutive_stalled_turns = 0
-
-                if proxy_result.closure:
-                    # mark_task_complete was called and all repair_checks passed inside the tool
-                    session_metadata = session.close()
-                    session = None
-                    self.store.update_evaluation_run_status(
-                        evaluation_run_id=evaluation_run_id,
-                        status=EvaluationRunStatus.COMPLETED.value,
-                        repair_success=True,
-                        resolution_result={
-                            "reason": "mark_task_complete",
-                            "verification_report": proxy_result.completion_claim_report,
-                        },
-                        adapter_session_metadata=session_metadata,
-                        finished=True,
-                    )
-                    if self.progress is not None:
-                        try:
-                            self.progress(
-                                fsm_name="benchmark",
-                                scenario_name=getattr(scenario, "scenario_name", ""),
-                                details={"event": "evaluation_completed", "repair_success": True},
-                            )
-                        except Exception:  # noqa: BLE001
-                            pass
-                    return
-
-                if proxy_result.completion_claim_attempted and not proxy_result.completion_claim_passed:
-                    false_completion_claims += 1
-                    if false_completion_claims >= _PROXY_FALSE_CLOSURE_LIMIT:
-                        session_metadata = session.close()
-                        session = None
-                        self.store.update_evaluation_run_status(
-                            evaluation_run_id=evaluation_run_id,
-                            status=EvaluationRunStatus.FAILED.value,
-                            repair_success=False,
-                            resolution_result={
-                                "reason": "too_many_false_completion_claims",
-                                "claim_count": false_completion_claims,
-                                "last_verification_report": proxy_result.completion_claim_report,
-                            },
-                            adapter_session_metadata=session_metadata,
-                            finished=True,
-                        )
-                        if self.progress is not None:
-                            try:
-                                self.progress(
-                                    fsm_name="benchmark",
-                                    scenario_name=getattr(scenario, "scenario_name", ""),
-                                    details={"event": "evaluation_completed", "repair_success": False},
-                                )
-                            except Exception:  # noqa: BLE001
-                                pass
-                        return
 
                 user_message = proxy_result.user_message
 
