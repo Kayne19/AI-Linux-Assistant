@@ -4,6 +4,12 @@ import re
 import time
 
 from orchestration.run_control import invoke_cancel_check
+from providers.structured_output import (
+    is_valid_json_text,
+    require_output_schema,
+    schema_name,
+    warning_payload,
+)
 from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 try:
@@ -192,7 +198,28 @@ class OpenAICaller:
             )
         return outputs
 
-    def _build_request_kwargs(self, system_prompt, translated_tools, temperature, max_output_tokens):
+    def _build_structured_output_kwargs(self, output_schema):
+        normalized_schema = self._normalize_strict_schema(output_schema)
+        return {
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": schema_name(output_schema),
+                    "schema": normalized_schema,
+                    "strict": True,
+                }
+            }
+        }
+
+    def _build_request_kwargs(
+        self,
+        system_prompt,
+        translated_tools,
+        temperature,
+        max_output_tokens,
+        structured_output=False,
+        output_schema=None,
+    ):
         request_kwargs = {
             "model": self.model,
             "instructions": system_prompt,
@@ -206,6 +233,8 @@ class OpenAICaller:
             request_kwargs["temperature"] = temperature
         if max_output_tokens is not None:
             request_kwargs["max_output_tokens"] = max_output_tokens
+        if structured_output:
+            request_kwargs.update(self._build_structured_output_kwargs(output_schema))
         return request_kwargs
 
     def _build_prompt_cache_kwargs(self, system_prompt, translated_tools, cache_config):
@@ -263,6 +292,21 @@ class OpenAICaller:
                 "round": round_number,
                 **metrics,
             },
+        )
+
+    def _emit_structured_output_warning(self, event_listener, output_schema, reason, used_prompt_fallback):
+        if event_listener is None:
+            return
+        event_listener(
+            "structured_output_warning",
+            warning_payload(
+                provider="openai",
+                model=self.model,
+                output_schema=output_schema,
+                reason=reason,
+                native_method="responses.text.format",
+                used_prompt_fallback=used_prompt_fallback,
+            ),
         )
 
     def _is_rate_limit_error(self, exc):
@@ -350,8 +394,44 @@ class OpenAICaller:
                             "attempt": attempt,
                             "delay_seconds": delay_seconds,
                         },
-                    )
+                )
                 time.sleep(delay_seconds)
+
+    def _create_text_response(
+        self,
+        request_kwargs,
+        *,
+        structured_output=False,
+        output_schema=None,
+        event_listener=None,
+        round_number=0,
+    ):
+        try:
+            response = self._create_response_with_retries(
+                request_kwargs,
+                event_listener=event_listener,
+                round_number=round_number,
+            )
+        except Exception as exc:
+            if not structured_output:
+                raise
+            self._emit_structured_output_warning(event_listener, output_schema, str(exc), used_prompt_fallback=True)
+            fallback_kwargs = dict(request_kwargs)
+            fallback_kwargs.pop("text", None)
+            return self._create_response_with_retries(
+                fallback_kwargs,
+                event_listener=event_listener,
+                round_number=round_number,
+            )
+
+        if structured_output and response.output_text and not is_valid_json_text(response.output_text):
+            self._emit_structured_output_warning(
+                event_listener,
+                output_schema,
+                "native structured output returned invalid JSON",
+                used_prompt_fallback=False,
+            )
+        return response
 
     def start_text_step(
         self,
@@ -478,7 +558,10 @@ class OpenAICaller:
         event_listener=None,
         cancel_check=None,
         cache_config=None,
+        structured_output=False,
+        output_schema=None,
     ):
+        output_schema = require_output_schema(structured_output, output_schema)
         translated_tools = self._maybe_append_native_web_search(
             self._translate_tools(tools or []),
             enable_web_search,
@@ -488,6 +571,8 @@ class OpenAICaller:
             translated_tools,
             temperature,
             max_output_tokens,
+            structured_output=structured_output,
+            output_schema=output_schema,
         )
         request_kwargs.update(
             self._build_prompt_cache_kwargs(
@@ -501,8 +586,10 @@ class OpenAICaller:
         invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
             event_listener("request_submitted", {"round": 0})
-        response = self._create_response_with_retries(
+        response = self._create_text_response(
             request_kwargs,
+            structured_output=structured_output,
+            output_schema=output_schema,
             event_listener=event_listener,
             round_number=0,
         )
@@ -541,6 +628,8 @@ class OpenAICaller:
                 translated_tools,
                 temperature,
                 max_output_tokens,
+                structured_output=structured_output,
+                output_schema=output_schema,
             )
             followup_kwargs.update(
                 self._build_prompt_cache_kwargs(
@@ -555,8 +644,10 @@ class OpenAICaller:
                 event_listener("tool_results_submitted", {"round": tool_rounds})
 
             invoke_cancel_check(cancel_check, "before_model_call")
-            response = self._create_response_with_retries(
+            response = self._create_text_response(
                 followup_kwargs,
+                structured_output=structured_output,
+                output_schema=output_schema,
                 event_listener=event_listener,
                 round_number=tool_rounds,
             )
@@ -592,7 +683,26 @@ class OpenAICaller:
         event_listener=None,
         cancel_check=None,
         cache_config=None,
+        structured_output=False,
+        output_schema=None,
     ):
+        if structured_output:
+            return self.generate_text(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                history=history,
+                tools=tools,
+                tool_handler=tool_handler,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                max_tool_rounds=max_tool_rounds,
+                enable_web_search=enable_web_search,
+                event_listener=event_listener,
+                cancel_check=cancel_check,
+                cache_config=cache_config,
+                structured_output=structured_output,
+                output_schema=output_schema,
+            )
         translated_tools = self._maybe_append_native_web_search(
             self._translate_tools(tools or []),
             enable_web_search,

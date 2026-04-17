@@ -79,6 +79,7 @@ The stream currently sends JSON payloads shaped like:
 - memory events
 - provider/tool events
 - Magi phase and role events
+- structured-output fallback warnings such as `structured_output_warning`
 - paused-run control events such as `magi_pause_requested`, `magi_intervention_added`, and `magi_resumed`
 - evidence pool events: `evidence_pool_update` (emitted after every retrieval, contains coverage summary) and `retrieval_gated` (emitted when a MAGI scope is exhausted and a retrieval is blocked)
 
@@ -92,6 +93,7 @@ Important debug ownership rule:
 - normal `event` rows should stay phase-owned and compact instead of duplicating the same retrieved context or loaded memory snapshot text over and over
 - exception: a retrieval tool-completion event may carry its own returned `result_text` / `result_blocks`, because that text is owned by that specific tool invocation rather than the initial run-level retrieval bundle
 - retrieval tool-completion events may also report progression metadata such as cached-hit state, anchor pages, fetched neighbors, delivered bundle count, excluded-seen count, search outcome classification (`search_outcome`), covered region count (`covered_region_count`), scope-exhausted flag, and active MAGI caller context (`caller_role`, `caller_phase`, `caller_round`)
+- provider fallback warnings should stay compact and machine-readable, for example provider/model/schema name, native method, reason, and whether prompt fallback was used
 
 `error` reports backend failure.
 

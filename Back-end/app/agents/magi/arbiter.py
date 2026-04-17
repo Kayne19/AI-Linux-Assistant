@@ -8,6 +8,34 @@ from prompting.magi_prompts import MAGI_ARBITER_PROMPT
 VALID_DECISION_MODES = {"consensus", "best_current_branch"}
 VALID_UNCERTAINTY_LEVELS = {"high", "medium", "low"}
 
+MAGI_ARBITER_OUTPUT_SCHEMA = {
+    "title": "magi_arbiter_output",
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "primary_issue": {"type": "string"},
+        "immediate_obligation": {"type": "string"},
+        "winning_branch": {"type": "string"},
+        "decision_mode": {"type": "string", "enum": sorted(VALID_DECISION_MODES)},
+        "uncertainty_level": {"type": "string", "enum": sorted(VALID_UNCERTAINTY_LEVELS)},
+        "strongest_surviving_objection": {"type": "string"},
+        "missing_decisive_artifact": {"type": "string"},
+        "evidence_sources": {"type": "array", "items": {"type": "string"}},
+        "final_answer": {"type": "string"},
+    },
+    "required": [
+        "primary_issue",
+        "immediate_obligation",
+        "winning_branch",
+        "decision_mode",
+        "uncertainty_level",
+        "strongest_surviving_objection",
+        "missing_decisive_artifact",
+        "evidence_sources",
+        "final_answer",
+    ],
+}
+
 
 def _clean_text(value):
     if value is None:
@@ -178,6 +206,8 @@ USER QUESTION:
             tool_handler=self.tool_handler,
             max_tool_rounds=self.max_tool_rounds,
             event_listener=self._forward_worker_event,
+            structured_output=True,
+            output_schema=MAGI_ARBITER_OUTPUT_SCHEMA,
         )
         invoke_cancel_check(self.cancel_check, "after_model_call:arbiter")
         return self._parse_response(response)
@@ -217,6 +247,8 @@ USER QUESTION:
                 tool_handler=self.tool_handler,
                 max_tool_rounds=self.max_tool_rounds,
                 event_listener=self._forward_worker_event,
+                structured_output=True,
+                output_schema=MAGI_ARBITER_OUTPUT_SCHEMA,
             )
             invoke_cancel_check(self.cancel_check, "after_model_call:arbiter")
             parsed = self._parse_response(response)

@@ -9,6 +9,7 @@ Provider adapters should only own the mechanics of communicating with external o
 ### Responsibilities
 - **Request Formatting**: Mapping the project's internal message and tool structures to the provider's specific API format.
 - **Response Parsing**: Converting provider-specific outputs (text, tool calls, usage metadata) back into internal system models.
+- **Structured Output Enforcement**: When a caller explicitly requests JSON via `structured_output=True` plus an `output_schema`, providers should use the vendor-native structured-output feature instead of relying only on prompt text.
 - **Tool-Call Transport**: Handling the specific semantics of how the provider expects tool definitions and returns tool results.
 - **Single-Step Transport**: Exposing one-step request/response primitives for router-owned protocols such as the regular responder mini-FSM.
 - **Reliability**: Implementing provider-specific retries, timeouts, and error handling.
@@ -35,3 +36,12 @@ Current responder transport rule:
 - the regular chatbot path should prefer the single-step transport methods so the router owns the bounded responder protocol
 - those single-step calls must be sufficient for the router to run internal responder decision/evaluation phases before or after router-executed retrieval
 - Magi keeps its existing role-level tool-loop contract and shared tool text contract
+
+Structured-output rule:
+
+- plain-text calls still use the normal provider text path
+- JSON-required callers pass `structured_output=True` and an `output_schema` dict to `generate_text()` / `generate_text_stream()`
+- OpenAI maps that request to Responses structured output via `text.format`
+- Anthropic maps that request to Messages structured output via `output_config.format`
+- Local models currently warn and fall back to prompt-and-parse behavior
+- if a provider cannot honor native structured output, it should emit a compact `structured_output_warning` event before using the prompt fallback path

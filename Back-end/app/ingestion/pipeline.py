@@ -25,6 +25,21 @@ from providers.openAI_caller import OpenAIWorker
 from retrieval.config import load_retrieval_config
 
 
+REGISTRY_UPDATE_OUTPUT_SCHEMA = {
+    "title": "registry_update_output",
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "action": {"type": "string", "enum": ["skip", "upsert"]},
+        "reason": {"type": "string"},
+        "label": {"type": "string"},
+        "aliases": {"type": "array", "items": {"type": "string"}},
+        "description": {"type": "string"},
+    },
+    "required": ["action"],
+}
+
+
 def export_full_text(pdf_path: Path, output_path: Path) -> None:
     reader = PdfReader(str(pdf_path))
     full_content = ""
@@ -278,6 +293,8 @@ def update_routing_registry(
         user_message=user_message,
         history=[],
         temperature=0.1,
+        structured_output=True,
+        output_schema=REGISTRY_UPDATE_OUTPUT_SCHEMA,
     )
 
     suggestion = extract_json_object(response)

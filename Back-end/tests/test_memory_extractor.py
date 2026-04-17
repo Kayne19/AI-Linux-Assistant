@@ -116,3 +116,27 @@ def test_memory_extractor_includes_recent_history_for_reference_resolution():
     assert "recent_history" in payload
     assert "Please reboot the machine and tell me what changes." in payload
     assert '"role": "assistant"' in payload
+
+
+def test_memory_extractor_requests_native_structured_output():
+    worker = RecordingWorker(
+        """
+        {
+          "facts": [],
+          "issues": [],
+          "attempts": [],
+          "constraints": [],
+          "preferences": [],
+          "session_summary": ""
+        }
+        """
+    )
+    extractor = MemoryExtractor(worker=worker)
+
+    extractor.call_api("user said something", "assistant replied")
+
+    assert worker.calls, "expected the extractor to call the worker"
+    kwargs = worker.calls[0]
+    assert kwargs["structured_output"] is True
+    assert kwargs["output_schema"]["type"] == "object"
+    assert "facts" in kwargs["output_schema"]["properties"]

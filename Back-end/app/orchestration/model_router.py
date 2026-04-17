@@ -1326,7 +1326,10 @@ class ModelRouter:
             return memory_extractor
         if memory_extractor is None and not build_default:
             return None
-        return MemoryExtractor(worker=self._build_worker(memory_extractor, self.settings.memory_extractor))
+        return MemoryExtractor(
+            worker=self._build_worker(memory_extractor, self.settings.memory_extractor),
+            event_listener=self._emit_event,
+        )
 
     def _build_memory_store(self, memory_store):
         return memory_store

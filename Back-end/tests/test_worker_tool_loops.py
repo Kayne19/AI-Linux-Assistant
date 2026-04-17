@@ -116,9 +116,12 @@ class FakeOpenAIResponses:
     def __init__(self, responses):
         self._responses = list(responses)
         self.calls = []
+        self.errors = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
+        if self.errors:
+            raise self.errors.pop(0)
         return self._responses.pop(0)
 
 
@@ -263,6 +266,77 @@ def test_openai_worker_normalizes_optional_tool_fields_for_strict_schemas():
     assert schema["properties"]["repeat_reason"]["anyOf"][1] == {"type": "null"}
     assert schema["properties"]["requested_evidence_goal"]["anyOf"][1] == {"type": "null"}
 
+
+def test_openai_worker_requests_native_structured_output_when_schema_is_provided():
+    worker = openai_module.OpenAICaller.__new__(openai_module.OpenAICaller)
+    worker.model = "fake-openai"
+    worker.reasoning_effort = None
+    worker.client = FakeOpenAIClient([FakeOpenAIResponse(output_text='{"answer":"ok"}')])
+
+    response = worker.generate_text(
+        system_prompt="sys",
+        user_message="user",
+        history=[],
+        structured_output=True,
+        output_schema={
+            "title": "role_output",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "answer": {"type": "string"},
+                "note": {"type": "string"},
+            },
+            "required": ["answer"],
+        },
+    )
+
+    assert response == '{"answer":"ok"}'
+    request = worker.client.responses.calls[0]
+    assert request["text"]["format"]["type"] == "json_schema"
+    assert request["text"]["format"]["name"] == "role_output"
+    assert request["text"]["format"]["strict"] is True
+    assert request["text"]["format"]["schema"]["required"] == ["answer", "note"]
+
+
+def test_openai_worker_warns_and_falls_back_when_native_structured_output_fails():
+    worker = openai_module.OpenAICaller.__new__(openai_module.OpenAICaller)
+    worker.model = "fake-openai"
+    worker.reasoning_effort = None
+    worker.client = FakeOpenAIClient([FakeOpenAIResponse(output_text='{"answer":"fallback"}')])
+    worker.client.responses.errors.append(RuntimeError("structured outputs unsupported"))
+    events = []
+
+    response = worker.generate_text(
+        system_prompt="sys",
+        user_message="user",
+        history=[],
+        structured_output=True,
+        output_schema={
+            "title": "role_output",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+        event_listener=lambda event_type, payload: events.append((event_type, payload)),
+    )
+
+    assert response == '{"answer":"fallback"}'
+    assert len(worker.client.responses.calls) == 2
+    assert "text" in worker.client.responses.calls[0]
+    assert "text" not in worker.client.responses.calls[1]
+    assert (
+        "structured_output_warning",
+        {
+            "provider": "openai",
+            "model": "fake-openai",
+            "schema_name": "role_output",
+            "reason": "structured outputs unsupported",
+            "native_method": "responses.text.format",
+            "used_prompt_fallback": True,
+        },
+    ) in events
+
 def test_anthropic_worker_repeats_tool_rounds_until_completion():
     worker = anthropic_module.AnthropicCaller.__new__(anthropic_module.AnthropicCaller)
     worker.model = "fake-claude"
@@ -328,6 +402,32 @@ def test_anthropic_worker_includes_native_web_search_and_emits_event():
     assert ("web_search_used", {"provider": "anthropic", "count": 1, "round": 0}) in events
 
 
+def test_anthropic_worker_requests_native_structured_output_when_schema_is_provided():
+    worker = anthropic_module.AnthropicCaller.__new__(anthropic_module.AnthropicCaller)
+    worker.model = "fake-claude"
+    worker.client = FakeAnthropicClient([FakeAnthropicResponse(text='{"answer":"ok"}')])
+
+    response = worker.generate_text(
+        system_prompt="sys",
+        user_message="user",
+        history=[],
+        structured_output=True,
+        output_schema={
+            "title": "role_output",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    )
+
+    assert response == '{"answer":"ok"}'
+    request = worker.client.messages.calls[0]
+    assert request["output_config"]["format"]["type"] == "json_schema"
+    assert request["output_config"]["format"]["schema"]["title"] == "role_output"
+    assert request["output_config"]["format"]["schema"]["required"] == ["answer"]
+
+
 def test_local_worker_repeats_tool_rounds_until_completion():
     original_chat = local_module.ollama.chat
     calls = []
@@ -368,6 +468,52 @@ def test_local_worker_repeats_tool_rounds_until_completion():
         assert tool_calls == [("lookup", {"q": "one"}), ("lookup", {"q": "two"})]
         assert len(calls) == 3
         assert events[-1] == ("response_completed", {"tool_rounds": 2})
+    finally:
+        local_module.ollama.chat = original_chat
+
+
+def test_local_worker_warns_and_falls_back_for_structured_output_requests():
+    original_chat = local_module.ollama.chat
+    calls = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return {"message": {"content": '{"answer":"local"}', "tool_calls": []}}
+
+    local_module.ollama.chat = fake_chat
+    try:
+        worker = local_module.LocalCaller(model="fake-local")
+        events = []
+
+        response = worker.generate_text(
+            system_prompt="sys",
+            user_message="user",
+            history=[],
+            structured_output=True,
+            output_schema={
+                "title": "role_output",
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+            event_listener=lambda event_type, payload: events.append((event_type, payload)),
+        )
+
+        assert response == '{"answer":"local"}'
+        assert len(calls) == 1
+        assert "format" not in calls[0]
+        assert (
+            "structured_output_warning",
+            {
+                "provider": "local",
+                "model": "fake-local",
+                "schema_name": "role_output",
+                "reason": "native structured output unsupported",
+                "native_method": "none",
+                "used_prompt_fallback": True,
+            },
+        ) in events
     finally:
         local_module.ollama.chat = original_chat
 

@@ -4,6 +4,107 @@ import re
 from prompting.prompts import MEMORY_EXTRACTOR_SYSTEM_PROMPT
 
 
+def _object_schema(title, properties, required):
+    return {
+        "title": title,
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+    }
+
+
+MEMORY_RECORD_SOURCE_TYPE_SCHEMA = {
+    "type": "string",
+    "enum": ["user", "assistant", "model"],
+}
+
+MEMORY_CONFIDENCE_SCHEMA = {
+    "type": "number",
+}
+
+MEMORY_FACT_SCHEMA = _object_schema(
+    "memory_fact",
+    {
+        "fact_key": {"type": "string"},
+        "fact_value": {"type": "string"},
+        "source_type": MEMORY_RECORD_SOURCE_TYPE_SCHEMA,
+        "source_ref": {"type": "string"},
+        "confidence": MEMORY_CONFIDENCE_SCHEMA,
+        "evidence_quote": {"type": "string"},
+    },
+    ["fact_key", "fact_value", "source_type", "source_ref", "confidence", "evidence_quote"],
+)
+
+MEMORY_ISSUE_SCHEMA = _object_schema(
+    "memory_issue",
+    {
+        "title": {"type": "string"},
+        "category": {"type": "string"},
+        "summary": {"type": "string"},
+        "status": {"type": "string", "enum": ["open", "resolved", "unknown"]},
+        "source_type": MEMORY_RECORD_SOURCE_TYPE_SCHEMA,
+        "source_ref": {"type": "string"},
+        "confidence": MEMORY_CONFIDENCE_SCHEMA,
+        "evidence_quote": {"type": "string"},
+    },
+    ["title", "category", "summary", "status", "source_type", "source_ref", "confidence", "evidence_quote"],
+)
+
+MEMORY_ATTEMPT_SCHEMA = _object_schema(
+    "memory_attempt",
+    {
+        "action": {"type": "string"},
+        "command": {"type": "string"},
+        "outcome": {"type": "string"},
+        "status": {"type": "string", "enum": ["attempted", "worked", "failed", "unknown"]},
+        "issue_title": {"type": "string"},
+        "source_type": MEMORY_RECORD_SOURCE_TYPE_SCHEMA,
+        "source_ref": {"type": "string"},
+        "confidence": MEMORY_CONFIDENCE_SCHEMA,
+        "evidence_quote": {"type": "string"},
+    },
+    ["action", "command", "outcome", "status", "issue_title", "source_type", "source_ref", "confidence", "evidence_quote"],
+)
+
+MEMORY_CONSTRAINT_SCHEMA = _object_schema(
+    "memory_constraint",
+    {
+        "constraint_key": {"type": "string"},
+        "constraint_value": {"type": "string"},
+        "source_type": MEMORY_RECORD_SOURCE_TYPE_SCHEMA,
+        "source_ref": {"type": "string"},
+        "evidence_quote": {"type": "string"},
+    },
+    ["constraint_key", "constraint_value", "source_type", "source_ref", "evidence_quote"],
+)
+
+MEMORY_PREFERENCE_SCHEMA = _object_schema(
+    "memory_preference",
+    {
+        "preference_key": {"type": "string"},
+        "preference_value": {"type": "string"},
+        "source_type": MEMORY_RECORD_SOURCE_TYPE_SCHEMA,
+        "source_ref": {"type": "string"},
+        "evidence_quote": {"type": "string"},
+    },
+    ["preference_key", "preference_value", "source_type", "source_ref", "evidence_quote"],
+)
+
+MEMORY_EXTRACTOR_OUTPUT_SCHEMA = _object_schema(
+    "memory_extractor_output",
+    {
+        "facts": {"type": "array", "items": MEMORY_FACT_SCHEMA},
+        "issues": {"type": "array", "items": MEMORY_ISSUE_SCHEMA},
+        "attempts": {"type": "array", "items": MEMORY_ATTEMPT_SCHEMA},
+        "constraints": {"type": "array", "items": MEMORY_CONSTRAINT_SCHEMA},
+        "preferences": {"type": "array", "items": MEMORY_PREFERENCE_SCHEMA},
+        "session_summary": {"type": "string"},
+    },
+    ["facts", "issues", "attempts", "constraints", "preferences", "session_summary"],
+)
+
+
 def _truncate(text, limit=220):
     text = " ".join((text or "").split())
     if len(text) <= limit:
@@ -62,12 +163,14 @@ class MemoryExtractor:
         worker,
         system_prompt=MEMORY_EXTRACTOR_SYSTEM_PROMPT,
         max_output_tokens=700,
+        event_listener=None,
     ):
         if worker is None:
             raise ValueError("MemoryExtractor requires an injected worker instance.")
         self.worker = worker
         self.system_prompt = system_prompt
         self.max_output_tokens = max_output_tokens
+        self.event_listener = event_listener
 
     def call_api(self, user_question, assistant_response, recent_history=None):
         payload = {
@@ -89,6 +192,9 @@ class MemoryExtractor:
                 history=[],
                 temperature=0.1,
                 max_output_tokens=self.max_output_tokens,
+                event_listener=self.event_listener,
+                structured_output=True,
+                output_schema=MEMORY_EXTRACTOR_OUTPUT_SCHEMA,
             )
         except Exception:
             return self.empty_result()

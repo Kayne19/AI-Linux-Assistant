@@ -953,6 +953,33 @@ def test_magi_arbiter_stream_emits_final_text_once_after_stream_completion():
     assert text_deltas == ["final arbiter answer"]
 
 
+def test_magi_role_requests_native_structured_output_for_all_phases():
+    worker = FakeMagiWorker([
+        _make_eager_response(),
+        _make_eager_response(new_information=True),
+        _make_eager_closing_response(),
+    ])
+    eager = MagiEager(worker=worker)
+
+    eager.opening_argument("question", "", None, "")
+    eager.discuss("question", "", None, "", transcript="prior", round_number=1)
+    eager.closing_argument("question", "transcript")
+
+    assert len(worker.calls) == 3
+    assert all(call["kwargs"]["structured_output"] is True for call in worker.calls)
+    assert all(call["kwargs"]["output_schema"]["type"] == "object" for call in worker.calls)
+
+
+def test_magi_arbiter_requests_native_structured_output():
+    worker = FakeMagiWorker(_make_arbiter_response(final_answer="final arbiter answer"))
+    arbiter = MagiArbiter(worker=worker)
+
+    arbiter.synthesize("question", "docs", None, "", "transcript")
+
+    assert worker.calls[0]["kwargs"]["structured_output"] is True
+    assert worker.calls[0]["kwargs"]["output_schema"]["type"] == "object"
+
+
 def test_magi_discussion_rounds_receive_full_evidence_bundle_not_just_transcript():
     system, _, _, workers = _build_magi(
         eager_text=[

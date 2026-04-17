@@ -1,6 +1,7 @@
 import json
 
 from orchestration.run_control import invoke_cancel_check
+from providers.structured_output import require_output_schema, warning_payload
 from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 try:
@@ -18,6 +19,21 @@ class LocalCaller:
     def __init__(self, model="qwen2.5:7b"):
         self.model = model
 
+    def _emit_structured_output_warning(self, event_listener, output_schema):
+        if event_listener is None:
+            return
+        event_listener(
+            "structured_output_warning",
+            warning_payload(
+                provider="local",
+                model=self.model,
+                output_schema=output_schema,
+                reason="native structured output unsupported",
+                native_method="none",
+                used_prompt_fallback=True,
+            ),
+        )
+
     def generate_text(
         self,
         system_prompt,
@@ -32,7 +48,10 @@ class LocalCaller:
         event_listener=None,
         cancel_check=None,
         cache_config=None,
+        structured_output=False,
+        output_schema=None,
     ):
+        output_schema = require_output_schema(structured_output, output_schema)
         system_message = {
             "role": "system",
             "content": system_prompt,
@@ -48,6 +67,8 @@ class LocalCaller:
         debug_print(f"Sending {len(messages)} messages...")
         debug_print(f"[AI Debug Print] Prompt chars: {len(user_message)}")
         debug_print("<" * 20 + " END PAYLOAD " + "<" * 20 + "\n")
+        if structured_output:
+            self._emit_structured_output_warning(event_listener, output_schema)
 
         try:
             if ollama is None:

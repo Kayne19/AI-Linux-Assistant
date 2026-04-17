@@ -94,11 +94,217 @@ def _normalize_confidence(parsed):
     return confidence
 
 
+def _schema_object(title, properties, required):
+    return {
+        "title": title,
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+    }
+
+
+def _string_list_schema():
+    return {"type": "array", "items": {"type": "string"}}
+
+
+EAGER_OPENING_OUTPUT_SCHEMA = _schema_object(
+    "magi_eager_opening_output",
+    {
+        "primary_issue": {"type": "string"},
+        "immediate_obligation": {"type": "string"},
+        "provisional_branch": {"type": "string"},
+        "position": {"type": "string"},
+        "confidence": {"type": "string", "enum": sorted(VALID_CONFIDENCE)},
+        "key_claims": _string_list_schema(),
+        "best_next_check": {"type": "string"},
+        "strongest_caveat": {"type": "string"},
+        "missing_decisive_artifact": {"type": "string"},
+        "evidence_sources": _string_list_schema(),
+    },
+    [
+        "primary_issue",
+        "immediate_obligation",
+        "provisional_branch",
+        "position",
+        "confidence",
+        "key_claims",
+        "best_next_check",
+        "strongest_caveat",
+        "missing_decisive_artifact",
+        "evidence_sources",
+    ],
+)
+
+EAGER_DISCUSSION_OUTPUT_SCHEMA = _schema_object(
+    "magi_eager_discussion_output",
+    {
+        **EAGER_OPENING_OUTPUT_SCHEMA["properties"],
+        "new_information": {"type": "boolean"},
+        "no_delta_reason": {"type": "string"},
+    },
+    [*EAGER_OPENING_OUTPUT_SCHEMA["required"], "new_information", "no_delta_reason"],
+)
+
+EAGER_CLOSING_OUTPUT_SCHEMA = _schema_object(
+    "magi_eager_closing_output",
+    {
+        "provisional_branch": {"type": "string"},
+        "position": {"type": "string"},
+        "confidence": {"type": "string", "enum": sorted(VALID_CONFIDENCE)},
+        "changed_since_opening": {"type": "boolean"},
+        "best_next_check": {"type": "string"},
+        "strongest_caveat": {"type": "string"},
+        "missing_decisive_artifact": {"type": "string"},
+    },
+    [
+        "provisional_branch",
+        "position",
+        "confidence",
+        "changed_since_opening",
+        "best_next_check",
+        "strongest_caveat",
+        "missing_decisive_artifact",
+    ],
+)
+
+SKEPTIC_OPENING_OUTPUT_SCHEMA = _schema_object(
+    "magi_skeptic_opening_output",
+    {
+        "target_branch": {"type": "string"},
+        "position": {"type": "string"},
+        "confidence": {"type": "string", "enum": sorted(VALID_CONFIDENCE)},
+        "key_claims": _string_list_schema(),
+        "weakest_assumption": {"type": "string"},
+        "strongest_objection": {"type": "string"},
+        "counterframe": {"type": "string"},
+        "falsifying_check": {"type": "string"},
+        "blocking_missing_artifact": {"type": "string"},
+        "evidence_sources": _string_list_schema(),
+    },
+    [
+        "target_branch",
+        "position",
+        "confidence",
+        "key_claims",
+        "weakest_assumption",
+        "strongest_objection",
+        "counterframe",
+        "falsifying_check",
+        "blocking_missing_artifact",
+        "evidence_sources",
+    ],
+)
+
+SKEPTIC_DISCUSSION_OUTPUT_SCHEMA = _schema_object(
+    "magi_skeptic_discussion_output",
+    {
+        **SKEPTIC_OPENING_OUTPUT_SCHEMA["properties"],
+        "new_information": {"type": "boolean"},
+        "no_delta_reason": {"type": "string"},
+    },
+    [*SKEPTIC_OPENING_OUTPUT_SCHEMA["required"], "new_information", "no_delta_reason"],
+)
+
+SKEPTIC_CLOSING_OUTPUT_SCHEMA = _schema_object(
+    "magi_skeptic_closing_output",
+    {
+        "target_branch": {"type": "string"},
+        "position": {"type": "string"},
+        "confidence": {"type": "string", "enum": sorted(VALID_CONFIDENCE)},
+        "changed_since_opening": {"type": "boolean"},
+        "strongest_objection": {"type": "string"},
+        "falsifying_check": {"type": "string"},
+        "blocking_missing_artifact": {"type": "string"},
+    },
+    [
+        "target_branch",
+        "position",
+        "confidence",
+        "changed_since_opening",
+        "strongest_objection",
+        "falsifying_check",
+        "blocking_missing_artifact",
+    ],
+)
+
+HISTORIAN_OPENING_OUTPUT_SCHEMA = _schema_object(
+    "magi_historian_opening_output",
+    {
+        "evaluated_branch": {"type": "string"},
+        "position": {"type": "string"},
+        "confidence": {"type": "string", "enum": sorted(VALID_CONFIDENCE)},
+        "grounding_strength": {"type": "string", "enum": sorted(VALID_GROUNDING_STRENGTH)},
+        "branch_support_status": {"type": "string", "enum": sorted(VALID_BRANCH_SUPPORT_STATUS)},
+        "memory_facts": _string_list_schema(),
+        "doc_support": _string_list_schema(),
+        "attempt_history": _string_list_schema(),
+        "environment_fit": {"type": "string", "enum": sorted(VALID_ENVIRONMENT_FIT)},
+        "operator_warnings": _string_list_schema(),
+        "most_relevant_evidence": {"type": "string"},
+        "most_important_gap": {"type": "string"},
+        "evidence_sources": _string_list_schema(),
+    },
+    [
+        "evaluated_branch",
+        "position",
+        "confidence",
+        "grounding_strength",
+        "branch_support_status",
+        "memory_facts",
+        "doc_support",
+        "attempt_history",
+        "environment_fit",
+        "operator_warnings",
+        "most_relevant_evidence",
+        "most_important_gap",
+        "evidence_sources",
+    ],
+)
+
+HISTORIAN_DISCUSSION_OUTPUT_SCHEMA = _schema_object(
+    "magi_historian_discussion_output",
+    {
+        **HISTORIAN_OPENING_OUTPUT_SCHEMA["properties"],
+        "new_information": {"type": "boolean"},
+        "no_delta_reason": {"type": "string"},
+    },
+    [*HISTORIAN_OPENING_OUTPUT_SCHEMA["required"], "new_information", "no_delta_reason"],
+)
+
+HISTORIAN_CLOSING_OUTPUT_SCHEMA = _schema_object(
+    "magi_historian_closing_output",
+    {
+        "evaluated_branch": {"type": "string"},
+        "position": {"type": "string"},
+        "confidence": {"type": "string", "enum": sorted(VALID_CONFIDENCE)},
+        "changed_since_opening": {"type": "boolean"},
+        "grounding_strength": {"type": "string", "enum": sorted(VALID_GROUNDING_STRENGTH)},
+        "branch_support_status": {"type": "string", "enum": sorted(VALID_BRANCH_SUPPORT_STATUS)},
+        "most_relevant_evidence": {"type": "string"},
+        "most_important_gap": {"type": "string"},
+    },
+    [
+        "evaluated_branch",
+        "position",
+        "confidence",
+        "changed_since_opening",
+        "grounding_strength",
+        "branch_support_status",
+        "most_relevant_evidence",
+        "most_important_gap",
+    ],
+)
+
+
 class MagiRole:
     role_name = "role"
     system_prompt = ""
     discussion_output_format = ""
     closing_output_format = ""
+    opening_output_schema = None
+    discussion_output_schema = None
+    closing_output_schema = None
 
     def __init__(self, worker, tools=None, tool_handler=None, max_tool_rounds=4, event_listener=None, cancel_check=None):
         self.worker = worker
@@ -265,6 +471,8 @@ USER QUESTION:
             max_tool_rounds=self.max_tool_rounds,
             enable_web_search=enable_web_search,
             event_listener=listener,
+            structured_output=True,
+            output_schema=self.opening_output_schema,
         )
         invoke_cancel_check(self.cancel_check, f"after_model_call:{self.role_name}:opening")
         return self._parse_response(raw, PHASE_OPENING)
@@ -318,6 +526,8 @@ USER QUESTION:
             max_tool_rounds=self.max_tool_rounds,
             enable_web_search=enable_web_search,
             event_listener=listener,
+            structured_output=True,
+            output_schema=self.discussion_output_schema,
         )
         invoke_cancel_check(self.cancel_check, f"after_model_call:{self.role_name}:discussion")
         return self._parse_response(
@@ -347,6 +557,8 @@ USER QUESTION:
             tool_handler=None,
             max_tool_rounds=0,
             event_listener=listener,
+            structured_output=True,
+            output_schema=self.closing_output_schema,
         )
         invoke_cancel_check(self.cancel_check, f"after_model_call:{self.role_name}:closing")
         return self._parse_response(raw, PHASE_CLOSING)
@@ -360,6 +572,9 @@ class MagiEager(MagiRole):
     system_prompt = MAGI_EAGER_SYSTEM_PROMPT
     discussion_output_format = MAGI_EAGER_OUTPUT_FORMAT
     closing_output_format = MAGI_EAGER_CLOSING_OUTPUT_FORMAT
+    opening_output_schema = EAGER_OPENING_OUTPUT_SCHEMA
+    discussion_output_schema = EAGER_DISCUSSION_OUTPUT_SCHEMA
+    closing_output_schema = EAGER_CLOSING_OUTPUT_SCHEMA
 
     def _raw_has_delta(self, parsed):
         return any((
@@ -412,6 +627,9 @@ class MagiSkeptic(MagiRole):
     system_prompt = MAGI_SKEPTIC_SYSTEM_PROMPT
     discussion_output_format = MAGI_SKEPTIC_OUTPUT_FORMAT
     closing_output_format = MAGI_SKEPTIC_CLOSING_OUTPUT_FORMAT
+    opening_output_schema = SKEPTIC_OPENING_OUTPUT_SCHEMA
+    discussion_output_schema = SKEPTIC_DISCUSSION_OUTPUT_SCHEMA
+    closing_output_schema = SKEPTIC_CLOSING_OUTPUT_SCHEMA
 
     def _raw_has_delta(self, parsed):
         return any((
@@ -468,6 +686,9 @@ class MagiHistorian(MagiRole):
     system_prompt = MAGI_HISTORIAN_SYSTEM_PROMPT
     discussion_output_format = MAGI_HISTORIAN_OUTPUT_FORMAT
     closing_output_format = MAGI_HISTORIAN_CLOSING_OUTPUT_FORMAT
+    opening_output_schema = HISTORIAN_OPENING_OUTPUT_SCHEMA
+    discussion_output_schema = HISTORIAN_DISCUSSION_OUTPUT_SCHEMA
+    closing_output_schema = HISTORIAN_CLOSING_OUTPUT_SCHEMA
 
     def _raw_has_delta(self, parsed):
         return any((

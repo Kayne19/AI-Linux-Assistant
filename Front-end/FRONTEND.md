@@ -176,6 +176,7 @@ Owns the dev/admin debug drawer:
 - client-side event tab filtering
 - one canonical run-level `normalized_inputs` view consumed inside the debug tabs rather than duplicated in the inspector header
 - grouped execution detail for responder, Magi, provider, tool, retrieval, memory, and naming events beneath top-level router states
+- provider-level structured-output fallback warnings surfaced from backend `structured_output_warning` events so operators can see when native JSON enforcement was unavailable
 - rendering explicit Magi gating / round-summary / synthesis events, including discussion `discussion_mode` / `unresolved_issue` and Arbiter synthesis metadata, without recreating council policy in React
 - a dedicated `Context` tab for conversation-summary / recent-turn inputs plus a `Retrieval` tab that surfaces retrieval tool rounds alongside retrieval pipeline events, renders tool-owned returned chunk text for each retrieval tool completion, and keeps each chunk list behind one disclosure instead of per-block toggles
 

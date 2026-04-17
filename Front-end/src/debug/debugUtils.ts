@@ -172,7 +172,7 @@ function eventPhase(event: RunEvent): string {
   if (event.code.startsWith("tool_")) {
     return "tool";
   }
-  if (["request_submitted", "web_search_used", "tool_calls_received", "tool_results_submitted", "response_completed"].includes(event.code)) {
+  if (["request_submitted", "web_search_used", "tool_calls_received", "tool_results_submitted", "response_completed", "structured_output_warning"].includes(event.code)) {
     return "provider";
   }
   return "event";
@@ -207,6 +207,13 @@ function summarizeGenericEventPayload(event: RunEvent): string {
       return typeof payload.tool_rounds === "number"
         ? `${payload.tool_rounds} tool round${payload.tool_rounds === 1 ? "" : "s"}`
         : "response complete";
+    case "structured_output_warning":
+      return [
+        typeof payload.provider === "string" ? payload.provider : "",
+        typeof payload.schema_name === "string" ? payload.schema_name : "",
+        typeof payload.reason === "string" ? payload.reason : "",
+        payload.used_prompt_fallback === true ? "prompt fallback" : "",
+      ].filter(Boolean).join(" • ");
     case "tool_start":
       if (typeof payload.name === "string" && RETRIEVAL_TOOL_NAMES.has(payload.name)) {
         const args = isObjectRecord(payload.args) ? payload.args : {};

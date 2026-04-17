@@ -107,3 +107,20 @@ test("keeps retrieval provider round events with retrieval tool calls", () => {
     ["request_submitted", "tool_calls_received", "tool_results_submitted"],
   );
 });
+
+test("summarizes structured output warnings for the debug drawer", () => {
+  const summary = eventSummary({
+    type: "event",
+    seq: 30,
+    code: "structured_output_warning",
+    created_at: "2026-04-12T12:00:00Z",
+    payload: {
+      provider: "anthropic",
+      schema_name: "magi_role_output",
+      reason: "native structured output unsupported",
+      used_prompt_fallback: true,
+    },
+  });
+
+  assert.equal(summary, "anthropic • magi_role_output • native structured output unsupported • prompt fallback");
+});

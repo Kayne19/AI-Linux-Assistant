@@ -3,6 +3,11 @@ import json
 import os
 
 from orchestration.run_control import invoke_cancel_check
+from providers.structured_output import (
+    is_valid_json_text,
+    require_output_schema,
+    warning_payload,
+)
 from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 try:
@@ -141,7 +146,16 @@ class AnthropicCaller:
             )
         return {"role": "user", "content": content}
 
-    def _build_request_kwargs(self, system_prompt, translated_tools, messages, temperature, max_output_tokens):
+    def _build_request_kwargs(
+        self,
+        system_prompt,
+        translated_tools,
+        messages,
+        temperature,
+        max_output_tokens,
+        structured_output=False,
+        output_schema=None,
+    ):
         request_kwargs = {
             "model": self.model,
             "system": system_prompt,
@@ -152,7 +166,29 @@ class AnthropicCaller:
             request_kwargs["tools"] = translated_tools
         if temperature is not None:
             request_kwargs["temperature"] = temperature
+        if structured_output:
+            request_kwargs["output_config"] = {
+                "format": {
+                    "type": "json_schema",
+                    "schema": output_schema,
+                }
+            }
         return request_kwargs
+
+    def _emit_structured_output_warning(self, event_listener, output_schema, reason, used_prompt_fallback):
+        if event_listener is None:
+            return
+        event_listener(
+            "structured_output_warning",
+            warning_payload(
+                provider="anthropic",
+                model=self.model,
+                output_schema=output_schema,
+                reason=reason,
+                native_method="messages.output_config.format",
+                used_prompt_fallback=used_prompt_fallback,
+            ),
+        )
 
     def _emit_web_search_event_if_used(self, response, event_listener, round_number):
         if event_listener is None:
@@ -180,6 +216,8 @@ class AnthropicCaller:
         max_output_tokens,
         event_listener,
         round_number,
+        structured_output=False,
+        output_schema=None,
     ):
         response = self.client.messages.create(
             **self._build_request_kwargs(
@@ -188,6 +226,8 @@ class AnthropicCaller:
                 messages,
                 temperature,
                 max_output_tokens,
+                structured_output=structured_output,
+                output_schema=output_schema,
             )
         )
         self._emit_web_search_event_if_used(response, event_listener, round_number)
@@ -201,10 +241,63 @@ class AnthropicCaller:
                     messages,
                     temperature,
                     max_output_tokens,
+                    structured_output=structured_output,
+                    output_schema=output_schema,
                 )
             )
             self._emit_web_search_event_if_used(response, event_listener, round_number)
 
+        return response, messages
+
+    def _request_with_optional_structured_output(
+        self,
+        system_prompt,
+        translated_tools,
+        messages,
+        temperature,
+        max_output_tokens,
+        event_listener,
+        round_number,
+        structured_output=False,
+        output_schema=None,
+    ):
+        try:
+            response, messages = self._request_until_not_paused(
+                system_prompt,
+                translated_tools,
+                messages,
+                temperature,
+                max_output_tokens,
+                event_listener,
+                round_number,
+                structured_output=structured_output,
+                output_schema=output_schema,
+            )
+        except Exception as exc:
+            if not structured_output:
+                raise
+            self._emit_structured_output_warning(event_listener, output_schema, str(exc), used_prompt_fallback=True)
+            return self._request_until_not_paused(
+                system_prompt,
+                translated_tools,
+                messages,
+                temperature,
+                max_output_tokens,
+                event_listener,
+                round_number,
+                structured_output=False,
+                output_schema=None,
+            )
+
+        if structured_output:
+            response_text = self._extract_text(response)
+            if response_text and not is_valid_json_text(response_text):
+                self._emit_structured_output_warning(
+                    event_listener,
+                    output_schema,
+                    "native structured output returned invalid JSON",
+                    used_prompt_fallback=False,
+                )
         return response, messages
 
     def _stream_response_until_not_paused(
@@ -333,7 +426,10 @@ class AnthropicCaller:
         event_listener=None,
         cancel_check=None,
         cache_config=None,
+        structured_output=False,
+        output_schema=None,
     ):
+        output_schema = require_output_schema(structured_output, output_schema)
         # Anthropic prompt caching is intentionally not wired yet.
         # It requires explicit cache_control block placement rather than
         # reusing the OpenAI-style request-level cache hints.
@@ -347,7 +443,7 @@ class AnthropicCaller:
         if event_listener is not None:
             event_listener("request_submitted", {"round": 0})
 
-        response, messages = self._request_until_not_paused(
+        response, messages = self._request_with_optional_structured_output(
             system_prompt,
             translated_tools,
             messages,
@@ -355,6 +451,8 @@ class AnthropicCaller:
             max_output_tokens,
             event_listener,
             0,
+            structured_output=structured_output,
+            output_schema=output_schema,
         )
         invoke_cancel_check(cancel_check, "after_model_call")
 
@@ -385,7 +483,7 @@ class AnthropicCaller:
                 event_listener("tool_results_submitted", {"round": tool_rounds})
 
             invoke_cancel_check(cancel_check, "before_model_call")
-            response, messages = self._request_until_not_paused(
+            response, messages = self._request_with_optional_structured_output(
                 system_prompt,
                 translated_tools,
                 messages,
@@ -393,6 +491,8 @@ class AnthropicCaller:
                 max_output_tokens,
                 event_listener,
                 tool_rounds,
+                structured_output=structured_output,
+                output_schema=output_schema,
             )
             invoke_cancel_check(cancel_check, "after_model_call")
             model_response = self._extract_text(response) or model_response
@@ -416,7 +516,26 @@ class AnthropicCaller:
         event_listener=None,
         cancel_check=None,
         cache_config=None,
+        structured_output=False,
+        output_schema=None,
     ):
+        if structured_output:
+            return self.generate_text(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                history=history,
+                tools=tools,
+                tool_handler=tool_handler,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                max_tool_rounds=max_tool_rounds,
+                enable_web_search=enable_web_search,
+                event_listener=event_listener,
+                cancel_check=cancel_check,
+                cache_config=cache_config,
+                structured_output=structured_output,
+                output_schema=output_schema,
+            )
         # cache_config accepted but not yet wired for Anthropic.
         translated_tools = self._maybe_append_native_web_search(
             self._translate_tools(tools or []),
