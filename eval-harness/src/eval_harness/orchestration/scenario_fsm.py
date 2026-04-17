@@ -253,7 +253,7 @@ class ScenarioBuilderFSM:
             "correction_count": ctx.correction_count,
             "scrap_count": ctx.scrap_count,
         }
-        self.progress("scenario-builder", self._scenario_name(ctx), details)
+        self.progress(fsm_name="scenario-builder", scenario_name=self._scenario_name(ctx), details=details)
         if ctx.setup_run is not None:
             self.store.append_setup_event(
                 setup_run_id=ctx.setup_run.id,
