@@ -43,6 +43,13 @@
     "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
     "request_timeout_seconds": 90
   },
+  "user_proxy_llm": {
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o",
+    "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
+    "request_timeout_seconds": 60,
+    "max_output_tokens": 1024
+  },
   "subject_adapters": {
     "ai_linux_assistant_http": {
       "type": "ai_linux_assistant_http",

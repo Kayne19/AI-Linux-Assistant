@@ -15,6 +15,7 @@ from .controllers.ssm import SsmControllerFactory, SsmControllerFactoryConfig
 from .judges.openai_compatible import OpenAICompatibleBlindJudge, OpenAICompatibleBlindJudgeConfig
 from .orchestration import BenchmarkRunOrchestrator, JudgeJobOrchestrator, ScenarioSetupOrchestrator
 from .orchestration.progress import stderr_progress_sink
+from .orchestration.user_proxy_llm import UserProxyLLMClient, UserProxyLLMClientConfig
 from .persistence import EvalHarnessStore, build_engine, build_session_factory, create_all_tables
 from .planners.openai_compatible import OpenAICompatibleScenarioPlanner, OpenAICompatibleScenarioPlannerConfig
 from .scenario import load_scenario, validate_scenario
@@ -162,6 +163,17 @@ def _planner_from_config(config: dict[str, Any]) -> OpenAICompatibleScenarioPlan
     return OpenAICompatibleScenarioPlanner(planner_config)
 
 
+def _user_proxy_llm_from_config(config: dict[str, Any]) -> UserProxyLLMClient:
+    client_config = UserProxyLLMClientConfig(
+        base_url=str(config["base_url"]),
+        model=str(config["model"]),
+        api_key=str(config["api_key"]),
+        request_timeout_seconds=float(config.get("request_timeout_seconds", 60.0)),
+        max_output_tokens=int(config.get("max_output_tokens", 1024)),
+    )
+    return UserProxyLLMClient(client_config)
+
+
 def _judge_from_config(config: dict[str, Any]) -> OpenAICompatibleBlindJudge:
     if config.get("type", "openai_compatible") != "openai_compatible":
         raise ValueError(f"Unsupported judge type {config.get('type')!r}.")
@@ -277,11 +289,15 @@ def _command_run_benchmark(args: argparse.Namespace) -> int:
     setup_run = store.get_setup_run(args.setup_run_id)
     if setup_run is None:
         raise ValueError(f"Unknown setup run {args.setup_run_id}")
+    user_proxy_llm_config = dict(config.get("user_proxy_llm", {}) or {})
+    if not user_proxy_llm_config:
+        raise ValueError("Config is missing required 'user_proxy_llm' section.")
     orchestrator = BenchmarkRunOrchestrator(
         backend=backend,
         controller_factory=controller_factory,
         subject_adapters=subject_adapters,
         store=store,
+        user_proxy_llm=_user_proxy_llm_from_config(user_proxy_llm_config),
         progress=stderr_progress_sink(),
     )
     previous_sigint = signal.getsignal(signal.SIGINT)
