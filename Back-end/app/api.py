@@ -295,7 +295,7 @@ class AppSettingsResponse(BaseModel):
 
 
 class ComponentSettingsPatch(BaseModel):
-    provider: Literal["openai", "anthropic", "local"] | None = None
+    provider: Literal["openai", "anthropic", "google", "local"] | None = None
     model: str | None = None
     reasoning_effort: Literal["", "low", "medium", "high"] | None = None
 

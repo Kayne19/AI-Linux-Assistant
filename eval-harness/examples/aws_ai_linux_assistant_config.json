@@ -30,18 +30,19 @@
     "command_timeout_seconds": 600
   },
   "planner": {
-    "type": "openai_responses",
+    "provider": "openai",
     "model": "gpt-5.4",
     "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
     "request_timeout_seconds": 90
   },
   "judge": {
-    "type": "openai_responses",
+    "provider": "openai",
     "model": "gpt-5.4-mini",
     "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
     "request_timeout_seconds": 90
   },
   "user_proxy_llm": {
+    "provider": "openai",
     "model": "gpt-5.4-mini",
     "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
     "request_timeout_seconds": 300,

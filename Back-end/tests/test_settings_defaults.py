@@ -58,3 +58,11 @@ def test_retrieval_and_history_defaults(monkeypatch):
     assert settings.history_max_recent_turns == 4
     assert settings.history_summarize_turn_threshold == 16
     assert settings.history_summarize_char_threshold == 3600
+
+
+def test_google_default_model_override(monkeypatch):
+    monkeypatch.setenv("GOOGLE_DEFAULT_MODEL", "gemini-2.5-flash")
+
+    settings = load_settings()
+
+    assert settings.provider_defaults["google"] == "gemini-2.5-flash"

@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+
+import pytest
+
+SRC_EVAL_HARNESS = Path(__file__).resolve().parents[1] / "src" / "eval_harness"
+if "eval_harness" not in sys.modules:
+    namespace_pkg = ModuleType("eval_harness")
+    namespace_pkg.__path__ = [str(SRC_EVAL_HARNESS)]  # type: ignore[attr-defined]
+    sys.modules["eval_harness"] = namespace_pkg
+
+from eval_harness.anthropic_llm import AnthropicStructuredOutputClient, AnthropicStructuredOutputClientConfig
+from eval_harness.orchestration.user_proxy_llm import UserProxyLLMClientConfig, UserProxyToolCall
+from eval_harness.orchestration.user_proxy_llm_anthropic import AnthropicUserProxyLLMClient
+
+
+class _FakeMessagesAPI:
+    def __init__(self, responses: list[object]):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._responses.pop(0)
+
+
+class _FakeAnthropic:
+    instances: list["_FakeAnthropic"] = []
+    queued_responses: list[list[object]] = []
+
+    def __init__(self, **kwargs):
+        self.init_kwargs = kwargs
+        self.messages = _FakeMessagesAPI(self.queued_responses.pop(0))
+        self.__class__.instances.append(self)
+
+
+def test_anthropic_structured_output_uses_forced_tool_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeAnthropic.instances.clear()
+    _FakeAnthropic.queued_responses = [
+        [
+            SimpleNamespace(
+                id="msg-1",
+                stop_reason="tool_use",
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="toolu-1",
+                        name="planner_result",
+                        input={"ok": True},
+                    )
+                ],
+            )
+        ]
+    ]
+    monkeypatch.setattr("eval_harness.anthropic_llm.Anthropic", _FakeAnthropic)
+
+    client = AnthropicStructuredOutputClient(
+        AnthropicStructuredOutputClientConfig(
+            model="claude-sonnet-4-20250514",
+            api_key="test-key",
+            base_url="https://anthropic.example.invalid",
+            request_timeout_seconds=22.0,
+            max_output_tokens=333,
+        )
+    )
+
+    payload = client.request_json(
+        instructions="Return structured JSON.",
+        user_input="hello world",
+        schema_name="planner_result",
+        schema={
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        },
+        schema_description="Planner result.",
+    )
+
+    assert payload == {"ok": True}
+    fake_client = _FakeAnthropic.instances[-1]
+    assert fake_client.init_kwargs == {
+        "api_key": "test-key",
+        "base_url": "https://anthropic.example.invalid",
+        "timeout": 22.0,
+    }
+    assert fake_client.messages.calls == [
+        {
+            "model": "claude-sonnet-4-20250514",
+            "system": "Return structured JSON.",
+            "messages": [{"role": "user", "content": "hello world"}],
+            "max_tokens": 333,
+            "tools": [
+                {
+                    "name": "planner_result",
+                    "description": "Planner result.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"],
+                        "additionalProperties": False,
+                    },
+                }
+            ],
+            "tool_choice": {"type": "tool", "name": "planner_result"},
+        }
+    ]
+
+
+def test_anthropic_user_proxy_uses_native_tool_use(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeAnthropic.instances.clear()
+    _FakeAnthropic.queued_responses = [
+        [
+            SimpleNamespace(
+                id="msg-1",
+                stop_reason="tool_use",
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="toolu-1",
+                        name="run_command",
+                        input={"command": "ls"},
+                    )
+                ],
+            ),
+            SimpleNamespace(
+                id="msg-2",
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text="I ran it.")],
+            ),
+        ]
+    ]
+    monkeypatch.setattr("eval_harness.orchestration.user_proxy_llm_anthropic.Anthropic", _FakeAnthropic)
+
+    client = AnthropicUserProxyLLMClient(
+        UserProxyLLMClientConfig(
+            model="claude-sonnet-4-20250514",
+            api_key="test-key",
+            request_timeout_seconds=15.0,
+            max_output_tokens=444,
+        )
+    )
+
+    start = client.start_turn(
+        system_prompt="You are a confused user.",
+        transcript=[("user", "nginx is down")],
+        assistant_reply="Run ls",
+        tools=[
+            {
+                "type": "function",
+                "name": "run_command",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+                "strict": True,
+            }
+        ],
+    )
+
+    assert start.response_id == "msg-1"
+    assert start.tool_calls == (
+        UserProxyToolCall(id="toolu-1", name="run_command", arguments={"command": "ls"}),
+    )
+
+    finish = client.continue_turn(
+        system_prompt="You are a confused user.",
+        previous_response_id=start.response_id,
+        tool_outputs=[{"type": "function_call_output", "call_id": "toolu-1", "output": "$ ls\nfile.txt\n[exit 0]"}],
+        tools=[
+            {
+                "type": "function",
+                "name": "run_command",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+                "strict": True,
+            }
+        ],
+    )
+
+    assert finish.content == "I ran it."
+    fake_client = _FakeAnthropic.instances[-1]
+    assert fake_client.messages.calls[0]["tools"][0]["input_schema"]["properties"]["command"]["type"] == "string"
+    assert fake_client.messages.calls[1]["messages"][-1] == {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "toolu-1",
+                "content": "$ ls\nfile.txt\n[exit 0]",
+            }
+        ],
+    }

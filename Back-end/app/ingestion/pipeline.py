@@ -20,6 +20,7 @@ from ingestion.trace import IngestTraceRecorder
 from orchestration.routing_registry import load_registry, merge_domain_suggestion
 from prompting.prompts import REGISTRY_UPDATE_SYSTEM_PROMPT
 from providers.anthropic_caller import AnthropicWorker
+from providers.google_caller import GoogleWorker
 from providers.local_caller import LocalWorker
 from providers.openAI_caller import OpenAIWorker
 from retrieval.config import load_retrieval_config
@@ -239,6 +240,7 @@ def review_registry_suggestion(suggestion, document_identity):
 TEXT_WORKER_TYPES = {
     "openai": OpenAIWorker,
     "anthropic": AnthropicWorker,
+    "google": GoogleWorker,
     "local": LocalWorker,
 }
 

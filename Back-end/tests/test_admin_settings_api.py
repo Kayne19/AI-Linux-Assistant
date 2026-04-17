@@ -263,6 +263,18 @@ def test_put_settings_partial_patch_updates_only_specified_fields():
         db_mod.get_session_factory = original_gsf
 
 
+def test_put_settings_accepts_google_provider():
+    from api import AppSettingsPatch
+
+    patch = AppSettingsPatch(
+        responder={"provider": "google", "model": "gemini-2.5-flash", "reasoning_effort": "high"}
+    )
+
+    assert patch.responder.provider == "google"
+    assert patch.responder.model == "gemini-2.5-flash"
+    assert patch.responder.reasoning_effort == "high"
+
+
 def test_put_settings_updates_retrieval_and_history_context_fields():
     from api import AppSettingsPatch
 

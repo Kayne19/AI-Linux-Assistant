@@ -12,11 +12,17 @@ from .adapters.ai_linux_assistant_http import AILinuxAssistantHttpAdapter, AILin
 from .artifacts import ArtifactStore, PostgresArtifactExporter
 from .backends.aws import AwsEc2Backend, AwsEc2BackendConfig, AwsTargetImageConfig
 from .controllers.ssm import SsmControllerFactory, SsmControllerFactoryConfig
+from .judges.anthropic import AnthropicBlindJudge, AnthropicBlindJudgeConfig
+from .judges.google_genai import GoogleGenAIBlindJudge, GoogleGenAIBlindJudgeConfig
 from .judges.openai_responses import OpenAIResponsesBlindJudge, OpenAIResponsesBlindJudgeConfig
 from .orchestration import BenchmarkRunOrchestrator, JudgeJobOrchestrator, ScenarioSetupOrchestrator
 from .orchestration.progress import stderr_progress_sink
 from .orchestration.user_proxy_llm import UserProxyLLMClient, UserProxyLLMClientConfig
+from .orchestration.user_proxy_llm_anthropic import AnthropicUserProxyLLMClient
+from .orchestration.user_proxy_llm_google import GoogleGenAIUserProxyLLMClient
 from .persistence import EvalHarnessStore, build_engine, build_session_factory, create_all_tables
+from .planners.anthropic import AnthropicScenarioPlanner, AnthropicScenarioPlannerConfig
+from .planners.google_genai import GoogleGenAIScenarioPlanner, GoogleGenAIScenarioPlannerConfig
 from .planners.openai_responses import OpenAIResponsesScenarioPlanner, OpenAIResponsesScenarioPlannerConfig
 from .scenario import load_scenario, validate_scenario
 from .models import PlannerScenarioRequest
@@ -151,46 +157,77 @@ def _controller_factory_from_config(config: dict[str, Any]) -> SsmControllerFact
     return SsmControllerFactory(ssm_config)
 
 
-def _planner_from_config(config: dict[str, Any]) -> OpenAIResponsesScenarioPlanner:
-    if config.get("type", "openai_responses") != "openai_responses":
-        raise ValueError(f"Unsupported planner type {config.get('type')!r}.")
-    planner_config = OpenAIResponsesScenarioPlannerConfig(
-        base_url=(str(config["base_url"]).strip() if config.get("base_url") is not None else None),
-        model=str(config["model"]),
-        api_key=str(config["api_key"]),
-        request_timeout_seconds=float(config.get("request_timeout_seconds", 60.0)),
-        max_output_tokens=(int(config["max_output_tokens"]) if config.get("max_output_tokens") is not None else None),
-        reasoning_effort=(str(config["reasoning_effort"]) if config.get("reasoning_effort") is not None else None),
-    )
-    return OpenAIResponsesScenarioPlanner(planner_config)
+def _provider_from_role_config(config: dict[str, Any], *, default_provider: str = "openai") -> str:
+    legacy_type = str(config.get("type") or "").strip()
+    if legacy_type == "openai_compatible":
+        raise ValueError(f"Unsupported legacy type {legacy_type!r}.")
+    provider = str(config.get("provider") or "").strip().lower()
+    if provider:
+        return provider
+    if legacy_type in {"", "openai_responses"}:
+        return default_provider
+    raise ValueError(f"Unsupported provider/type {legacy_type!r}.")
 
 
-def _user_proxy_llm_from_config(config: dict[str, Any]) -> UserProxyLLMClient:
+def _planner_from_config(config: dict[str, Any]):
+    provider = _provider_from_role_config(config)
+    base_url = str(config["base_url"]).strip() if config.get("base_url") is not None else None
+    common_kwargs = {
+        "model": str(config["model"]),
+        "api_key": str(config["api_key"]),
+        "base_url": base_url,
+        "request_timeout_seconds": float(config.get("request_timeout_seconds", 60.0)),
+        "max_output_tokens": int(config["max_output_tokens"]) if config.get("max_output_tokens") is not None else None,
+        "reasoning_effort": str(config["reasoning_effort"]) if config.get("reasoning_effort") is not None else None,
+    }
+    if provider == "openai":
+        return OpenAIResponsesScenarioPlanner(OpenAIResponsesScenarioPlannerConfig(**common_kwargs))
+    if provider == "anthropic":
+        return AnthropicScenarioPlanner(AnthropicScenarioPlannerConfig(**common_kwargs))
+    if provider == "google":
+        return GoogleGenAIScenarioPlanner(GoogleGenAIScenarioPlannerConfig(**common_kwargs))
+    raise ValueError(f"Unsupported planner provider {provider!r}.")
+
+
+def _user_proxy_llm_from_config(config: dict[str, Any]) -> Any:
+    provider = _provider_from_role_config(config)
     raw_max_tokens = config.get("max_output_tokens")
     raw_reasoning = config.get("reasoning_effort")
     client_config = UserProxyLLMClientConfig(
-        base_url=str(config["base_url"]),
+        base_url=(str(config["base_url"]).strip() if config.get("base_url") is not None else None),
         model=str(config["model"]),
         api_key=str(config["api_key"]),
         request_timeout_seconds=float(config.get("request_timeout_seconds", 60.0)),
         max_output_tokens=int(raw_max_tokens) if raw_max_tokens is not None else None,
         reasoning_effort=str(raw_reasoning) if raw_reasoning is not None else None,
     )
-    return UserProxyLLMClient(client_config)
+    if provider == "openai":
+        return UserProxyLLMClient(client_config)
+    if provider == "anthropic":
+        return AnthropicUserProxyLLMClient(client_config)
+    if provider == "google":
+        return GoogleGenAIUserProxyLLMClient(client_config)
+    raise ValueError(f"Unsupported user_proxy_llm provider {provider!r}.")
 
 
-def _judge_from_config(config: dict[str, Any]) -> OpenAIResponsesBlindJudge:
-    if config.get("type", "openai_responses") != "openai_responses":
-        raise ValueError(f"Unsupported judge type {config.get('type')!r}.")
-    judge_config = OpenAIResponsesBlindJudgeConfig(
-        base_url=(str(config["base_url"]).strip() if config.get("base_url") is not None else None),
-        model=str(config["model"]),
-        api_key=str(config["api_key"]),
-        request_timeout_seconds=float(config.get("request_timeout_seconds", 60.0)),
-        max_output_tokens=(int(config["max_output_tokens"]) if config.get("max_output_tokens") is not None else None),
-        reasoning_effort=(str(config["reasoning_effort"]) if config.get("reasoning_effort") is not None else None),
-    )
-    return OpenAIResponsesBlindJudge(judge_config)
+def _judge_from_config(config: dict[str, Any]):
+    provider = _provider_from_role_config(config)
+    base_url = str(config["base_url"]).strip() if config.get("base_url") is not None else None
+    common_kwargs = {
+        "model": str(config["model"]),
+        "api_key": str(config["api_key"]),
+        "base_url": base_url,
+        "request_timeout_seconds": float(config.get("request_timeout_seconds", 60.0)),
+        "max_output_tokens": int(config["max_output_tokens"]) if config.get("max_output_tokens") is not None else None,
+        "reasoning_effort": str(config["reasoning_effort"]) if config.get("reasoning_effort") is not None else None,
+    }
+    if provider == "openai":
+        return OpenAIResponsesBlindJudge(OpenAIResponsesBlindJudgeConfig(**common_kwargs))
+    if provider == "anthropic":
+        return AnthropicBlindJudge(AnthropicBlindJudgeConfig(**common_kwargs))
+    if provider == "google":
+        return GoogleGenAIBlindJudge(GoogleGenAIBlindJudgeConfig(**common_kwargs))
+    raise ValueError(f"Unsupported judge provider {provider!r}.")
 
 
 def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, AILinuxAssistantHttpAdapter]:

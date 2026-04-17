@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from providers.anthropic_caller import AnthropicWorker
+from providers.google_caller import GoogleWorker
 from providers.local_caller import LocalWorker
 from agents.context_agent import Contextualizer
 from providers.openAI_caller import OpenAIWorker
@@ -90,6 +91,7 @@ class ModelRouter:
     WORKER_TYPES = {
         "openai": OpenAIWorker,
         "anthropic": AnthropicWorker,
+        "google": GoogleWorker,
         "local": LocalWorker,
     }
     RESPONDER_DECISION_TOOL_NAME = "responder_decide_next_step"

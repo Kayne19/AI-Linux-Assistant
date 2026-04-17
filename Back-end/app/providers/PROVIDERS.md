@@ -24,6 +24,7 @@ Providers MUST NOT own:
 
 ## Supported Providers
 - **Anthropic**: Adapter for the Messages API.
+- **Google**: Adapter for the Gemini Developer API via `google-genai`.
 - **OpenAI**: Adapter for the Responses API.
 - **Local**: Adapter for locally hosted models (e.g., via Ollama or vLLM).
 
@@ -41,7 +42,14 @@ Structured-output rule:
 
 - plain-text calls still use the normal provider text path
 - JSON-required callers pass `structured_output=True` and an `output_schema` dict to `generate_text()` / `generate_text_stream()`
+- Google maps that request to `generate_content` via `response_mime_type="application/json"` plus `response_schema`
 - OpenAI maps that request to Responses structured output via `text.format`
 - Anthropic maps that request to Messages structured output via `output_config.format`
 - Local models currently warn and fall back to prompt-and-parse behavior
 - if a provider cannot honor native structured output, it should emit a compact `structured_output_warning` event before using the prompt fallback path
+
+Google-specific notes:
+
+- Gemini tool calls are transported through `function_declarations`, returned as `function_call` parts, and resumed with `function_response` parts
+- the main-app Google path supports the same router single-step transport contract as OpenAI and Anthropic: `start_text_step()` plus `continue_text_step()`
+- native Google web search is intentionally not enabled in this path; callers that request it should receive an explicit unsupported event instead of an implicit fallback

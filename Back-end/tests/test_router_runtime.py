@@ -991,6 +991,46 @@ def test_settings_provider_override_uses_provider_default_model():
         ModelRouter.WORKER_TYPES = original_worker_types
 
 
+def test_settings_google_provider_override_uses_provider_default_model():
+    original_worker_types = ModelRouter.WORKER_TYPES
+    ModelRouter.WORKER_TYPES = {
+        "openai": FakeWorker,
+        "google": FakeWorker,
+    }
+
+    try:
+        settings = AppSettings(
+            provider_defaults={"openai": "openai-default", "google": "google-default"},
+            classifier=RoleModelSettings("openai", "classifier-model"),
+            contextualizer=RoleModelSettings("openai", "context-model"),
+            responder=RoleModelSettings("openai", "responder-model"),
+            history_summarizer=RoleModelSettings("openai", "history-model"),
+            context_summarizer=RoleModelSettings("openai", "context-summary-model"),
+            memory_extractor=RoleModelSettings("openai", "memory-model"),
+            registry_updater=RoleModelSettings("openai", "registry-model"),
+            chat_namer=RoleModelSettings("openai", "chat-namer-model"),
+            response_tool_rounds=5,
+            classifier_temperature=0.0,
+            contextualizer_temperature=0.0,
+            history_summarizer_temperature=0.1,
+            history_max_recent_turns=6,
+            history_summarize_turn_threshold=20,
+            history_summarize_char_threshold=4200,
+        )
+
+        router = ModelRouter(
+            settings=settings,
+            database=FakeDatabase(""),
+            responder="google",
+            memory_store=FakeMemoryStore(),
+        )
+
+        assert isinstance(router.responder, ResponseAgent)
+        assert router.responder.worker.model == "google-default"
+    finally:
+        ModelRouter.WORKER_TYPES = original_worker_types
+
+
 def test_router_exposes_structured_memory_tools():
     memory_store = FakeMemoryStore(
         snapshot_text="KNOWN SYSTEM PROFILE:\n- OS: Debian 12",

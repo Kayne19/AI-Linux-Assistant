@@ -134,6 +134,7 @@ def load_settings():
     provider_defaults = {
         "openai": _get_env("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
         "anthropic": _get_env("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6"),
+        "google": _get_env("GOOGLE_DEFAULT_MODEL", "gemini-2.5-flash"),
         "local": _get_env("LOCAL_DEFAULT_MODEL", "qwen2.5:7b"),
     }
     return AppSettings(

@@ -9,6 +9,8 @@ description = "AWS-first standalone evaluation harness scaffold for environment-
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "anthropic>=0.57.1",
+  "google-genai>=1.20.0",
   "openai>=2.14,<3",
   "requests>=2.31.0",
   "sqlalchemy>=2.0.0",

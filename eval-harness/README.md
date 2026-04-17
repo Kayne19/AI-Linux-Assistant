@@ -135,7 +135,7 @@ python -m eval_harness verify-scenario --config examples/aws_ai_linux_assistant_
 
 The user proxy plays a human user at a Linux terminal who does not know why the machine is broken. It receives only the `observable_problem_statement` from the scenario; it never sees the sabotage procedure or repair checks.
 
-The proxy itself is driven by an OpenAI Responses API tool loop. When the AI subject asks the user to run a command, the proxy model can call the `run_command` function tool, the harness executes that command on the sandbox clone, and the real command output is returned to the proxy as a `function_call_output` item. This keeps the subject grounded in real environment state rather than the proxy's inference.
+The proxy itself is driven by a provider-backed tool loop. OpenAI uses the Responses API, Anthropic uses Messages tool use, and Google uses Gemini function calling. When the AI subject asks the user to run a command, the proxy model can call the `run_command` function tool, the harness executes that command on the sandbox clone, and the real command output is returned to the proxy using the provider's native tool-result format. This keeps the subject grounded in real environment state rather than the proxy's inference.
 
 The proxy is a strict command relay, not a diagnostician:
 - it should only relay exact commands the subject explicitly requested
@@ -201,6 +201,8 @@ python -m eval_harness generate-scenario \
   --request examples/planner_requests/nginx_recovery_request.json \
   --output /tmp/nginx_scenario.json
 ```
+
+Planner, judge, and `user_proxy_llm` config sections now select their model backend with `provider: "openai" | "anthropic" | "google"` plus provider-specific credentials such as `api_key`.
 
 Run planner-driven scenario setup and verification:
 
