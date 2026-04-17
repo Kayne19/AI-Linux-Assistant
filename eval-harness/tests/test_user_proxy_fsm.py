@@ -181,6 +181,7 @@ def test_happy_path_one_tool_call_then_reply() -> None:
         {
             "type": "function_call_output",
             "call_id": "call-1",
+            "name": "run_command",
             "output": "$ systemctl status nginx\nfailed\n[exit 3]",
         }
     ]
@@ -447,7 +448,7 @@ def test_user_proxy_llm_client_continue_turn_submits_function_outputs(monkeypatc
     response = client.continue_turn(
         system_prompt="You are a confused user.",
         previous_response_id="resp-prev",
-        tool_outputs=[{"type": "function_call_output", "call_id": "call-1", "output": "$ ls\nfile.txt\n[exit 0]"}],
+        tool_outputs=[{"type": "function_call_output", "call_id": "call-1", "name": "run_command", "output": "$ ls\nfile.txt\n[exit 0]"}],
         tools=[],
     )
 
@@ -455,7 +456,7 @@ def test_user_proxy_llm_client_continue_turn_submits_function_outputs(monkeypatc
     assert response.content == "Done."
     assert fake_api.calls[0]["previous_response_id"] == "resp-prev"
     assert fake_api.calls[0]["input"] == [
-        {"type": "function_call_output", "call_id": "call-1", "output": "$ ls\nfile.txt\n[exit 0]"}
+        {"type": "function_call_output", "call_id": "call-1", "name": "run_command", "output": "$ ls\nfile.txt\n[exit 0]"}
     ]
 
 

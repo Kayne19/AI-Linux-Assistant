@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from ..controllers.base import SandboxController
 from ..models import CommandExecutionResult
+from .fs_helpers import apply_text_edit, read_file
 from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMResponse, UserProxyToolCall
 
 
@@ -46,7 +47,58 @@ _RUN_COMMAND_TOOL: dict[str, Any] = {
     "strict": True,
 }
 
-DEFAULT_TOOLS: list[dict[str, Any]] = [_RUN_COMMAND_TOOL]
+_READ_FILE_TOOL: dict[str, Any] = {
+    "type": "function",
+    "name": "read_file",
+    "description": (
+        "Read the contents of a regular text file. "
+        "Use this to inspect files before editing or when asked to read a file."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute path to the file to read",
+            }
+        },
+        "required": ["path"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+_APPLY_TEXT_EDIT_TOOL: dict[str, Any] = {
+    "type": "function",
+    "name": "apply_text_edit",
+    "description": (
+        "Replace an exact literal text block in a file with new text. "
+        "The old_text must match exactly one occurrence in the file. "
+        "Use this only when the assistant explicitly specified what text to change."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute path to the file to edit",
+            },
+            "old_text": {
+                "type": "string",
+                "description": "The exact literal text to replace",
+            },
+            "new_text": {
+                "type": "string",
+                "description": "The new text to insert in place of old_text",
+            },
+        },
+        "required": ["path", "old_text", "new_text"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+DEFAULT_TOOLS: list[dict[str, Any]] = [_RUN_COMMAND_TOOL, _READ_FILE_TOOL, _APPLY_TEXT_EDIT_TOOL]
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -60,11 +112,13 @@ def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
         "Rules:\n"
         "- Stay in character as a non-expert user who has shell access but limited Linux knowledge.\n"
         "- When the assistant asks you to run a command, use the run_command tool to run it and relay the output.\n"
+        "- When the assistant asks you to edit or inspect a file (e.g. 'edit /etc/nginx/nginx.conf', 'use nano and remove that line'), use the read_file and apply_text_edit tools instead of stalling.\n"
         "- Only run commands the assistant explicitly asked you to run. Do not invent diagnostics.\n"
         "- Relay the exact command the assistant requested. Do not add sudo, extra flags, extra subcommands, or a more specific variant on your own.\n"
         "- Do not combine multiple commands unless the assistant explicitly requested multiple separate commands.\n"
-        "- If the assistant did not give an exact command, ask what exact command to run instead of guessing.\n"
-        "- Never fabricate command output.\n"
+        "- Do not modify file contents beyond what the assistant explicitly requested.\n"
+        "- If the assistant did not give an exact command or exact edit instruction, ask for clarification instead of guessing.\n"
+        "- Never fabricate command output or file content.\n"
         "- Do not write like an AI assistant. Write like a confused user."
     )
 
@@ -185,6 +239,8 @@ class UserProxyFSM:
         # Multi-terminal extension: add open_new_terminal here later.
         self.tool_registry: dict[str, Callable] = {
             "run_command": self._handle_run_command,
+            "read_file": self._handle_read_file,
+            "apply_text_edit": self._handle_apply_text_edit,
         }
         self.tools = DEFAULT_TOOLS
 
@@ -306,12 +362,14 @@ class UserProxyFSM:
                     {
                         "type": "function_call_output",
                         "call_id": tc.id,
+                        "name": tc.name,
                         "output": error_content,
                     }
                 )
                 continue
             try:
                 result = handler(ctx, tc)
+                result.metadata["user_proxy_tool_name"] = tc.name
                 ctx.tool_results.append(result)
                 ctx.tool_call_count += 1
                 content_str = _render_tool_result(result)
@@ -319,6 +377,7 @@ class UserProxyFSM:
                     {
                         "type": "function_call_output",
                         "call_id": tc.id,
+                        "name": tc.name,
                         "output": content_str,
                     }
                 )
@@ -328,6 +387,7 @@ class UserProxyFSM:
                     {
                         "type": "function_call_output",
                         "call_id": tc.id,
+                        "name": tc.name,
                         "output": error_content,
                     }
                 )
@@ -371,6 +431,35 @@ class UserProxyFSM:
         if not results:
             raise RuntimeError(f"execute_commands returned empty for command: {command!r}")
         return results[0]
+
+    def _handle_read_file(
+        self,
+        ctx: UserProxyContext,
+        tool_call: UserProxyToolCall,
+    ) -> CommandExecutionResult:
+        path = str(tool_call.arguments.get("path", "")).strip()
+        if not path:
+            raise ValueError("read_file called with empty path")
+        
+        session_key = f"{self.evaluation_run_id}-proxy-{self.terminal_id}"
+        return read_file(self.controller, session_key, path)
+
+    def _handle_apply_text_edit(
+        self,
+        ctx: UserProxyContext,
+        tool_call: UserProxyToolCall,
+    ) -> CommandExecutionResult:
+        path = str(tool_call.arguments.get("path", "")).strip()
+        old_text = str(tool_call.arguments.get("old_text", ""))
+        new_text = str(tool_call.arguments.get("new_text", ""))
+        
+        if not path:
+            raise ValueError("apply_text_edit called with empty path")
+        if not old_text:
+            raise ValueError("apply_text_edit called with empty old_text")
+            
+        session_key = f"{self.evaluation_run_id}-proxy-{self.terminal_id}"
+        return apply_text_edit(self.controller, session_key, path, old_text, new_text)
 
     # ------------------------------------------------------------------
     # Progress

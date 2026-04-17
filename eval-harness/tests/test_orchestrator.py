@@ -1238,7 +1238,7 @@ def test_benchmark_proxy_sends_system_prompt_on_each_turn() -> None:
     assert len(received_system_prompts) >= 1
     for sp in received_system_prompts:
         assert problem in sp
-        assert "ask what exact command to run" in sp.lower()
+        assert "ask for clarification instead of guessing" in sp.lower()
         assert "do not add sudo" in sp.lower()
 
 
