@@ -137,10 +137,21 @@ The user proxy plays a human user at a Linux terminal who does not know why the 
 
 The proxy itself is driven by a provider-backed tool loop. OpenAI uses the Responses API, Anthropic uses Messages tool use, and Google uses Gemini function calling. When the AI subject asks the user to run a command, the proxy model can call the `run_command` function tool, the harness executes that command on the sandbox clone, and the real command output is returned to the proxy using the provider's native tool-result format. This keeps the subject grounded in real environment state rather than the proxy's inference.
 
+For Phase 1 file editing, the proxy may also use bounded file tools:
+- `read_file(path)` to inspect a regular UTF-8 text file
+- `apply_text_edit(path, old_text, new_text)` to perform one exact literal replacement
+
+Those tools fail closed:
+- only regular files are allowed
+- binary or non-UTF-8 files are rejected
+- oversized files are rejected instead of being silently truncated
+- `apply_text_edit` succeeds only when `old_text` matches exactly one literal occurrence
+
 The proxy is a strict command relay, not a diagnostician:
 - it should only relay exact commands the subject explicitly requested
 - it should not add `sudo`, extra flags, extra subcommands, or a more specific variant on its own
 - it should not bundle multiple commands unless the subject explicitly requested multiple commands
+- if the subject asks for a file edit but does not specify the exact change, the proxy should inspect the file if needed and ask for clarification instead of guessing
 - if the subject does not provide an exact command, the proxy should ask what exact command to run instead of guessing
 
 The benchmark loop enforces those constraints and suppresses proxy turns that keep trying to run unrequested commands.
