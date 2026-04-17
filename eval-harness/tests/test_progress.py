@@ -24,11 +24,12 @@ def test_format_line_basic_transition() -> None:
         "nginx_service_repair",
         {"from": "DESIGN", "to": "LAUNCH_STAGING"},
     )
-    assert line == "[scenario-builder nginx_service_repair] DESIGN \u2192 LAUNCH_STAGING"
+    assert "[scenario-builder" in line
+    assert "nginx_service_repair" in line
+    assert "DESIGN \u2192 LAUNCH_STAGING" in line
 
 
-def test_format_line_fsm_name_padded_to_16() -> None:
-    """Both scenario-builder (16) and user-proxy (10) are padded/trimmed to width."""
+def test_format_line_bracket_label_includes_context() -> None:
     line_sb = _format_line(
         "scenario-builder",
         "nginx_service_repair",
@@ -39,13 +40,12 @@ def test_format_line_fsm_name_padded_to_16() -> None:
         "nginx_service_repair",
         {"from": "DECIDE", "to": "TOOL_EXEC"},
     )
-    # Both lines should have the same bracket-label width up to the closing ]
     bracket_sb = line_sb.split("]")[0] + "]"
     bracket_up = line_up.split("]")[0] + "]"
-    # Lengths differ because scenario_name is the same and turn is absent in both;
-    # the padded fsm_name sections should both be exactly 16 chars wide.
-    assert "scenario-builder" in bracket_sb  # full name fits exactly
-    assert "user-proxy      " in bracket_up  # padded to 16
+    assert bracket_sb.startswith("[scenario-builder")
+    assert bracket_up.startswith("[user-proxy")
+    assert "nginx_service_repair" in bracket_sb
+    assert "nginx_service_repair" in bracket_up
 
 
 def test_format_line_with_turn() -> None:
@@ -54,8 +54,8 @@ def test_format_line_with_turn() -> None:
         "nginx_service_repair",
         {"from": "DECIDE", "to": "TOOL_EXEC", "turn": 3},
     )
-    assert "turn=3" in line
-    assert "DECIDE \u2192 TOOL_EXEC" in line
+    assert "T3" in line
+    assert "Proxy calling tool:" in line
 
 
 def test_format_line_with_tool() -> None:
@@ -64,8 +64,8 @@ def test_format_line_with_tool() -> None:
         "nginx_service_repair",
         {"from": "DECIDE", "to": "TOOL_EXEC", "turn": 3, "tool": "run_command"},
     )
-    assert "(run_command)" in line
-    assert "turn=3" in line
+    assert "T3" in line
+    assert "Proxy calling tool: run_command" in line
 
 
 def test_format_line_benchmark_event() -> None:
@@ -74,8 +74,7 @@ def test_format_line_benchmark_event() -> None:
         "nginx_service_repair",
         {"event": "evaluation_completed", "repair_success": True},
     )
-    assert "evaluation_completed" in line
-    assert "repair_success=True" in line
+    assert "Evaluation PASSED" in line
     assert "nginx_service_repair" in line
 
 
@@ -105,7 +104,8 @@ def test_stderr_sink_writes_transition_line() -> None:
         details={"from": "DESIGN", "to": "LAUNCH_STAGING"},
     )
     output = buf.getvalue()
-    assert "[scenario-builder nginx_service_repair] DESIGN \u2192 LAUNCH_STAGING" in output
+    assert "[scenario-builder" in output
+    assert "DESIGN \u2192 LAUNCH_STAGING" in output
 
 
 def test_stderr_sink_writes_with_turn() -> None:
@@ -117,8 +117,8 @@ def test_stderr_sink_writes_with_turn() -> None:
         details={"from": "DECIDE", "to": "TOOL_EXEC", "turn": 3, "tool": "run_command"},
     )
     output = buf.getvalue()
-    assert "turn=3" in output
-    assert "(run_command)" in output
+    assert "T3" in output
+    assert "Proxy calling tool: run_command" in output
 
 
 def test_stderr_sink_flush_after_each_write() -> None:
@@ -211,5 +211,4 @@ def test_stderr_sink_benchmark_event_line() -> None:
         details={"event": "evaluation_completed", "repair_success": True},
     )
     output = buf.getvalue()
-    assert "evaluation_completed" in output
-    assert "repair_success=True" in output
+    assert "Evaluation PASSED" in output

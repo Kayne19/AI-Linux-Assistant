@@ -23,7 +23,7 @@ Providers MUST NOT own:
 
 ## Supported Providers
 - **Anthropic**: Adapter for the Messages API.
-- **OpenAI**: Adapter for the Chat Completions API.
+- **OpenAI**: Adapter for the Responses API.
 - **Local**: Adapter for locally hosted models (e.g., via Ollama or vLLM).
 
 ## Adding a New Provider

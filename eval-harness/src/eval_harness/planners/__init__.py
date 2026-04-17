@@ -1,8 +1,8 @@
 from .base import ScenarioPlanner
-from .openai_compatible import OpenAICompatibleScenarioPlanner, OpenAICompatibleScenarioPlannerConfig
+from .openai_responses import OpenAIResponsesScenarioPlanner, OpenAIResponsesScenarioPlannerConfig
 
 __all__ = [
-    "OpenAICompatibleScenarioPlanner",
-    "OpenAICompatibleScenarioPlannerConfig",
+    "OpenAIResponsesScenarioPlanner",
+    "OpenAIResponsesScenarioPlannerConfig",
     "ScenarioPlanner",
 ]

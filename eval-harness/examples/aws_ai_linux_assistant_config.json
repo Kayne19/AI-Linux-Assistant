@@ -30,24 +30,22 @@
     "command_timeout_seconds": 600
   },
   "planner": {
-    "type": "openai_compatible",
-    "base_url": "https://api.openai.com/v1",
+    "type": "openai_responses",
     "model": "gpt-5.4",
     "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
     "request_timeout_seconds": 90
   },
   "judge": {
-    "type": "openai_compatible",
-    "base_url": "https://api.openai.com/v1",
+    "type": "openai_responses",
     "model": "gpt-5.4-mini",
     "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
     "request_timeout_seconds": 90
   },
   "user_proxy_llm": {
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-4.1-mini",
+    "model": "gpt-5.4-mini",
     "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
-    "request_timeout_seconds": 300
+    "request_timeout_seconds": 300,
+    "reasoning_effort": "medium"
   },
   "subject_adapters": {
     "ai_linux_assistant_http": {
@@ -93,7 +91,7 @@
         "magi_mode": "full",
         "max_turns": 8
       },
-      "is_active": true
+      "is_active": false
     }
   ]
 }

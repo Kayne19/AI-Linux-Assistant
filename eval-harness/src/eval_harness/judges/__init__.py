@@ -1,8 +1,8 @@
 from .base import BlindJudge
-from .openai_compatible import OpenAICompatibleBlindJudge, OpenAICompatibleBlindJudgeConfig
+from .openai_responses import OpenAIResponsesBlindJudge, OpenAIResponsesBlindJudgeConfig
 
 __all__ = [
     "BlindJudge",
-    "OpenAICompatibleBlindJudge",
-    "OpenAICompatibleBlindJudgeConfig",
+    "OpenAIResponsesBlindJudge",
+    "OpenAIResponsesBlindJudgeConfig",
 ]

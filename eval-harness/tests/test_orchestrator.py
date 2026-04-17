@@ -346,23 +346,48 @@ class FakeUserProxyLLM:
         self.responses = list(responses or [])
         self.calls = []
 
-    def chat(self, messages, *, tools=None):
-        self.calls.append({"messages": list(messages), "tools": tools})
-        if self.responses:
-            return self.responses.pop(0)
-        # Default: non-empty plain text reply so the FSM doesn't stall
+    def _default_response(self) -> UserProxyLLMResponse:
         return UserProxyLLMResponse(
             content="I see, let me keep looking.",
             tool_calls=(),
             finish_reason="stop",
+            response_id=f"resp-{len(self.calls) + 1}",
         )
+
+    def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+        self.calls.append(
+            {
+                "phase": "start",
+                "system_prompt": system_prompt,
+                "transcript": list(transcript),
+                "assistant_reply": assistant_reply,
+                "tools": tools,
+            }
+        )
+        if self.responses:
+            return self.responses.pop(0)
+        return self._default_response()
+
+    def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
+        self.calls.append(
+            {
+                "phase": "continue",
+                "system_prompt": system_prompt,
+                "previous_response_id": previous_response_id,
+                "tool_outputs": list(tool_outputs),
+                "tools": tools,
+            }
+        )
+        if self.responses:
+            return self.responses.pop(0)
+        return self._default_response()
 
 
 def _make_proxy_llm(text_responses: list[str] | None = None) -> FakeUserProxyLLM:
     """Build a FakeUserProxyLLM from a list of plain text replies (no tool calls)."""
     responses = [
-        UserProxyLLMResponse(content=txt, tool_calls=(), finish_reason="stop")
-        for txt in (text_responses or [])
+        UserProxyLLMResponse(content=txt, tool_calls=(), finish_reason="stop", response_id=f"resp-{index + 1}")
+        for index, txt in enumerate(text_responses or [])
     ]
     return FakeUserProxyLLM(responses=responses)
 
@@ -1146,7 +1171,7 @@ def ssh_scenario_spec() -> ScenarioSpec:
 
 
 def test_benchmark_proxy_sends_system_prompt_on_each_turn() -> None:
-    """Test C: Every proxy LLM chat() call includes the system prompt with the problem statement."""
+    """Test C: Every proxy LLM call includes the system prompt with the problem statement."""
     problem = "The website is down and nginx will not start."
     store, revision, setup = _build_benchmark_store_and_revision(
         observable_problem_statement=problem,
@@ -1154,18 +1179,30 @@ def test_benchmark_proxy_sends_system_prompt_on_each_turn() -> None:
         subject_max_turns=2,
     )
 
-    # Track all chat() calls made to the proxy LLM
     received_system_prompts: list[str] = []
 
     class TrackingProxyLLM(FakeUserProxyLLM):
-        def chat(self, messages, *, tools=None):
-            sys_msgs = [m["content"] for m in messages if m.get("role") in ("system", "developer")]
-            received_system_prompts.extend(sys_msgs)
-            return super().chat(messages, tools=tools)
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+            received_system_prompts.append(system_prompt)
+            return super().start_turn(
+                system_prompt=system_prompt,
+                transcript=transcript,
+                assistant_reply=assistant_reply,
+                tools=tools,
+            )
+
+        def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
+            received_system_prompts.append(system_prompt)
+            return super().continue_turn(
+                system_prompt=system_prompt,
+                previous_response_id=previous_response_id,
+                tool_outputs=tool_outputs,
+                tools=tools,
+            )
 
     proxy_llm = TrackingProxyLLM(responses=[
-        UserProxyLLMResponse(content="I checked the logs and nginx seems broken.", tool_calls=(), finish_reason="stop"),
-        UserProxyLLMResponse(content="The service still seems broken.", tool_calls=(), finish_reason="stop"),
+        UserProxyLLMResponse(content="I checked the logs and nginx seems broken.", tool_calls=(), finish_reason="stop", response_id="resp-1"),
+        UserProxyLLMResponse(content="The service still seems broken.", tool_calls=(), finish_reason="stop", response_id="resp-2"),
     ])
 
     clone_controller = FakeController(
@@ -1268,8 +1305,8 @@ def test_benchmark_tool_call_commands_executed_and_recorded() -> None:
     # Proxy LLM: turn 1 emits a tool call, turn 2 responds with the narrated result
     tc = UserProxyToolCall(id="call-1", name="run_command", arguments={"command": "systemctl status nginx"})
     proxy_llm = FakeUserProxyLLM(responses=[
-        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
-        UserProxyLLMResponse(content="I see the service is failed. Please restart it.", tool_calls=(), finish_reason="stop"),
+        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls", response_id="resp-1"),
+        UserProxyLLMResponse(content="I see the service is failed. Please restart it.", tool_calls=(), finish_reason="stop", response_id="resp-2"),
     ])
 
     # Capture submitted user messages
@@ -1307,8 +1344,11 @@ def test_benchmark_proxy_stall_increments_counter_and_continues() -> None:
     proxy_llm = FakeUserProxyLLM(responses=[])  # default fallback returns non-empty, so override
 
     class AlwaysStallProxyLLM(FakeUserProxyLLM):
-        def chat(self, messages, *, tools=None):
-            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop")
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-start")
+
+        def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
+            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-continue")
 
     proxy_llm = AlwaysStallProxyLLM()
 
@@ -1392,75 +1432,17 @@ def test_benchmark_proxy_runs_only_explicit_tool_calls() -> None:
     assert proxy_exec_calls == [], f"Unexpected proxy exec calls: {proxy_exec_calls}"
 
 
-# ---------------------------------------------------------------------------
-# Test F: mark_task_complete tool call passing triggers early exit
-# ---------------------------------------------------------------------------
-
-
-def test_benchmark_mark_complete_passes_triggers_completion() -> None:
-    """Test F: proxy tool call to mark_task_complete passes → eval completes, repair_success=True."""
-    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=5, subject_max_turns=5)
-
-    session = FakeSubjectSession(
-        turn_results=[
-            AdapterTurnResult(
-                user_message="",
-                assistant_message="Run systemctl restart nginx.",
-                run_id="run-1",
-                status="completed",
-                terminal_event_type="done",
-                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
-            ),
-        ]
-    )
-    submitted_messages: list[str] = []
-    original_submit = session.submit_user_message
-    def tracking_submit(message: str):
-        submitted_messages.append(message)
-        return original_submit(message)
-    session.submit_user_message = tracking_submit  # type: ignore[method-assign]
-
-    clone_controller = FakeController(
-        execute_batches=[
-            # First repair check (after subject turn): service still failing
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
-            # mark_task_complete inner verification check: passing
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
-        ],
-    )
-    # Proxy LLM calls mark_task_complete tool, then yields a reply
-    tc = UserProxyToolCall(id="call-1", name="mark_task_complete", arguments={})
-    proxy_llm = FakeUserProxyLLM(responses=[
-        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
-        UserProxyLLMResponse(content="Thanks!", tool_calls=(), finish_reason="stop"),
-    ])
-    result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
-    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
-    assert len(evaluation_runs) == 1
-    eval_run = evaluation_runs[0]
-    assert eval_run.repair_success is True
-    assert eval_run.status == "completed"
-    assert eval_run.resolution_result_json.get("reason") == "mark_task_complete"
-
-    # After completion the subject session should receive no further messages
-    assert len(submitted_messages) == 1, (
-        f"Subject should only receive one message (before completion), got {len(submitted_messages)}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Test G: proxy stall detection → failed with reason=proxy_stalled
-# ---------------------------------------------------------------------------
-
-
 def test_benchmark_proxy_stall_detection_marks_failed() -> None:
     """Test G: proxy FSM stalls 3 times in a row → failed with reason=proxy_stalled."""
     store, revision, setup = _build_benchmark_store_and_revision(turn_budget=10, subject_max_turns=10)
 
     # Proxy LLM always returns empty content → FSM stalls every turn
     class AlwaysStallProxyLLM(FakeUserProxyLLM):
-        def chat(self, messages, *, tools=None):
-            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop")
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-start")
+
+        def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
+            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-continue")
 
     clone_controller = FakeController(
         execute_batches=[
@@ -1689,8 +1671,11 @@ def test_benchmark_stall_detection_marks_benchmark_completed_with_failures() -> 
     store, revision, setup = _build_benchmark_store_and_revision(turn_budget=5, subject_max_turns=5)
 
     class AlwaysStallProxyLLM(FakeUserProxyLLM):
-        def chat(self, messages, *, tools=None):
-            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop")
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-start")
+
+        def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
+            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-continue")
 
     clone_controller = FakeController(
         execute_batches=[
@@ -1765,101 +1750,6 @@ def test_benchmark_polite_phrase_does_not_trigger_completion() -> None:
     # Run failed because turn budget exhausted (repair_success = False)
     assert evaluation_runs[0].status == "failed"
     assert evaluation_runs[0].repair_success is False
-
-
-def test_benchmark_three_false_completion_claims_marks_failed() -> None:
-    """3 failed mark_task_complete calls ends benchmark."""
-    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=10, subject_max_turns=10)
-    session = FakeSubjectSession(
-        turn_results=[
-            AdapterTurnResult(
-                user_message="",
-                assistant_message=f"reply-{i}",
-                run_id=f"run-{i}",
-                status="completed",
-                terminal_event_type="done",
-                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
-            )
-            for i in range(10)
-        ]
-    )
-    clone_controller = FakeController(
-        execute_batches=[
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # after subj 1
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # tool 1
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # after subj 2
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # tool 2
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # after subj 3
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # tool 3
-        ]
-    )
-    tc = UserProxyToolCall(id="call-x", name="mark_task_complete", arguments={})
-    proxy_llm = FakeUserProxyLLM(responses=[
-        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
-        UserProxyLLMResponse(content="Oh wait", tool_calls=(), finish_reason="stop"),
-        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
-        UserProxyLLMResponse(content="Still wrong", tool_calls=(), finish_reason="stop"),
-        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
-        UserProxyLLMResponse(content="Failed 3 times!", tool_calls=(), finish_reason="stop"),
-    ])
-    result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
-    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
-
-    assert len(evaluation_runs) == 1
-    eval_run = evaluation_runs[0]
-    assert eval_run.status == "failed"
-    assert eval_run.repair_success is False
-    resolution = eval_run.resolution_result_json
-    assert resolution.get("reason") == "too_many_false_completion_claims"
-    assert resolution.get("claim_count") == 3
-
-
-def test_benchmark_failed_claim_then_successful_claim_completes() -> None:
-    """First claim fails, second claim passes → success."""
-    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=10, subject_max_turns=10)
-    session = FakeSubjectSession(
-        turn_results=[
-            AdapterTurnResult(
-                user_message="",
-                assistant_message="Try it now.",
-                run_id="run-1",
-                status="completed",
-                terminal_event_type="done",
-                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
-            ),
-            AdapterTurnResult(
-                user_message="",
-                assistant_message="Okay, what about now?",
-                run_id="run-2",
-                status="completed",
-                terminal_event_type="done",
-                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
-            )
-        ]
-    )
-    clone_controller = FakeController(
-        execute_batches=[
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),), # tool 1
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),), # tool 2
-        ]
-    )
-    tc = UserProxyToolCall(id="call-x", name="mark_task_complete", arguments={})
-    proxy_llm = FakeUserProxyLLM(responses=[
-        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
-        UserProxyLLMResponse(content="Oh wait", tool_calls=(), finish_reason="stop"), # turn 1 text reply
-        UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls"),
-        UserProxyLLMResponse(content="Thanks!", tool_calls=(), finish_reason="stop"), # turn 2 text reply
-    ])
-    result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
-    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
-
-    assert len(evaluation_runs) == 1
-    eval_run = evaluation_runs[0]
-    assert eval_run.status == "completed"
-    assert eval_run.repair_success is True
-    assert eval_run.resolution_result_json.get("reason") == "mark_task_complete"
 
 
 def test_benchmark_completed_with_failures_when_subjects_do_not_repair() -> None:

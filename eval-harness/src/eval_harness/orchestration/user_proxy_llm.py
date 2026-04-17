@@ -1,35 +1,24 @@
-"""UserProxyLLMClient — thin OpenAI-compatible HTTP client with tool-calling support.
-
-Used by UserProxyFSM to drive the "confused human user" persona.  Models HTTP
-shape on planners/openai_compatible.py but adds a tools parameter and returns
-structured tool-call results.
-"""
+"""Responses-based OpenAI client for the eval-harness user proxy FSM."""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-import requests
-
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
+try:
+    from openai import OpenAI
+except ImportError:  # pragma: no cover - exercised only when dependency missing
+    OpenAI = None
 
 
 @dataclass(frozen=True)
 class UserProxyLLMClientConfig:
-    base_url: str
     model: str
     api_key: str
+    base_url: str | None = None
     request_timeout_seconds: float = 60.0
     max_output_tokens: int | None = None
-
-
-# ---------------------------------------------------------------------------
-# Response types
-# ---------------------------------------------------------------------------
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,113 +33,139 @@ class UserProxyLLMResponse:
     content: str
     tool_calls: tuple[UserProxyToolCall, ...]
     finish_reason: str
+    response_id: str
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            return {"raw": arguments}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
 
 
-def _extract_text(payload: dict[str, Any]) -> str:
-    """Extract text content from an OpenAI-compatible response, handling list content."""
-    choices = payload.get("choices") or []
-    if not choices:
-        return ""
-    message = choices[0].get("message") or {}
-    content = message.get("content", "") or ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(str(item.get("text", "")))
-        return "".join(parts)
-    return str(content)
-
-
-def _extract_tool_calls(payload: dict[str, Any]) -> tuple[UserProxyToolCall, ...]:
-    """Extract tool calls from an OpenAI-compatible response."""
-    choices = payload.get("choices") or []
-    if not choices:
-        return ()
-    message = choices[0].get("message") or {}
-    raw_tool_calls = message.get("tool_calls") or []
+def _extract_tool_calls(response: Any) -> tuple[UserProxyToolCall, ...]:
     result: list[UserProxyToolCall] = []
-    for tc in raw_tool_calls:
-        tc_id = str(tc.get("id", ""))
-        func = tc.get("function") or {}
-        name = str(func.get("name", ""))
-        raw_args = func.get("arguments", "{}")
-        if isinstance(raw_args, str):
-            try:
-                arguments = json.loads(raw_args)
-            except json.JSONDecodeError:
-                arguments = {"raw": raw_args}
-        elif isinstance(raw_args, dict):
-            arguments = raw_args
-        else:
-            arguments = {}
-        result.append(UserProxyToolCall(id=tc_id, name=name, arguments=arguments))
+    for item in getattr(response, "output", []) or []:
+        if getattr(item, "type", None) != "function_call":
+            continue
+        result.append(
+            UserProxyToolCall(
+                id=str(getattr(item, "call_id", "")),
+                name=str(getattr(item, "name", "")),
+                arguments=_parse_tool_arguments(getattr(item, "arguments", {})),
+            )
+        )
     return tuple(result)
 
 
-def _extract_finish_reason(payload: dict[str, Any]) -> str:
-    choices = payload.get("choices") or []
-    if not choices:
-        return ""
-    return str(choices[0].get("finish_reason", "") or "")
+def _extract_refusal_text(response: Any) -> str:
+    for item in getattr(response, "output", []) or []:
+        if getattr(item, "type", None) != "message":
+            continue
+        for content_item in getattr(item, "content", []) or []:
+            if getattr(content_item, "type", None) == "refusal":
+                return str(getattr(content_item, "refusal", "") or "").strip()
+    return ""
 
 
-# ---------------------------------------------------------------------------
-# Client
-# ---------------------------------------------------------------------------
+def _finish_reason_for_response(response: Any, tool_calls: tuple[UserProxyToolCall, ...], content: str) -> str:
+    if tool_calls:
+        return "tool_calls"
+    if _extract_refusal_text(response):
+        return "refusal"
+    if content:
+        return "stop"
+    status = str(getattr(response, "status", "") or "").strip()
+    return status or "stop"
 
 
 class UserProxyLLMClient:
-    """OpenAI-compatible HTTP client with tool-calling support.
-
-    Carries full conversation history across turns — the caller appends tool
-    results as role='tool' messages and calls chat() again for the next DECIDE.
-    """
+    """OpenAI Responses client for the confused-user proxy turn loop."""
 
     def __init__(self, config: UserProxyLLMClientConfig) -> None:
+        if OpenAI is None:
+            raise RuntimeError("OpenAI SDK is not installed. Install the 'openai' package to use the user proxy LLM.")
         self.config = config
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "Authorization": f"Bearer {config.api_key}",
-                "Content-Type": "application/json",
-            }
-        )
+        client_kwargs: dict[str, Any] = {
+            "api_key": config.api_key,
+            "timeout": config.request_timeout_seconds,
+        }
+        if config.base_url:
+            client_kwargs["base_url"] = config.base_url
+        self.client = OpenAI(**client_kwargs)
 
-    def chat(
+    def _request_kwargs(
         self,
-        messages: list[dict[str, Any]],
         *,
-        tools: list[dict[str, Any]] | None = None,
-    ) -> UserProxyLLMResponse:
-        """Send a chat request and return a structured response."""
-        body: dict[str, Any] = {
+        system_prompt: str,
+        tools: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
             "model": self.config.model,
-            "messages": messages,
+            "instructions": system_prompt,
         }
         if self.config.max_output_tokens is not None:
-            body["max_completion_tokens"] = self.config.max_output_tokens
+            kwargs["max_output_tokens"] = self.config.max_output_tokens
+        if self.config.reasoning_effort is not None:
+            kwargs["reasoning"] = {"effort": self.config.reasoning_effort}
         if tools:
-            body["tools"] = tools
-            body["tool_choice"] = "auto"
+            kwargs["tools"] = tools
+            kwargs["parallel_tool_calls"] = True
+        return kwargs
 
-        response = self.session.post(
-            f"{self.config.base_url.rstrip('/')}/chat/completions",
-            json=body,
-            timeout=self.config.request_timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
+    def _coerce_response(self, response: Any) -> UserProxyLLMResponse:
+        if getattr(response, "error", None) is not None:
+            raise RuntimeError(f"User proxy model call failed: {response.error}")
+        if getattr(response, "status", None) == "incomplete":
+            details = getattr(response, "incomplete_details", None)
+            reason = getattr(details, "reason", "unknown") if details is not None else "unknown"
+            raise RuntimeError(f"User proxy model response incomplete: {reason}")
 
+        tool_calls = _extract_tool_calls(response)
+        content = str(getattr(response, "output_text", "") or "")
+        if not content:
+            content = _extract_refusal_text(response)
         return UserProxyLLMResponse(
-            content=_extract_text(payload),
-            tool_calls=_extract_tool_calls(payload),
-            finish_reason=_extract_finish_reason(payload),
+            content=content,
+            tool_calls=tool_calls,
+            finish_reason=_finish_reason_for_response(response, tool_calls, content),
+            response_id=str(getattr(response, "id", "") or ""),
         )
+
+    def start_turn(
+        self,
+        *,
+        system_prompt: str,
+        transcript: list[tuple[str, str]],
+        assistant_reply: str,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> UserProxyLLMResponse:
+        rendered = "\n".join(f"{role}: {content}" for role, content in transcript)
+        if rendered:
+            turn_text = f"Conversation so far:\n{rendered}\n\nAssistant just said:\n{assistant_reply}"
+        else:
+            turn_text = assistant_reply
+        request_kwargs = self._request_kwargs(system_prompt=system_prompt, tools=tools)
+        request_kwargs["input"] = [{"role": "user", "content": turn_text}]
+        response = self.client.responses.create(**request_kwargs)
+        return self._coerce_response(response)
+
+    def continue_turn(
+        self,
+        *,
+        system_prompt: str,
+        previous_response_id: str,
+        tool_outputs: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> UserProxyLLMResponse:
+        request_kwargs = self._request_kwargs(system_prompt=system_prompt, tools=tools)
+        request_kwargs["previous_response_id"] = previous_response_id
+        request_kwargs["input"] = list(tool_outputs)
+        response = self.client.responses.create(**request_kwargs)
+        return self._coerce_response(response)

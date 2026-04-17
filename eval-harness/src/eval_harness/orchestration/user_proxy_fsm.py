@@ -14,7 +14,7 @@ from enum import Enum, auto
 from typing import Any, Callable
 
 from ..controllers.base import SandboxController
-from ..models import CommandExecutionResult, VerificationCheck
+from ..models import CommandExecutionResult
 from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMResponse, UserProxyToolCall
 
 
@@ -26,52 +26,26 @@ from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMResponse, UserProxyT
 # open_new_terminal() would allocate a fresh SSM session keyed by terminal_id.
 _RUN_COMMAND_TOOL: dict[str, Any] = {
     "type": "function",
-    "function": {
-        "name": "run_command",
-        "description": (
-            "Run a shell command on the user's Linux machine. "
-            "Use this only when the assistant explicitly asked you to run something specific. "
-            "Returns stdout, stderr, and exit code."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Exact shell command to run",
-                }
-            },
-            "required": ["command"],
+    "name": "run_command",
+    "description": (
+        "Run a shell command on the user's Linux machine. "
+        "Use this only when the assistant explicitly asked you to run something specific. "
+        "Returns stdout, stderr, and exit code."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "Exact shell command to run",
+            }
         },
+        "required": ["command"],
     },
+    "strict": True,
 }
 
-_MARK_TASK_COMPLETE_TOOL: dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": "mark_task_complete",
-        "description": (
-            "Call this ONLY when you have observed concrete command output proving the user's original problem is fully resolved. "
-            "The host will run hidden verification checks. If any fail, you will be told which checks failed and must continue troubleshooting. "
-            "Do not call speculatively."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": (
-                        "Explain specifically what command output you observed that convinced you the problem is resolved. "
-                        "Be concrete: quote the output or exit code that confirmed success."
-                    ),
-                }
-            },
-            "required": ["reason"],
-        },
-    },
-}
-
-DEFAULT_TOOLS: list[dict[str, Any]] = [_RUN_COMMAND_TOOL, _MARK_TASK_COMPLETE_TOOL]
+DEFAULT_TOOLS: list[dict[str, Any]] = [_RUN_COMMAND_TOOL]
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -89,9 +63,8 @@ def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
         "- Relay the exact command the assistant requested. Do not add sudo, extra flags, extra subcommands, or a more specific variant on your own.\n"
         "- Do not combine multiple commands unless the assistant explicitly requested multiple separate commands.\n"
         "- If the assistant did not give an exact command, ask what exact command to run instead of guessing.\n"
-        "- Never fabricate command output. Do not declare the issue fixed in plain text — only the mark_task_complete tool counts.\n"
-        "- Do not write like an AI assistant. Write like a confused user.\n"
-        "- When you have observed output that confirms the original problem is resolved, call the mark_task_complete tool. Do not call it speculatively — the host will verify your claim and tell you which checks failed if you were wrong, and you must continue troubleshooting from that report."
+        "- Never fabricate command output.\n"
+        "- Do not write like an AI assistant. Write like a confused user."
     )
 
 
@@ -114,30 +87,21 @@ class UserProxyState(Enum):
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class MarkTaskCompleteResult:
-    all_passed: bool
-    passed_count: int
-    total: int
-    per_check: tuple[dict[str, Any], ...]
-    reason: str = ""
-
 @dataclass
 class UserProxyContext:
     transcript: list[tuple[str, str]]  # cumulative (role, content) pairs
     assistant_reply: str
     observable_problem_statement: str
-    messages: list[dict[str, Any]]  # OpenAI-format message array for the proxy LLM
+    system_prompt: str
     tool_call_count: int = 0
     tool_results: list[CommandExecutionResult] = field(default_factory=list)
     final_reply: str = ""
-    closure: bool = False
+    last_response_id: str | None = None
+    last_assistant_content: str = ""
     stalled: bool = False
     # Pending tool calls from last assistant message (set in DECIDE, consumed in TOOL_EXEC)
     _pending_tool_calls: list[UserProxyToolCall] = field(default_factory=list)
-    completion_claim_attempted: bool = False
-    completion_claim_passed: bool = False
-    completion_claim_result: MarkTaskCompleteResult | None = None
+    _pending_tool_outputs: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -149,11 +113,7 @@ class UserProxyContext:
 class UserProxyTurnResult:
     user_message: str
     tool_results: tuple[CommandExecutionResult, ...]
-    closure: bool
     stalled: bool
-    completion_claim_attempted: bool
-    completion_claim_passed: bool
-    completion_claim_report: dict[str, Any] | None
 
 
 # ---------------------------------------------------------------------------
@@ -202,31 +162,28 @@ class UserProxyFSM:
         controller: SandboxController,
         evaluation_run_id: str,
         observable_problem_statement: str,
-        repair_checks: tuple[VerificationCheck, ...],
-        verification_session_key: str,
         max_tool_calls_per_turn: int = 4,
         terminal_id: str = "term-0",
         progress: Callable[..., None] | None = None,
         scenario_name: str = "",
+        subject_name: str = "",
         turn: int | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.controller = controller
         self.evaluation_run_id = evaluation_run_id
         self.observable_problem_statement = observable_problem_statement
-        self.repair_checks = repair_checks
-        self.verification_session_key = verification_session_key
         self.max_tool_calls_per_turn = max_tool_calls_per_turn
         self.terminal_id = terminal_id
         self.progress = progress
         self.scenario_name = scenario_name
+        self.subject_name = subject_name
         self.turn = turn
 
         # Tool registry: {name: callable(ctx, tool_call) -> CommandExecutionResult}
         # Multi-terminal extension: add open_new_terminal here later.
         self.tool_registry: dict[str, Callable] = {
             "run_command": self._handle_run_command,
-            "mark_task_complete": self._handle_mark_task_complete,
         }
         self.tools = DEFAULT_TOOLS
 
@@ -255,15 +212,11 @@ class UserProxyFSM:
         built from the provided transcript so earlier turns are visible to the
         proxy LLM without maintaining server-side state.
         """
-        system_msg = {
-            "role": "developer",
-            "content": _user_proxy_system_prompt(self.observable_problem_statement),
-        }
         ctx = UserProxyContext(
             transcript=list(transcript),
             assistant_reply=subject_reply,
             observable_problem_statement=self.observable_problem_statement,
-            messages=[system_msg],
+            system_prompt=_user_proxy_system_prompt(self.observable_problem_statement),
         )
 
         state = UserProxyState.READ_ASSISTANT
@@ -273,22 +226,10 @@ class UserProxyFSM:
             self._emit_progress(state, next_state, ctx)
             state = next_state
 
-        report = None
-        if ctx.completion_claim_result:
-            report = {
-                "all_passed": ctx.completion_claim_result.all_passed,
-                "passed_count": ctx.completion_claim_result.passed_count,
-                "total": ctx.completion_claim_result.total,
-                "per_check": list(ctx.completion_claim_result.per_check),
-            }
         return UserProxyTurnResult(
             user_message=ctx.final_reply,
             tool_results=tuple(ctx.tool_results),
-            closure=ctx.closure,
             stalled=ctx.stalled,
-            completion_claim_attempted=ctx.completion_claim_attempted,
-            completion_claim_passed=ctx.completion_claim_passed,
-            completion_claim_report=report,
         )
 
     # ------------------------------------------------------------------
@@ -296,45 +237,43 @@ class UserProxyFSM:
     # ------------------------------------------------------------------
 
     def _state_read_assistant(self, ctx: UserProxyContext) -> UserProxyState:
-        """Build the initial user message from transcript + subject reply."""
-        rendered = "\n".join(f"{role}: {content}" for role, content in ctx.transcript)
-        if rendered:
-            turn_text = f"Conversation so far:\n{rendered}\n\nAssistant just said:\n{ctx.assistant_reply}"
-        else:
-            turn_text = ctx.assistant_reply
-        ctx.messages.append({"role": "user", "content": turn_text})
+        """Prepare the turn context before the first model call."""
         return UserProxyState.DECIDE
 
     def _state_decide(self, ctx: UserProxyContext) -> UserProxyState:
         """Call the LLM and decide what to do next."""
-        response: UserProxyLLMResponse = self.llm_client.chat(
-            ctx.messages,
-            tools=self.tools,
+        is_first_response = ctx.last_response_id is None
+        wait_payload = {"mode": "start" if is_first_response else "continue"}
+        if not is_first_response:
+            wait_payload["tool_outputs"] = len(ctx._pending_tool_outputs)
+        self._emit_event("llm_wait", wait_payload)
+        if is_first_response:
+            response: UserProxyLLMResponse = self.llm_client.start_turn(
+                system_prompt=ctx.system_prompt,
+                transcript=ctx.transcript,
+                assistant_reply=ctx.assistant_reply,
+                tools=self.tools,
+            )
+        else:
+            response = self.llm_client.continue_turn(
+                system_prompt=ctx.system_prompt,
+                previous_response_id=ctx.last_response_id or "",
+                tool_outputs=ctx._pending_tool_outputs,
+                tools=self.tools,
+            )
+        ctx.last_response_id = response.response_id or ctx.last_response_id
+        ctx.last_assistant_content = response.content or ""
+        ctx._pending_tool_outputs = []
+        self._emit_event(
+            "llm_done",
+            {
+                "finish_reason": response.finish_reason,
+                "tool_calls": len(response.tool_calls),
+                "has_content": bool(response.content),
+            },
         )
 
-        # Build the assistant message to append
-        assistant_msg: dict[str, Any] = {"role": "assistant"}
-        if response.content:
-            assistant_msg["content"] = response.content
-        else:
-            assistant_msg["content"] = None
-
         if response.tool_calls:
-            # OpenAI format: tool_calls array in the assistant message
-            assistant_msg["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.name,
-                        "arguments": tc.arguments
-                        if isinstance(tc.arguments, str)
-                        else __import__("json").dumps(tc.arguments),
-                    },
-                }
-                for tc in response.tool_calls
-            ]
-            ctx.messages.append(assistant_msg)
             ctx._pending_tool_calls = list(response.tool_calls)
 
             if ctx.tool_call_count >= self.max_tool_calls_per_turn:
@@ -344,7 +283,6 @@ class UserProxyFSM:
             return UserProxyState.TOOL_EXEC
 
         # No tool calls
-        ctx.messages.append(assistant_msg)
         ctx._pending_tool_calls = []
 
         if not (response.content or "").strip():
@@ -363,37 +301,33 @@ class UserProxyFSM:
             handler = self.tool_registry.get(tc.name)
             if handler is None:
                 error_content = f"Unknown tool: {tc.name}"
-                ctx.messages.append(
+                ctx._pending_tool_outputs.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": error_content,
+                        "type": "function_call_output",
+                        "call_id": tc.id,
+                        "output": error_content,
                     }
                 )
                 continue
             try:
                 result = handler(ctx, tc)
-                if tc.name != "mark_task_complete":
-                    ctx.tool_results.append(result)
-                    ctx.tool_call_count += 1
-                    content_str = _render_tool_result(result)
-                else:
-                    content_str = result.stdout
-                
-                ctx.messages.append(
+                ctx.tool_results.append(result)
+                ctx.tool_call_count += 1
+                content_str = _render_tool_result(result)
+                ctx._pending_tool_outputs.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": content_str,
+                        "type": "function_call_output",
+                        "call_id": tc.id,
+                        "output": content_str,
                     }
                 )
             except Exception as exc:  # noqa: BLE001
                 error_content = f"Tool error: {exc}"
-                ctx.messages.append(
+                ctx._pending_tool_outputs.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": error_content,
+                        "type": "function_call_output",
+                        "call_id": tc.id,
+                        "output": error_content,
                     }
                 )
 
@@ -402,22 +336,12 @@ class UserProxyFSM:
 
     def _state_reply(self, ctx: UserProxyContext) -> UserProxyState:
         """Extract final content and detect closure."""
-        # Find the last assistant message with content
-        final_content = ""
-        for msg in reversed(ctx.messages):
-            if msg.get("role") == "assistant" and msg.get("content"):
-                final_content = str(msg["content"])
-                break
-
+        final_content = ctx.last_assistant_content
         if not final_content.strip():
             ctx.stalled = True
             return UserProxyState.STALLED
 
         ctx.final_reply = final_content
-
-        if ctx.completion_claim_passed:
-            ctx.closure = True
-
         return UserProxyState.DONE
 
     def _state_done(self, ctx: UserProxyContext) -> UserProxyState:
@@ -447,97 +371,17 @@ class UserProxyFSM:
             raise RuntimeError(f"execute_commands returned empty for command: {command!r}")
         return results[0]
 
-    def _handle_mark_task_complete(
-        self,
-        ctx: UserProxyContext,
-        tool_call: UserProxyToolCall,
-    ) -> CommandExecutionResult:
-        ctx.completion_claim_attempted = True
-        reason = str(tool_call.arguments.get("reason", "")).strip()
-
-        if not self.repair_checks:
-            ctx.completion_claim_passed = False
-            ctx.completion_claim_result = MarkTaskCompleteResult(
-                all_passed=False,
-                passed_count=0,
-                total=0,
-                per_check=(),
-            )
-            return CommandExecutionResult(
-                command="mark_task_complete",
-                stdout="Verification: no repair checks are configured for this scenario; cannot confirm completion.",
-                stderr="",
-                exit_code=1,
-                metadata={"verification_report": {
-                    "all_passed": False,
-                    "passed_count": 0,
-                    "total": 0,
-                    "per_check": [],
-                }},
-            )
-
-        commands = tuple(c.command for c in self.repair_checks)
-        results = self.controller.execute_commands(
-            commands,
-            session_key=self.verification_session_key,
-        )
-
-        per_check: list[dict[str, Any]] = []
-        passed_count = 0
-        lines: list[str] = []
-
-        for check, result in zip(self.repair_checks, results, strict=True):
-            passed = check.is_satisfied_by(result)
-            if passed:
-                passed_count += 1
-
-            check_name = check.name or check.command
-
-            per_check.append({
-                "name": check.name,
-                "command": check.command,
-                "passed": passed,
-                "exit_code": result.exit_code,
-                "output_excerpt": result.combined_output()[:500],
-            })
-
-            if passed:
-                lines.append(f"PASSED: {check_name}")
-            else:
-                lines.append(f"FAILED: {check_name} (exit {result.exit_code})")
-
-        total = len(self.repair_checks)
-        all_passed = passed_count == total
-
-        reason_line = [f"Proxy reason: {reason}"] if reason else []
-        stdout = "\n".join([f"Verification: {passed_count}/{total} checks passed."] + reason_line + lines)
-
-        ctx.completion_claim_passed = all_passed
-        ctx.completion_claim_result = MarkTaskCompleteResult(
-            all_passed=all_passed,
-            passed_count=passed_count,
-            total=total,
-            per_check=tuple(per_check),
-            reason=reason,
-        )
-
-        return CommandExecutionResult(
-            command="mark_task_complete",
-            stdout=stdout,
-            stderr="",
-            exit_code=0 if all_passed else 1,
-            metadata={"verification_report": {
-                "all_passed": all_passed,
-                "passed_count": passed_count,
-                "total": total,
-                "per_check": per_check,
-                "proxy_reason": reason,
-            }},
-        )
-
     # ------------------------------------------------------------------
     # Progress
     # ------------------------------------------------------------------
+
+    def _base_details(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.subject_name:
+            d["subject_name"] = self.subject_name
+        if self.turn is not None:
+            d["turn"] = self.turn
+        return d
 
     def _emit_progress(
         self,
@@ -549,20 +393,32 @@ class UserProxyFSM:
             return
         try:
             details: dict[str, Any] = {
+                **self._base_details(),
                 "from": from_state.name,
                 "to": to_state.name,
                 "tool_call_count": ctx.tool_call_count,
             }
-            if self.turn is not None:
-                details["turn"] = self.turn
             # Include tool name + command when transitioning into TOOL_EXEC
             if to_state == UserProxyState.TOOL_EXEC and ctx._pending_tool_calls:
                 tc = ctx._pending_tool_calls[0]
                 details["tool"] = tc.name
                 if tc.name == "run_command":
                     details["command"] = str(tc.arguments.get("command", ""))
-                elif tc.name == "mark_task_complete":
-                    details["reason"] = str(tc.arguments.get("reason", ""))
+            self.progress(
+                fsm_name="user-proxy",
+                scenario_name=self.scenario_name,
+                details=details,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _emit_event(self, event: str, extra: dict[str, Any] | None = None) -> None:
+        if self.progress is None:
+            return
+        try:
+            details: dict[str, Any] = {**self._base_details(), "event": event}
+            if extra:
+                details.update(extra)
             self.progress(
                 fsm_name="user-proxy",
                 scenario_name=self.scenario_name,

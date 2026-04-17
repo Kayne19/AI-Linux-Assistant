@@ -135,15 +135,7 @@ python -m eval_harness verify-scenario --config examples/aws_ai_linux_assistant_
 
 The user proxy plays a human user at a Linux terminal who does not know why the machine is broken. It receives only the `observable_problem_statement` from the scenario; it never sees the sabotage procedure or repair checks.
 
-When the AI subject asks the user to run a command, the proxy requests execution using a `host-run` fenced code block:
-
-````
-```host-run
-sudo systemctl status nginx
-```
-````
-
-The harness detects that fence, executes the command on the sandbox clone via the configured backend, and injects the real output into the next conversation turn as plain text. This keeps the subject grounded in real environment state rather than the proxy's inference.
+The proxy itself is driven by an OpenAI Responses API tool loop. When the AI subject asks the user to run a command, the proxy model can call the `run_command` function tool, the harness executes that command on the sandbox clone, and the real command output is returned to the proxy as a `function_call_output` item. This keeps the subject grounded in real environment state rather than the proxy's inference.
 
 The proxy is a strict command relay, not a diagnostician:
 - it should only relay exact commands the subject explicitly requested
@@ -153,7 +145,7 @@ The proxy is a strict command relay, not a diagnostician:
 
 The benchmark loop enforces those constraints and suppresses proxy turns that keep trying to run unrequested commands.
 
-When the proxy believes the stated problem is resolved, it calls the `mark_task_complete` tool. The tool runs the scenario's `repair_checks` against the live sandbox and returns a per-check pass/fail report back to the proxy LLM as a tool message. If every check passes, the benchmark terminates as `COMPLETED` with `repair_success=True`. If any check fails, the proxy sees which ones and is expected to keep troubleshooting; the benchmark force-fails after 3 such false claims (`too_many_false_completion_claims`).
+Repair success is not decided by the proxy. After each subject turn, the benchmark loop runs the scenario's objective `repair_checks` against the live sandbox. If every check passes, the evaluation completes with `repair_success=True`; otherwise the loop continues until the turn budget is exhausted or the proxy stalls repeatedly.
 
 ## Project Layout
 
