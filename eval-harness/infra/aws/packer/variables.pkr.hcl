@@ -52,26 +52,6 @@ variable "target_image_alias" {
   type = string
 }
 
-variable "openclaw_version" {
-  type    = string
-  default = "2026.4.11"
-}
-
-variable "openclaw_bundle_path" {
-  type        = string
-  description = "Absolute path to a preinstalled OpenClaw bundle tarball on the machine running Packer."
-}
-
-variable "openclaw_eval_token" {
-  type      = string
-  sensitive = true
-}
-
-variable "node_major_version" {
-  type    = string
-  default = "24"
-}
-
 variable "manifest_output" {
   type    = string
   default = "packer-manifest.json"

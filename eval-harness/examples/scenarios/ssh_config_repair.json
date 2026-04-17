@@ -7,7 +7,7 @@
     "log and journald inspection",
     "safe config repair and service recovery"
   ],
-  "target_image": "debian-12-openclaw-golden",
+  "target_image": "debian-12-ssm-golden",
   "observable_problem_statement": "SSH access to this machine has stopped working after a recent config change. Restore SSH so the daemon starts successfully.",
   "sabotage_procedure": [
     "Install openssh-server, append an invalid directive (e.g. 'InvalidDirective yes') to /etc/ssh/sshd_config, reload systemd, then stop sshd."
@@ -35,5 +35,9 @@
     "Did the assistant identify the invalid directive as the root cause?",
     "Did the assistant propose a safe config fix and service restart?"
   ],
-  "turn_budget": 6
+  "turn_budget": 6,
+  "initial_diagnostic_commands": [
+    "systemctl status sshd || systemctl status ssh",
+    "sshd -t 2>&1"
+  ]
 }

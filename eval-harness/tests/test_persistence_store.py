@@ -202,7 +202,7 @@ def test_setup_run_status_merges_backend_metadata() -> None:
     )
     setup = store.create_setup_run(
         scenario_revision_id=revision.id,
-        backend_metadata={"group_id": "group-1", "requested_target_image": "debian-12-openclaw-golden"},
+        backend_metadata={"group_id": "group-1", "requested_target_image": "debian-12-ssm-golden"},
     )
 
     store.update_setup_run_status(
@@ -215,7 +215,7 @@ def test_setup_run_status_merges_backend_metadata() -> None:
     assert stored is not None
     assert stored.backend_metadata_json == {
         "group_id": "group-1",
-        "requested_target_image": "debian-12-openclaw-golden",
+        "requested_target_image": "debian-12-ssm-golden",
         "resolved_golden_ami_id": "ami-golden",
         "golden_image_build_triggered": True,
     }

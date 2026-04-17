@@ -3,7 +3,7 @@
 This directory is the canonical golden-AMI build surface for the eval harness.
 
 Current supported auto-build target:
-- `debian-12-openclaw-golden`
+- `debian-12-ssm-golden`
 
 The harness uses these assets in two ways:
 - automatically during `verify-scenario` when the requested target image has no tagged golden AMI yet
@@ -13,13 +13,8 @@ The harness uses these assets in two ways:
 
 - base OS: Debian 12
 - include `amazon-ssm-agent`
-- install OpenClaw into `/opt/openclaw`
-- pin the OpenClaw version during image build
-- build a preinstalled OpenClaw bundle on the machine running Packer and upload that bundle to the builder instead of resolving OpenClaw live inside the EC2 instance
-- bind the gateway to loopback only on port `18789`
-- bake three named agents: `setup`, `verifier`, and `proxy`
-- bake generic agent prompts only; scenario-specific prerequisites such as installing nginx remain the planner/setup agent's job during staging sabotage
-- leave provider/model credentials out of the AMI itself; the harness injects them at runtime before use
+- bake the `eval` OS user with passwordless sudo
+- leave provider/model credentials out of the AMI itself; the harness injects them at runtime via SSM
 - require an IAM instance profile with `AmazonSSMManagedInstanceCore`
 
 ## Auto-Build Inputs
@@ -29,14 +24,12 @@ When the harness auto-builds a missing golden image, it generates the Packer var
 - `backend.subnet_id`
 - `backend.instance_profile_name`
 - `backend.instance_type`
-- `controller.token`
 - the selected target-image entry under `backend.target_images`
 
 The generated build tags the AMI with:
 - `EvalHarness=true`
 - `EvalImageRole=golden`
-- `EvalTargetImage=debian-12-openclaw-golden`
-- `OpenClawVersion=<version>`
+- `EvalTargetImage=debian-12-ssm-golden`
 - `ManagedBy=eval-harness`
 
 ## Manual Build
@@ -67,14 +60,3 @@ packer build \
 ```
 
 The resulting AMI will be discoverable by the harness through its tags; you do not need to copy the AMI id back into the harness config.
-
-## Runtime Model Config
-
-The golden AMI only bakes the OpenClaw gateway and eval agents. The harness injects the backing model configuration at runtime:
-- `/home/eval/.openclaw/openclaw.json` for the default `provider/model`
-- `/etc/openclaw/eval-runtime.env` for provider secrets such as `OPENAI_API_KEY`
-- refreshed `SOUL.md` files for `setup`, `verifier`, and `proxy` so cached AMIs still receive the current sandbox-sabotage and host-exec instructions
-- runtime config enables elevated host exec for `webchat` sessions, while setup prompts force privileged sabotage work through normal host execution with `sudo -n`
-- staged runtime checks verify service/listener health before the first model-backed probe, then run verifier and setup-agent command-exec probes over the host path, so setup failures can distinguish gateway boot, provider/model errors, sandbox-routing regressions, and missing elevated-exec capability
-
-For v1 the harness supports `controller.runtime.provider = "openai"`, a single model string such as `gpt-5.4-mini`, and `controller.runtime.thinking`, for example `medium`.

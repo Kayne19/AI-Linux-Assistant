@@ -25,15 +25,14 @@ source "amazon-ebs" "golden" {
     owners      = [var.source_ami_owner]
   }
 
-  ami_name        = "${var.ami_name_prefix}-${var.openclaw_version}-{{timestamp}}"
-  ami_description = "Eval harness golden image for ${var.target_image_alias} with OpenClaw ${var.openclaw_version}"
+  ami_name        = "${var.ami_name_prefix}-{{timestamp}}"
+  ami_description = "Eval harness golden image for ${var.target_image_alias}"
 
   tags = {
-    Name            = "${var.target_image_alias}-${var.openclaw_version}"
+    Name            = var.target_image_alias
     EvalHarness     = "true"
     EvalImageRole   = "golden"
     EvalTargetImage = var.target_image_alias
-    OpenClawVersion = var.openclaw_version
     DistroFamily    = var.distro_family
     ManagedBy       = "eval-harness"
   }
@@ -63,22 +62,12 @@ source "amazon-ebs" "golden" {
 build {
   sources = ["source.amazon-ebs.golden"]
 
-  provisioner "file" {
-    source      = var.openclaw_bundle_path
-    destination = "/tmp/openclaw-bundle.tgz"
-  }
-
   provisioner "shell" {
     environment_vars = [
       "DISTRO_FAMILY=${var.distro_family}",
-      "NODE_MAJOR=${var.node_major_version}",
-      "OPENCLAW_VERSION=${var.openclaw_version}",
-      "OPENCLAW_EVAL_TOKEN=${var.openclaw_eval_token}",
     ]
     scripts = [
       "scripts/00-base-packages.sh",
-      "scripts/01-node.sh",
-      "scripts/02-openclaw.sh",
       "scripts/03-ssm-agent.sh",
       "scripts/04-eval-user.sh",
       "scripts/05-cleanup.sh",

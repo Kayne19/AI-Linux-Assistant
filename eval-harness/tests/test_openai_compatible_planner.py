@@ -37,7 +37,7 @@ class FakePlanner(OpenAICompatibleScenarioPlanner):
 def _request() -> PlannerScenarioRequest:
     return PlannerScenarioRequest(
         planning_brief="Break nginx in a machine-verifiable way.",
-        target_image="debian-12-openclaw-golden",
+        target_image="debian-12-ssm-golden",
         scenario_name_hint="nginx-service-repair",
     )
 
@@ -48,7 +48,7 @@ def _valid_payload() -> dict:
         "title": "Nginx service fails after a bad override",
         "summary": "The environment contains a broken nginx override that prevents startup.",
         "what_it_tests": ["systemd troubleshooting"],
-        "target_image": "debian-12-openclaw-golden",
+        "target_image": "debian-12-ssm-golden",
         "observable_problem_statement": "The website is down and nginx will not start.",
         "sabotage_procedure": ["Write a bad systemd override for nginx and reload systemd."],
         "verification_probes": [
@@ -74,7 +74,7 @@ def _valid_payload() -> dict:
 def test_generate_scenario_repairs_invalid_initial_payload() -> None:
     planner = FakePlanner(
         [
-            {"scenario_name": "nginx-service-repair", "target_image": "debian-12-openclaw-golden"},
+            {"scenario_name": "nginx-service-repair", "target_image": "debian-12-ssm-golden"},
             _valid_payload(),
         ]
     )
@@ -91,8 +91,8 @@ def test_generate_scenario_repairs_invalid_initial_payload() -> None:
 def test_generate_scenario_raises_if_repair_is_still_invalid() -> None:
     planner = FakePlanner(
         [
-            {"scenario_name": "nginx-service-repair", "target_image": "debian-12-openclaw-golden"},
-            {"scenario_name": "still-invalid", "target_image": "debian-12-openclaw-golden"},
+            {"scenario_name": "nginx-service-repair", "target_image": "debian-12-ssm-golden"},
+            {"scenario_name": "still-invalid", "target_image": "debian-12-ssm-golden"},
         ]
     )
 

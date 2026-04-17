@@ -9,7 +9,7 @@ def test_example_grader_is_optional_and_operates_on_artifacts():
         scenario_revision_id="revision-1",
         setup_run_id="setup-1",
         backend_name="aws_ec2",
-        controller_name="openclaw",
+        controller_name="ssm",
         subject_adapter_types=("ai_linux_assistant_http",),
         broken_image_id="ami-broken",
         evaluations=(

@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -19,17 +20,43 @@ def _require_path(path: Path, label: str) -> None:
         raise SystemExit(f"{label} not found: {path}")
 
 
-def _run_harness_command(args: list[str]) -> int:
+def _build_command(args: list[str]) -> list[str]:
+    active_conda_env = str(os.environ.get("CONDA_DEFAULT_ENV", "")).strip()
+    if active_conda_env == DEFAULT_CONDA_ENV or shutil.which("conda") is None:
+        return [sys.executable, "-m", "eval_harness", *args]
+    return ["conda", "run", "-n", DEFAULT_CONDA_ENV, "python", "-m", "eval_harness", *args]
+
+
+def _build_env() -> dict:
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH", "").strip()
     env["PYTHONPATH"] = "src" if not existing_pythonpath else f"src{os.pathsep}{existing_pythonpath}"
-    active_conda_env = str(env.get("CONDA_DEFAULT_ENV", "")).strip()
-    if active_conda_env == DEFAULT_CONDA_ENV or shutil.which("conda") is None:
-        command = [sys.executable, "-m", "eval_harness", *args]
-    else:
-        command = ["conda", "run", "-n", DEFAULT_CONDA_ENV, "python", "-m", "eval_harness", *args]
-    process = subprocess.run(command, cwd=str(HARNESS_DIR), env=env)
+    return env
+
+
+def _run_harness_command(args: list[str]) -> int:
+    process = subprocess.run(_build_command(args), cwd=str(HARNESS_DIR), env=_build_env())
     return int(process.returncode)
+
+
+def _run_harness_command_capture(args: list[str]) -> tuple[int, dict]:
+    """Run a harness command, stream output to terminal, and return (exit_code, parsed_json)."""
+    process = subprocess.run(
+        _build_command(args),
+        cwd=str(HARNESS_DIR),
+        env=_build_env(),
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    if process.stdout:
+        print(process.stdout, end="")
+    result = {}
+    if process.stdout and process.stdout.strip():
+        try:
+            result = json.loads(process.stdout.strip())
+        except json.JSONDecodeError:
+            pass
+    return int(process.returncode), result
 
 
 def _default_group_id() -> str:
@@ -75,9 +102,58 @@ def _command_smoke_test(args: argparse.Namespace) -> int:
     return _command_verify(args)
 
 
+def _command_run(args: argparse.Namespace) -> int:
+    print("=== Step 1/4: init-db ===")
+    exit_code = _command_init_db(args)
+    if exit_code != 0:
+        return exit_code
+
+    print("\n=== Step 2/4: verify-scenario ===")
+    exit_code, verify_result = _run_harness_command_capture([
+        "verify-scenario",
+        "--config", str(args.config),
+        "--request", str(args.request),
+        "--group-id", args.group_id,
+    ])
+    if exit_code != 0:
+        return exit_code
+    setup_run_id = verify_result.get("setup_run_id", "")
+    if not setup_run_id:
+        print("ERROR: verify-scenario did not return a setup_run_id.", file=sys.stderr)
+        return 1
+
+    print(f"\n=== Step 3/4: run-benchmark (setup_run_id={setup_run_id}) ===")
+    exit_code, benchmark_result = _run_harness_command_capture([
+        "run-benchmark",
+        "--config", str(args.config),
+        "--setup-run-id", setup_run_id,
+    ])
+    if exit_code != 0:
+        return exit_code
+    benchmark_run_id = benchmark_result.get("benchmark_run_id", "")
+    if not benchmark_run_id:
+        print("ERROR: run-benchmark did not return a benchmark_run_id.", file=sys.stderr)
+        return 1
+
+    print(f"\n=== Step 4/4: run-judge-job (benchmark_run_id={benchmark_run_id}) ===")
+    exit_code, _ = _run_harness_command_capture([
+        "run-judge-job",
+        "--config", str(args.config),
+        "--benchmark-run-id", benchmark_run_id,
+    ])
+    return exit_code
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="run_eval_harness.py")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="run_eval_harness.py",
+        description="Run the eval harness. With no subcommand, runs the full pipeline end-to-end.",
+    )
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--request", type=Path, default=DEFAULT_REQUEST)
+    parser.add_argument("--group-id", default=_default_group_id())
+    parser.set_defaults(func=_command_run)
+    subparsers = parser.add_subparsers(dest="command")
 
     init_parser = subparsers.add_parser("init-db", help="Initialize the eval-harness database schema.")
     init_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -113,6 +189,9 @@ def main() -> int:
     _require_path(DEFAULT_REQUEST, "default planner request")
     parser = build_parser()
     args = parser.parse_args()
+    if not hasattr(args, "func"):
+        parser.print_help()
+        return 1
     return int(args.func(args))
 
 

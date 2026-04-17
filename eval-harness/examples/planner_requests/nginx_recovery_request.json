@@ -1,6 +1,6 @@
 {
   "planning_brief": "Create a Linux troubleshooting benchmark where nginx is broken in a way that can be objectively verified before cloning. The user proxy should only know that the website is down and nginx will not start.",
-  "target_image": "debian-12-openclaw-golden",
+  "target_image": "debian-12-ssm-golden",
   "scenario_name_hint": "nginx-service-repair",
   "constraints": [
     "The planner must define sabotage steps and objective verification probes.",

@@ -171,3 +171,46 @@ class OpenAICompatibleScenarioPlanner(ScenarioPlanner):
             ),
         )
         return PlannerReviewDecision.from_dict(payload)
+
+    def plan_rectification(
+        self,
+        scenario: ScenarioSpec,
+        *,
+        failed_command_results: tuple[CommandExecutionResult, ...],
+        correction_instructions: tuple[str, ...],
+        round_index: int,
+    ) -> tuple[str, ...]:
+        system_prompt = (
+            "You are a benchmark setup planner generating rectification commands for a Linux eval harness. "
+            "The sabotage verification probes failed. "
+            "Your job is to return a JSON object with key 'commands' containing an array of concrete shell commands "
+            "that will bring the broken state back to match the scenario's observable_problem_statement "
+            "and make the verification probes succeed. "
+            "Use the failed probe outputs and the correction_instructions to guide your fix. "
+            "Return JSON only in the form: {\"commands\": [\"cmd1\", \"cmd2\", ...]}. "
+            "Do not explain. Do not include empty strings."
+        )
+        user_prompt = json.dumps(
+            {
+                "scenario": {
+                    "summary": scenario.summary,
+                    "target_image": scenario.target_image,
+                    "observable_problem_statement": scenario.observable_problem_statement,
+                    "sabotage_procedure": list(scenario.sabotage_procedure),
+                    "verification_probes": [item.to_dict() for item in scenario.verification_probes],
+                    "repair_checks": [item.to_dict() for item in scenario.repair_checks],
+                },
+                "failed_command_results": [item.to_dict() for item in failed_command_results],
+                "correction_instructions": list(correction_instructions),
+                "round_index": round_index,
+            },
+            indent=2,
+        )
+        payload = self._request_json(system_prompt, user_prompt)
+        commands = payload.get("commands")
+        if not isinstance(commands, list):
+            raise RuntimeError(
+                f"plan_rectification: planner returned malformed payload (expected 'commands' list): "
+                f"{json.dumps(payload)[:400]!r}"
+            )
+        return tuple(str(cmd).strip() for cmd in commands if str(cmd).strip())

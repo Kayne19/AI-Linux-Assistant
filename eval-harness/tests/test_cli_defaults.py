@@ -13,7 +13,7 @@ if "eval_harness" not in sys.modules:
 from eval_harness.cli import build_parser
 
 
-def test_cli_defaults_match_baked_openclaw_agents() -> None:
+def test_cli_defaults_match_baked_agent_ids() -> None:
     parser = build_parser()
 
     verify_args = parser.parse_args(["verify-scenario", "--config", "config.json", "--request", "request.json", "--group-id", "group-1"])

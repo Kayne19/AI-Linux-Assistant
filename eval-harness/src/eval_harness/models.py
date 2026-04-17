@@ -301,6 +301,7 @@ class ScenarioSpec:
     judge_rubric: tuple[str, ...]
     turn_budget: int = 8
     context_seed: tuple[TurnSeed, ...] = ()
+    initial_diagnostic_commands: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     planner_metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -329,6 +330,11 @@ class ScenarioSpec:
             judge_rubric=tuple(str(item).strip() for item in judge_rubric if str(item).strip()),
             turn_budget=int(payload.get("turn_budget", 8)),
             context_seed=tuple(TurnSeed.from_dict(item) for item in payload.get("context_seed", []) or []),
+            initial_diagnostic_commands=tuple(
+                str(cmd).strip()
+                for cmd in payload.get("initial_diagnostic_commands", []) or []
+                if str(cmd).strip()
+            ),
             metadata=dict(payload.get("metadata", {}) or {}),
             planner_metadata=dict(payload.get("planner_metadata", {}) or {}),
         )

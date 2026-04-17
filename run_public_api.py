@@ -27,7 +27,7 @@ BACKEND_HOST = os.getenv("AILA_PUBLIC_API_HOST", "127.0.0.1")
 BACKEND_PORT = os.getenv("AILA_PUBLIC_API_PORT", "8000")
 CHAT_WORKER_ID = os.getenv("AILA_PUBLIC_WORKER_ID", "public-chat-worker")
 CHAT_WORKER_PROCESS_COUNT = max(1, int(os.getenv("AILA_PUBLIC_WORKER_PROCESS_COUNT", "1")))
-CHAT_WORKER_CONCURRENCY = max(1, int(os.getenv("AILA_PUBLIC_WORKER_CONCURRENCY", "2")))
+CHAT_WORKER_CONCURRENCY = max(1, int(os.getenv("AILA_PUBLIC_WORKER_CONCURRENCY", "4")))
 START_CLOUDFLARED = os.getenv("AILA_PUBLIC_START_CLOUDFLARED", "").strip().lower() in {
     "1",
     "true",

@@ -13,8 +13,8 @@ Golden images are now target-image driven:
 - scenarios name a `target_image`
 - the AWS backend resolves that alias to the newest tagged golden AMI
 - if the AMI is missing, `verify-scenario` auto-builds it with Packer and prints build progress to `stderr`
-- before the first OpenClaw request on staging or a benchmark clone, the backend injects runtime model/provider config, enables elevated host exec for webchat sessions, verifies the local gateway is up, runs a model-backed probe, then runs verifier and setup-agent command-exec probes against the host path
-- before the verified broken-image snapshot is created, the backend removes the injected provider secret from staging so it is not baked into the transient AMI
+- before the first command on staging or a benchmark clone, the backend verifies SSM availability on the instance
+- before the verified broken-image snapshot is created, the backend signals staging teardown so it is not baked into the transient AMI
 - after planner approval, setup runs enter a distinct broken-image creation phase while AWS snapshots the staging instance; during that phase the setup-run record persists the transient `broken_image_id` plus AMI state/progress metadata until the image becomes `available`
 - if staging setup fails after launch, the harness captures backend diagnostics before teardown so setup-run metadata includes the failure context
 
@@ -23,14 +23,13 @@ Golden images are now target-image driven:
 V1 benchmark flow:
 - planner LLM produces the troubleshooting scenario
 - planner must define both sabotage and objective verification procedures, including any prerequisite installation or provisioning needed to create the failure
-- OpenClaw Agent A applies sabotage on staging and runs the planner’s probes
+- the ScenarioBuilderFSM applies sabotage on staging via SSM shell commands and runs the planner’s probes
 - the setup agent is explicitly told it is operating inside a disposable benchmark sandbox and must not refuse bounded sabotage on generic safety grounds
-- the setup runtime enables the host exec path for the `webchat` provider, and the setup agent is instructed to use normal host execution with `sudo -n` for privileged sabotage work instead of relying on elevated exec mode
-- the verifier is explicitly told to use the normal host execution path and not `exec host=sandbox`; runtime probes now validate both verifier and setup-agent command execution before setup continues
+- the verifier runs the exact probe commands and returns structured results; both verifier and setup-agent command execution are exercised before setup continues
 - planner reviews raw probe output and either approves or issues a correction
 - if the planner has to correct sabotage twice, the setup run fails
 - only planner-approved broken environments are cloned
-- OpenClaw Agent B is the user proxy and does not receive sabotage details
+- the UserProxyFSM drives the user proxy persona and does not receive sabotage details
 - benchmark orchestration suppresses approval-loop leakage from subjects and treats all benchmark commands as pre-approved, but that policy is kept out of the API request content sent to the subject backend
 - repair success is defined entirely by scenario-declared machine-checkable repair checks; the benchmark loop does not hard-code service-specific success rules
 - repair checks may use positive and negative expectations, including exact matches, substrings, and regexes, so scenarios can define robust success conditions without teaching the orchestrator about a specific Linux subsystem
@@ -51,7 +50,7 @@ Core harness logic:
 
 Adapter-specific logic:
 - AWS EC2 + SSM resource lifecycle
-- OpenClaw sandbox transport and command execution
+- SSM-based sandbox command execution
 - AI Linux Assistant durable-run HTTP integration
 - planner/judge model transport
 
@@ -134,7 +133,7 @@ python -m eval_harness verify-scenario --config examples/aws_ai_linux_assistant_
 
 ### User Proxy Contract
 
-The user proxy (OpenClaw Agent B) plays a human user at a Linux terminal who does not know why the machine is broken. It receives only the `observable_problem_statement` from the scenario; it never sees the sabotage procedure or repair checks.
+The user proxy plays a human user at a Linux terminal who does not know why the machine is broken. It receives only the `observable_problem_statement` from the scenario; it never sees the sabotage procedure or repair checks.
 
 When the AI subject asks the user to run a command, the proxy requests execution using a `host-run` fenced code block:
 
@@ -276,11 +275,11 @@ See:
 - [nginx_service_repair.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/scenarios/nginx_service_repair.json)
 
 For the AWS backend:
-- `backend.default_target_image` is the alias used when a scenario or request does not override it
+- `backend.default_target_image` is the alias used when a scenario or request does not override it (canonical alias: `debian-12-ssm-golden`)
 - `backend.target_images` maps each supported alias to the canonical Packer template directory and distro var-file
 - `backend.golden_ami_id` remains a legacy single-image override only; prefer tagged target images
-- `controller.remote_port` should match the baked OpenClaw gateway port, `18789`
-- `controller.request_timeout_seconds` controls how long the harness waits for an OpenClaw agent turn; `180` is the current default/example value
-- `controller.runtime` configures the backing OpenClaw model route at runtime
-- `controller.runtime.thinking` sets the OpenClaw default thinking level, for example `medium`
-- `controller.runtime.api_key_env_var` is the recommended way to point the harness at the provider API key without storing the secret in JSON
+
+For the SSM controller:
+- `controller.type` must be `"ssm"`
+- `controller.aws_region` is the region where instances run
+- `controller.command_timeout_seconds` controls how long the harness waits for an SSM shell command to complete; `600` is the default

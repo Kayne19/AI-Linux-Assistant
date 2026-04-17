@@ -15,7 +15,6 @@ from eval_harness.backends.aws_packer import (
     AwsPackerBuildRequest,
     _load_exported_aws_credentials,
     build_packer_commands,
-    openclaw_tarball_url,
     parse_manifest_ami_id,
     render_build_vars,
 )
@@ -23,11 +22,10 @@ from eval_harness.backends.aws_packer import (
 
 def _request() -> AwsPackerBuildRequest:
     return AwsPackerBuildRequest(
-        target_image="debian-12-openclaw-golden",
+        target_image="debian-12-ssm-golden",
         aws_region="us-west-2",
         subnet_id="subnet-123",
         iam_instance_profile="EvalSSMInstanceProfile",
-        openclaw_eval_token="token-123",
         packer_template_dir=Path("/tmp/packer"),
         distro_vars_file=Path("/tmp/packer/distros/debian-12.pkrvars.hcl"),
     )
@@ -35,19 +33,13 @@ def _request() -> AwsPackerBuildRequest:
 
 def test_render_build_vars_includes_expected_runtime_values(tmp_path: Path) -> None:
     manifest_path = tmp_path / "packer-manifest.json"
-    openclaw_bundle_path = tmp_path / "openclaw-bundle.tgz"
-    rendered = render_build_vars(_request(), manifest_path, openclaw_bundle_path)
+    rendered = render_build_vars(_request(), manifest_path)
 
     assert 'aws_region = "us-west-2"' in rendered
     assert 'subnet_id = "subnet-123"' in rendered
     assert 'iam_instance_profile = "EvalSSMInstanceProfile"' in rendered
-    assert f'openclaw_bundle_path = "{openclaw_bundle_path}"' in rendered
-    assert 'openclaw_eval_token = "token-123"' in rendered
     assert f'manifest_output = "{manifest_path}"' in rendered
-
-
-def test_openclaw_tarball_url_is_pinned_to_the_exact_release() -> None:
-    assert openclaw_tarball_url("2026.4.11") == "https://registry.npmjs.org/openclaw/-/openclaw-2026.4.11.tgz"
+    assert "openclaw" not in rendered.lower()
 
 
 def test_build_packer_commands_use_generated_and_distro_var_files(tmp_path: Path) -> None:

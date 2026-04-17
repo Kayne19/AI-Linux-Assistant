@@ -46,7 +46,7 @@ Optional launcher env:
 - `AILA_PUBLIC_API_HOST` default `127.0.0.1`
 - `AILA_PUBLIC_API_PORT` default `8000`
 - `AILA_PUBLIC_WORKER_PROCESS_COUNT` default `1`
-- `AILA_PUBLIC_WORKER_CONCURRENCY` default `2`
+- `AILA_PUBLIC_WORKER_CONCURRENCY` default `4`
 - `AILA_PUBLIC_START_CLOUDFLARED=1` to launch `cloudflared` with the same command
 - `AILA_CLOUDFLARED_CONFIG` default `~/.cloudflared/config.yml`
 

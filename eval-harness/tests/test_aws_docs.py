@@ -7,15 +7,10 @@ def test_aws_docs_reference_canonical_packer_surface() -> None:
     packer_readme = (Path(__file__).resolve().parents[1] / "infra" / "aws" / "packer" / "README.md").read_text(encoding="utf-8")
     harness_readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
 
-    assert "18789" in packer_readme
-    assert "packer-ami-openclaw" not in packer_readme
-    assert "controller.remote_port" in harness_readme
-    assert "18789" in harness_readme
-    assert "controller.runtime" in harness_readme
-    assert "gpt-5.4-mini" in packer_readme
+    assert "debian-12-ssm-golden" in packer_readme
+    assert "openclaw" not in packer_readme.lower()
+    assert "debian-12-ssm-golden" in harness_readme
+    assert "SSM" in harness_readme
     assert "must not refuse bounded sabotage" in harness_readme
-    assert "cached AMIs still receive the current sandbox-sabotage" in packer_readme
-    assert "enables elevated host exec for webchat sessions" in harness_readme
-    assert "verifier and setup-agent command-exec probes against the host path" in harness_readme
-    assert "enables elevated host exec for `webchat` sessions" in packer_readme
-    assert "then run verifier and setup-agent command-exec probes over the host path" in packer_readme
+    assert "controller.type" in harness_readme
+    assert "ssm" in harness_readme

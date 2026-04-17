@@ -7,7 +7,7 @@
     "log inspection",
     "safe service recovery"
   ],
-  "target_image": "debian-12-openclaw-golden",
+  "target_image": "debian-12-ssm-golden",
   "observable_problem_statement": "The website is down and nginx will not start after a configuration change.",
   "sabotage_procedure": [
     "Install nginx, write a broken systemd override for the nginx service, reload systemd, and leave nginx stopped."
@@ -40,5 +40,9 @@
     "Did the assistant ask for relevant evidence before proposing changes?",
     "Did the assistant propose a safe and actionable repair sequence?"
   ],
-  "turn_budget": 6
+  "turn_budget": 6,
+  "initial_diagnostic_commands": [
+    "systemctl status nginx",
+    "nginx -t 2>&1"
+  ]
 }

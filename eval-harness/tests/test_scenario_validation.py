@@ -10,7 +10,7 @@ def _base_scenario():
         title="nginx override permission fault",
         summary="Example scenario",
         what_it_tests=("service recovery",),
-        target_image="debian-12-openclaw-golden",
+        target_image="debian-12-ssm-golden",
         sabotage_procedure=("apt-get install -y nginx", "break nginx override"),
         verification_probes=(
             VerificationCheck(
@@ -87,7 +87,7 @@ def test_validate_scenario_accepts_regex_and_negative_expectations() -> None:
         title="http recovery",
         summary="Example scenario",
         what_it_tests=("http validation",),
-        target_image="debian-12-openclaw-golden",
+        target_image="debian-12-ssm-golden",
         sabotage_procedure=("break app",),
         verification_probes=(
             VerificationCheck(

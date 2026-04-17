@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Callable, Any
 
 from ..adapters.base import SubjectAdapter, SubjectSession
 from ..backends.base import SandboxBackend, SandboxHandle
@@ -11,118 +12,17 @@ from ..controllers.base import SandboxController, SandboxControllerFactory
 from ..mapping import scenario_spec_from_records, subject_spec_from_record
 from ..models import EvaluationRunStatus
 from ..persistence.store import EvalHarnessStore
+from .progress import FsmProgressSink
+from .user_proxy_fsm import UserProxyFSM
+from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMClientConfig
 
-_PROXY_APPROVAL_RE = re.compile(r"/approve\s+[a-f0-9]+", re.IGNORECASE)
-_HOST_RUN_RE = re.compile(r"```host-run\s*\n(.*?)```", re.DOTALL)
-_GENERIC_CODE_BLOCK_RE = re.compile(r"```(?:[a-zA-Z0-9_-]+)?\s*\n(.*?)```", re.DOTALL)
-_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+# Kept for closure detection (re-exported for UserProxyFSM internal use)
 _PROXY_CLOSURE_RE = re.compile(
     r"\b("
     r"thanks|thank you|all good|looks good|working now|works now|fixed|resolved|that fixed it|problem solved|we're good"
     r")\b",
     re.IGNORECASE,
 )
-_ASSISTANT_COMMAND_HINT_RE = re.compile(
-    r"(?:^|[\n:]\s*|\b)(?:please\s+)?(?:run|execute|try|use|paste|send|show)\s+([^\n.?!]+)",
-    re.IGNORECASE,
-)
-_TRAILING_EXPLANATION_RE = re.compile(
-    r"\s+(?:and|then)\s+(?:show|paste|send|share|tell|let)\b.*$",
-    re.IGNORECASE,
-)
-_FOLLOW_MODE_COMMAND_PATTERNS = (
-    re.compile(r"(?:^|\s)journalctl\b.*(?:\s|^)-[A-Za-z]*f[A-Za-z]*(?:\s|$)", re.IGNORECASE),
-    re.compile(r"(?:^|\s)tail\b.*(?:\s|^)-[A-Za-z]*f[A-Za-z]*(?:\s|$)", re.IGNORECASE),
-    re.compile(r"(?:^|\s)tailf(?:\s|$)", re.IGNORECASE),
-    re.compile(r"--follow(?:\s|$)", re.IGNORECASE),
-    re.compile(r"(?:^|\s)watch(?:\s|$)", re.IGNORECASE),
-    re.compile(r"(?:^|\s)less\b.*(?:\s|^)\+F(?:\s|$)", re.IGNORECASE),
-)
-
-
-def _parse_host_run_commands(reply: str) -> tuple[str, ...]:
-    commands = []
-    for match in _HOST_RUN_RE.finditer(reply):
-        cmd = match.group(1).strip()
-        if cmd:
-            commands.append(cmd)
-        if len(commands) >= 3:
-            break
-    return tuple(commands)
-
-
-def _render_command_outputs(command_results: tuple) -> str:
-    parts = []
-    for result in command_results:
-        stdout = (result.stdout or "").strip()[:2000]
-        stderr = (result.stderr or "").strip()[:2000]
-        exit_code = result.exit_code
-        parts.append(
-            f"$ {result.command}\n"
-            + (f"{stdout}\n" if stdout else "")
-            + (f"{stderr}\n" if stderr else "")
-            + f"[exit {exit_code}]"
-        )
-    return "\n\n".join(parts)
-
-
-def _is_follow_mode_command(command: str) -> bool:
-    normalized = command.strip()
-    return any(pattern.search(normalized) for pattern in _FOLLOW_MODE_COMMAND_PATTERNS)
-
-
-def _normalize_command_text(command: str) -> str:
-    return " ".join(command.strip().split())
-
-
-def _looks_like_shell_command(text: str) -> bool:
-    normalized = _normalize_command_text(text)
-    if not normalized:
-        return False
-    first_token = normalized.split()[0]
-    if " " not in normalized:
-        return re.match(r"^[A-Za-z][A-Za-z0-9_.:-]*$", first_token) is not None
-    return re.match(r"^[A-Za-z0-9_./:+-]+$", first_token) is not None
-
-
-def _extract_subject_command_candidates(reply: str) -> tuple[str, ...]:
-    candidates: list[str] = []
-
-    def _append(text: str) -> None:
-        normalized = _normalize_command_text(text)
-        if normalized and _looks_like_shell_command(normalized) and normalized not in candidates:
-            candidates.append(normalized)
-
-    for match in _GENERIC_CODE_BLOCK_RE.finditer(reply):
-        _append(match.group(1))
-    for match in _INLINE_CODE_RE.finditer(reply):
-        _append(match.group(1))
-    for match in _ASSISTANT_COMMAND_HINT_RE.finditer(reply):
-        candidate = _TRAILING_EXPLANATION_RE.sub("", match.group(1)).strip(" :")
-        _append(candidate)
-    return tuple(candidates)
-
-
-def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
-    return (
-        "You are a frustrated human user at a Linux terminal. You do not know why your machine is broken or what caused it.\n\n"
-        f"Your situation: {observable_problem_statement}\n\n"
-        "Rules:\n"
-        "- Stay in character as a non-expert user who has shell access but limited Linux knowledge.\n"
-        "- When the assistant asks you to run a command, request execution using a host-run fenced block:\n\n"
-        "```host-run\n"
-        "<command here>\n"
-        "```\n\n"
-        "  The harness will run it and give you the real output on the next turn.\n"
-        "- Only request commands the assistant explicitly asked you to run. Do not invent diagnostics.\n"
-        "- Relay the exact command the assistant requested. Do not add sudo, extra flags, extra subcommands, or a more specific variant on your own.\n"
-        "- Do not combine multiple commands unless the assistant explicitly requested multiple separate commands.\n"
-        "- If the assistant did not give an exact command, ask what exact command to run instead of guessing.\n"
-        "- Never fabricate command output. Never say \"Fixed\" or \"Done\" unless you have seen actual output confirming repair.\n"
-        "- Do not send /approve tokens, slash commands, or tool-routing syntax.\n"
-        "- Do not write like an AI assistant. Write like a confused user.\n"
-        "- When you have observed output that confirms the problem stated above is resolved, reply with exactly: REPAIR_CONFIRMED"
-    )
 
 
 def _role_for_subject_message() -> str:
@@ -143,17 +43,28 @@ class BenchmarkRunOrchestrator:
         controller_factory: SandboxControllerFactory,
         subject_adapters: dict[str, SubjectAdapter],
         store: EvalHarnessStore,
+        user_proxy_llm: UserProxyLLMClient | None = None,
+        progress: FsmProgressSink | None = None,
     ):
         self.backend = backend
         self.controller_factory = controller_factory
         self.subject_adapters = dict(subject_adapters)
         self.store = store
+        self._user_proxy_llm = user_proxy_llm
+        self.progress = progress
 
-    def _build_proxy_message(self, transcript: tuple[tuple[str, str], ...], subject_reply: str) -> str:
-        rendered = "\n".join(f"{role}: {content}" for role, content in transcript)
-        return (
-            f"Conversation so far:\n{rendered}\n\n"
-            f"Assistant just said:\n{subject_reply}"
+    def _get_user_proxy_llm(self) -> UserProxyLLMClient:
+        """Return the injected client or build one from backend config."""
+        if self._user_proxy_llm is not None:
+            return self._user_proxy_llm
+        # Try to get config from AWS backend
+        cfg = getattr(getattr(self.backend, "config", None), "user_proxy_runtime", None)
+        if cfg is not None:
+            return UserProxyLLMClient(cfg)
+        raise RuntimeError(
+            "No user_proxy_llm client configured. "
+            "Pass user_proxy_llm= to BenchmarkRunOrchestrator or set "
+            "backend.config.user_proxy_runtime."
         )
 
     def _repair_result_payload(self, scenario, command_results) -> dict:
@@ -174,9 +85,6 @@ class BenchmarkRunOrchestrator:
             return message
         return exc.__class__.__name__
 
-    def _proxy_reply_has_approval_leak(self, reply: str) -> bool:
-        return bool(_PROXY_APPROVAL_RE.search(reply))
-
     def _repair_checks_pass(self, scenario, command_results) -> bool:
         if len(command_results) != len(scenario.repair_checks):
             return False
@@ -184,30 +92,6 @@ class BenchmarkRunOrchestrator:
         if not pairs:
             return False
         return all(check.is_satisfied_by(result) for check, result in pairs)
-
-    def _proxy_host_run_is_authorized(self, subject_reply: str, host_run_commands: tuple[str, ...]) -> bool:
-        if not host_run_commands:
-            return True
-        allowed_commands = _extract_subject_command_candidates(subject_reply)
-        if not allowed_commands:
-            return False
-        allowed = {_normalize_command_text(item) for item in allowed_commands}
-        return all(_normalize_command_text(item) in allowed for item in host_run_commands)
-
-    def _proxy_authorization_reminder(self, subject_reply: str) -> str:
-        allowed_commands = _extract_subject_command_candidates(subject_reply)
-        if allowed_commands:
-            rendered = "\n".join(f"- {item}" for item in allowed_commands)
-            return (
-                "You are a human user relaying commands, not choosing them. "
-                "Use only the exact command(s) the assistant explicitly requested below. "
-                "Do not add sudo, extra flags, extra commands, or a more specific variant.\n\n"
-                f"Allowed command(s):\n{rendered}"
-            )
-        return (
-            "The assistant did not give an exact command to run. "
-            "Do not guess or improvise. Ask what exact command they want you to run."
-        )
 
     def _record_command_results(self, *, evaluation_run_id: str, seq: int, actor_role: str, command_results: tuple) -> int:
         for result in command_results:
@@ -242,21 +126,6 @@ class BenchmarkRunOrchestrator:
             command_results=repair_results,
         )
         return repair_results, seq
-
-    def _looks_like_closure_reply(self, reply: str) -> bool:
-        stripped = reply.strip()
-        if not stripped:
-            return False
-        if "```host-run" in stripped.lower():
-            return False
-        return bool(_PROXY_CLOSURE_RE.search(stripped))
-
-    def _proxy_turn_made_progress(self, host_run_commands: tuple[str, ...], proxy_exec_results: tuple) -> bool:
-        if not host_run_commands or not proxy_exec_results:
-            return False
-        if any(not _is_follow_mode_command(command) for command in host_run_commands):
-            return True
-        return any(result.exit_code != 124 for result in proxy_exec_results)
 
     def _benchmark_status_and_summary(self, benchmark_run_id: str, *, interrupted: bool = False) -> tuple[str, dict]:
         evaluation_runs = self.store.list_evaluation_runs(benchmark_run_id)
@@ -301,15 +170,41 @@ class BenchmarkRunOrchestrator:
             session = adapter.create_session(benchmark_run_id, subject_spec)
             session.seed_context(scenario.context_seed)
 
+            # Build the LLM client for the user proxy FSM
+            llm_client = self._get_user_proxy_llm()
+
             user_message = scenario.observable_problem_statement
+            if scenario.initial_diagnostic_commands:
+                diag_results = controller.execute_commands(
+                    scenario.initial_diagnostic_commands,
+                    agent_id=verification_agent_id,
+                    session_key=f"{evaluation_run_id}-initial-diag",
+                )
+                seq = self._record_command_results(
+                    evaluation_run_id=evaluation_run_id,
+                    seq=seq,
+                    actor_role="controller",
+                    command_results=diag_results,
+                )
+                diag_lines = ["\n\nHere's what I'm seeing on the machine:"]
+                for result in diag_results:
+                    diag_lines.append(f"\n\n$ {result.command}")
+                    if result.stdout:
+                        diag_lines.append(f"\n{result.stdout}")
+                    if result.stderr:
+                        diag_lines.append(f"\n{result.stderr}")
+                user_message = user_message + "".join(diag_lines)
+
             scenario_turn_budget = scenario.turn_budget if scenario.turn_budget > 0 else subject_spec.max_turns
             subject_max = subject_spec.max_turns if subject_spec.max_turns > 0 else scenario_turn_budget
             effective_max_turns = min(scenario_turn_budget, subject_max)
             if effective_max_turns <= 0:
                 effective_max_turns = 8  # absolute fallback
-            proxy_exec_calls_remaining = effective_max_turns * 3
+
             consecutive_stalled_turns = 0
             _PROXY_STALL_LIMIT = 3
+            turn_index = 0
+
             for _ in range(effective_max_turns):
                 self.store.append_evaluation_event(
                     evaluation_run_id=evaluation_run_id,
@@ -366,41 +261,74 @@ class BenchmarkRunOrchestrator:
                         adapter_session_metadata=session_metadata,
                         finished=True,
                     )
+                    if self.progress is not None:
+                        try:
+                            self.progress(
+                                fsm_name="benchmark",
+                                scenario_name=getattr(scenario, "scenario_name", ""),
+                                details={"event": "evaluation_completed", "repair_success": True},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
                     return
 
-                user_message = controller.send(
-                    agent_id=user_proxy_agent_id,
-                    message=self._build_proxy_message(
-                        tuple(transcript_pairs),
-                        turn_result.assistant_message,
-                    ),
-                    session_key=f"{evaluation_run_id}-proxy",
-                    system_prompt=_user_proxy_system_prompt(scenario.observable_problem_statement),
+                # Run the user-proxy FSM to generate the next user message
+                proxy_fsm = UserProxyFSM(
+                    llm_client=llm_client,
+                    controller=controller,
+                    evaluation_run_id=evaluation_run_id,
+                    observable_problem_statement=scenario.observable_problem_statement,
+                    scenario_name=getattr(scenario, "scenario_name", ""),
+                    progress=self.progress,
+                    turn=turn_index,
+                )
+                proxy_result = proxy_fsm.run_turn(
+                    list(transcript_pairs),
+                    turn_result.assistant_message,
                 )
 
-                if self._proxy_reply_has_approval_leak(user_message):
-                    reminder = (
-                        "Do not send /approve commands or slash commands. "
-                        "You are a human user. If you need to run a command, use a host-run block."
+                # Record any commands the proxy ran
+                if proxy_result.tool_results:
+                    seq = self._record_command_results(
+                        evaluation_run_id=evaluation_run_id,
+                        seq=seq,
+                        actor_role="user_proxy_exec",
+                        command_results=proxy_result.tool_results,
                     )
-                    user_message = controller.send(
-                        agent_id=user_proxy_agent_id,
-                        message=reminder,
-                        session_key=f"{evaluation_run_id}-proxy",
-                        system_prompt=_user_proxy_system_prompt(scenario.observable_problem_statement),
-                    )
-                    if self._proxy_reply_has_approval_leak(user_message):
-                        self.store.append_evaluation_event(
-                            evaluation_run_id=evaluation_run_id,
-                            seq=seq,
-                            actor_role="user_proxy",
-                            event_kind="skipped_turn",
-                            payload={"reason": "proxy_approval_leak_suppressed"},
-                        )
-                        seq += 1
-                        continue
 
-                if user_message.strip() == "REPAIR_CONFIRMED":
+                turn_index += 1
+
+                if proxy_result.stalled:
+                    consecutive_stalled_turns += 1
+                    if consecutive_stalled_turns >= _PROXY_STALL_LIMIT:
+                        session_metadata = session.close()
+                        session = None
+                        self.store.update_evaluation_run_status(
+                            evaluation_run_id=evaluation_run_id,
+                            status=EvaluationRunStatus.FAILED.value,
+                            repair_success=False,
+                            resolution_result={"reason": "proxy_stalled"},
+                            adapter_session_metadata=session_metadata,
+                            finished=True,
+                        )
+                        if self.progress is not None:
+                            try:
+                                self.progress(
+                                    fsm_name="benchmark",
+                                    scenario_name=getattr(scenario, "scenario_name", ""),
+                                    details={"event": "evaluation_completed", "repair_success": False},
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+                        return
+                    # Use the problem statement as the fallback message and continue
+                    user_message = scenario.observable_problem_statement
+                    continue
+
+                consecutive_stalled_turns = 0
+
+                if proxy_result.closure:
+                    # Proxy declared repair confirmed — verify with repair checks
                     repair_results, seq = self._execute_repair_checks(
                         controller=controller,
                         scenario=scenario,
@@ -419,96 +347,18 @@ class BenchmarkRunOrchestrator:
                         adapter_session_metadata=session_metadata,
                         finished=True,
                     )
+                    if self.progress is not None:
+                        try:
+                            self.progress(
+                                fsm_name="benchmark",
+                                scenario_name=getattr(scenario, "scenario_name", ""),
+                                details={"event": "evaluation_completed", "repair_success": repair_success},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
                     return
 
-                if self._looks_like_closure_reply(user_message):
-                    repair_results, seq = self._execute_repair_checks(
-                        controller=controller,
-                        scenario=scenario,
-                        evaluation_run_id=evaluation_run_id,
-                        seq=seq,
-                        verification_agent_id=verification_agent_id,
-                    )
-                    if self._repair_checks_pass(scenario, repair_results):
-                        session_metadata = session.close()
-                        session = None
-                        self.store.update_evaluation_run_status(
-                            evaluation_run_id=evaluation_run_id,
-                            status=EvaluationRunStatus.COMPLETED.value,
-                            repair_success=True,
-                            resolution_result=self._repair_result_payload(scenario, repair_results),
-                            adapter_session_metadata=session_metadata,
-                            finished=True,
-                        )
-                        return
-                    reminder = (
-                        "Do not close the conversation yet. The issue is not objectively verified as fixed. "
-                        "If the assistant asked for a command, request it with a host-run block. Otherwise explain what still seems broken."
-                    )
-                    user_message = controller.send(
-                        agent_id=user_proxy_agent_id,
-                        message=reminder,
-                        session_key=f"{evaluation_run_id}-proxy",
-                        system_prompt=_user_proxy_system_prompt(scenario.observable_problem_statement),
-                    )
-
-                # Execute any HOST_RUN commands the proxy requested
-                host_run_commands = _parse_host_run_commands(user_message)
-                if host_run_commands and not self._proxy_host_run_is_authorized(turn_result.assistant_message, host_run_commands):
-                    user_message = controller.send(
-                        agent_id=user_proxy_agent_id,
-                        message=self._proxy_authorization_reminder(turn_result.assistant_message),
-                        session_key=f"{evaluation_run_id}-proxy",
-                        system_prompt=_user_proxy_system_prompt(scenario.observable_problem_statement),
-                    )
-                    host_run_commands = _parse_host_run_commands(user_message)
-                    if host_run_commands and not self._proxy_host_run_is_authorized(turn_result.assistant_message, host_run_commands):
-                        self.store.append_evaluation_event(
-                            evaluation_run_id=evaluation_run_id,
-                            seq=seq,
-                            actor_role="user_proxy",
-                            event_kind="skipped_turn",
-                            payload={"reason": "proxy_unapproved_host_run_suppressed"},
-                        )
-                        seq += 1
-                        continue
-                proxy_exec_results = ()
-                if host_run_commands and proxy_exec_calls_remaining > 0:
-                    n = min(len(host_run_commands), proxy_exec_calls_remaining)
-                    commands_to_run = host_run_commands[:n]
-                    proxy_exec_calls_remaining -= n
-                    proxy_exec_results = controller.execute_commands(
-                        commands_to_run,
-                        agent_id="proxy-exec",
-                        session_key=f"{evaluation_run_id}-proxy-exec",
-                    )
-                    seq = self._record_command_results(
-                        evaluation_run_id=evaluation_run_id,
-                        seq=seq,
-                        actor_role="user_proxy_exec",
-                        command_results=proxy_exec_results,
-                    )
-                    # Append real output to the user message that goes to the subject
-                    user_message = user_message + "\n\n" + _render_command_outputs(proxy_exec_results)
-
-                # Stall detection: no productive output and repair still failing
-                turn_had_exec = self._proxy_turn_made_progress(host_run_commands, proxy_exec_results)
-                if not turn_had_exec and not self._repair_checks_pass(scenario, repair_results):
-                    consecutive_stalled_turns += 1
-                    if consecutive_stalled_turns >= _PROXY_STALL_LIMIT:
-                        session_metadata = session.close()
-                        session = None
-                        self.store.update_evaluation_run_status(
-                            evaluation_run_id=evaluation_run_id,
-                            status=EvaluationRunStatus.FAILED.value,
-                            repair_success=False,
-                            resolution_result={"reason": "proxy_stalled"},
-                            adapter_session_metadata=session_metadata,
-                            finished=True,
-                        )
-                        return
-                else:
-                    consecutive_stalled_turns = 0
+                user_message = proxy_result.user_message
 
             session_metadata = session.close()
             session = None

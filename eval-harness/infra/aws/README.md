@@ -21,7 +21,6 @@ Every golden AMI should include at least:
 - `EvalHarness=true`
 - `EvalImageRole=golden`
 - `EvalTargetImage=<target image alias>`
-- `OpenClawVersion=<version>`
 
 Every transient resource should include at least:
 - `EvalHarness=true`

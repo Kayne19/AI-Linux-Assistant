@@ -10,10 +10,11 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .adapters.ai_linux_assistant_http import AILinuxAssistantHttpAdapter, AILinuxAssistantHttpConfig
 from .artifacts import ArtifactStore, PostgresArtifactExporter
-from .backends.aws import AwsEc2Backend, AwsEc2BackendConfig, AwsTargetImageConfig, OpenClawRuntimeConfig
-from .controllers.openclaw import OpenClawControllerFactory, OpenClawControllerFactoryConfig
+from .backends.aws import AwsEc2Backend, AwsEc2BackendConfig, AwsTargetImageConfig
+from .controllers.ssm import SsmControllerFactory, SsmControllerFactoryConfig
 from .judges.openai_compatible import OpenAICompatibleBlindJudge, OpenAICompatibleBlindJudgeConfig
 from .orchestration import BenchmarkRunOrchestrator, JudgeJobOrchestrator, ScenarioSetupOrchestrator
+from .orchestration.progress import stderr_progress_sink
 from .persistence import EvalHarnessStore, build_engine, build_session_factory, create_all_tables
 from .planners.openai_compatible import OpenAICompatibleScenarioPlanner, OpenAICompatibleScenarioPlannerConfig
 from .scenario import load_scenario, validate_scenario
@@ -112,34 +113,7 @@ def _aws_backend_from_config(config: dict[str, Any], *, controller_config: dict[
             target_image=target_image,
             packer_template_dir=_resolve_project_path(str(item.get("packer_template_dir", "infra/aws/packer"))),
             distro_vars_file=_resolve_project_path(distro_vars_file),
-            openclaw_version=str(item.get("openclaw_version", "2026.4.11")),
-            node_major_version=str(item.get("node_major_version", "24")),
             packer_bin=str(item.get("packer_bin", "packer")),
-        )
-    runtime_payload = dict((controller_config or {}).get("runtime", {}) or {})
-    openclaw_runtime: OpenClawRuntimeConfig | None = None
-    if runtime_payload:
-        provider = str(runtime_payload.get("provider", "")).strip()
-        model = str(runtime_payload.get("model", "")).strip()
-        api_key = str(runtime_payload.get("api_key", "")).strip()
-        api_key_env_var = str(runtime_payload.get("api_key_env_var", "")).strip()
-        if api_key_env_var and not api_key:
-            api_key = str(os.getenv(api_key_env_var, "")).strip()
-            if not api_key:
-                raise ValueError(f"Environment variable {api_key_env_var} is not set.")
-        if not provider:
-            raise ValueError("controller.runtime.provider is required when controller.runtime is configured.")
-        if not model:
-            raise ValueError("controller.runtime.model is required when controller.runtime is configured.")
-        if not api_key:
-            raise ValueError(
-                "controller.runtime.api_key or controller.runtime.api_key_env_var is required when controller.runtime is configured."
-            )
-        openclaw_runtime = OpenClawRuntimeConfig(
-            provider=provider,
-            model=model,
-            api_key=api_key,
-            thinking=str(runtime_payload.get("thinking", "medium")).strip() or "medium",
         )
     backend_config = AwsEc2BackendConfig(
         region=str(config["region"]),
@@ -160,24 +134,20 @@ def _aws_backend_from_config(config: dict[str, Any], *, controller_config: dict[
         target_images=target_images,
         golden_ami_id=(str(config["golden_ami_id"]).strip() if config.get("golden_ami_id") else None),
         golden_image_build_timeout_seconds=int(config.get("golden_image_build_timeout_seconds", 3600)),
-        openclaw_eval_token=(str((controller_config or {}).get("token", "")).strip()),
-        openclaw_runtime=openclaw_runtime,
     )
     return AwsEc2Backend(backend_config)
 
 
-def _controller_factory_from_config(config: dict[str, Any]) -> OpenClawControllerFactory:
-    if config.get("type", "openclaw") != "openclaw":
-        raise ValueError(f"Unsupported controller type {config.get('type')!r}.")
-    factory_config = OpenClawControllerFactoryConfig(
-        token=str(config["token"]),
+def _controller_factory_from_config(config: dict[str, Any]) -> SsmControllerFactory:
+    controller_type = str(config.get("type") or config.get("kind") or "ssm").strip()
+    if controller_type != "ssm":
+        raise ValueError(f"Unsupported controller type {controller_type!r}. Only 'ssm' is supported.")
+    ssm_config = SsmControllerFactoryConfig(
         default_session_key_prefix=str(config.get("default_session_key_prefix", "eval-harness")),
-        request_timeout_seconds=int(config.get("request_timeout_seconds", 900)),
-        fixed_base_url=(str(config["fixed_base_url"]).strip() if config.get("fixed_base_url") else None),
-        aws_region=(str(config["aws_region"]).strip() if config.get("aws_region") else None),
-        remote_port=int(config.get("remote_port", 18789)),
+        aws_region=str(config["aws_region"]),
+        command_timeout_seconds=int(config.get("command_timeout_seconds", 600)),
     )
-    return OpenClawControllerFactory(factory_config)
+    return SsmControllerFactory(ssm_config)
 
 
 def _planner_from_config(config: dict[str, Any]) -> OpenAICompatibleScenarioPlanner:
@@ -282,6 +252,7 @@ def _command_verify_scenario(args: argparse.Namespace) -> int:
         controller_factory=controller_factory,
         planner=planner,
         store=store,
+        progress=stderr_progress_sink(),
     )
     request = PlannerScenarioRequest.from_dict(_load_json(args.request))
     result = orchestrator.run(
@@ -311,6 +282,7 @@ def _command_run_benchmark(args: argparse.Namespace) -> int:
         controller_factory=controller_factory,
         subject_adapters=subject_adapters,
         store=store,
+        progress=stderr_progress_sink(),
     )
     previous_sigint = signal.getsignal(signal.SIGINT)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
@@ -352,7 +324,7 @@ def _command_export_artifact_pack(args: argparse.Namespace) -> int:
     pack = exporter.export_benchmark_run(
         args.benchmark_run_id,
         backend_name=str(dict(config.get("backend", {}) or {}).get("type", "aws_ec2")),
-        controller_name=str(dict(config.get("controller", {}) or {}).get("type", "openclaw")),
+        controller_name=str(dict(config.get("controller", {}) or {}).get("type", "ssm")),
     )
     artifact_store = ArtifactStore(args.artifacts_root)
     path = artifact_store.save_pack(pack)

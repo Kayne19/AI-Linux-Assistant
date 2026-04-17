@@ -11,13 +11,11 @@
     ],
     "instance_profile_name": "env:EVAL_HARNESS_INSTANCE_PROFILE_NAME",
     "instance_type": "t3.small",
-    "default_target_image": "debian-12-openclaw-golden",
+    "default_target_image": "debian-12-ssm-golden",
     "target_images": {
-      "debian-12-openclaw-golden": {
+      "debian-12-ssm-golden": {
         "packer_template_dir": "infra/aws/packer",
-        "distro_vars_file": "infra/aws/packer/distros/debian-12.pkrvars.hcl",
-        "openclaw_version": "2026.4.11",
-        "node_major_version": "24"
+        "distro_vars_file": "infra/aws/packer/distros/debian-12.pkrvars.hcl"
       }
     },
     "default_tags": {
@@ -26,18 +24,10 @@
     }
   },
   "controller": {
-    "type": "openclaw",
-    "token": "env:EVAL_HARNESS_OPENCLAW_TOKEN",
-    "default_session_key_prefix": "eval-harness",
+    "type": "ssm",
     "aws_region": "env:EVAL_HARNESS_AWS_REGION",
-    "remote_port": 18789,
-    "request_timeout_seconds": 180,
-    "runtime": {
-      "provider": "openai",
-      "model": "gpt-5.4-mini",
-      "thinking": "medium",
-      "api_key_env_var": "EVAL_HARNESS_OPENCLAW_PROVIDER_API_KEY"
-    }
+    "default_session_key_prefix": "eval-harness",
+    "command_timeout_seconds": 600
   },
   "planner": {
     "type": "openai_compatible",

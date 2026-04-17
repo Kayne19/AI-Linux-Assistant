@@ -29,3 +29,15 @@ class ScenarioPlanner(ABC):
         correction_count: int,
     ) -> PlannerReviewDecision:
         raise NotImplementedError
+
+    @abstractmethod
+    def plan_rectification(
+        self,
+        scenario: ScenarioSpec,
+        *,
+        failed_command_results: tuple[CommandExecutionResult, ...],
+        correction_instructions: tuple[str, ...],
+        round_index: int,
+    ) -> tuple[str, ...]:
+        """Return a concrete list of shell commands that should rectify failed verification."""
+        raise NotImplementedError

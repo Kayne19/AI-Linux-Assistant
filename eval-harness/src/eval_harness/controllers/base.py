@@ -12,15 +12,11 @@ class SandboxController(ABC):
     name: str
 
     @abstractmethod
-    def send(self, *, agent_id: str, message: str, session_key: str | None = None) -> str:
-        raise NotImplementedError
-
-    @abstractmethod
     def execute_commands(
         self,
         commands: tuple[str, ...],
         *,
-        agent_id: str,
+        agent_id: str = "",
         session_key: str | None = None,
     ) -> tuple[CommandExecutionResult, ...]:
         raise NotImplementedError
@@ -29,7 +25,7 @@ class SandboxController(ABC):
         self,
         command: str,
         *,
-        agent_id: str,
+        agent_id: str = "",
         session_key: str | None = None,
     ) -> CommandExecutionResult:
         results = self.execute_commands((command,), agent_id=agent_id, session_key=session_key)
