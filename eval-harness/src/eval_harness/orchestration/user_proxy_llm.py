@@ -134,7 +134,7 @@ class UserProxyLLMClient:
         body: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
-            "max_tokens": self.config.max_output_tokens,
+            "max_completion_tokens": self.config.max_output_tokens,
         }
         if tools:
             body["tools"] = tools

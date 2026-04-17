@@ -1159,7 +1159,7 @@ def test_benchmark_proxy_sends_system_prompt_on_each_turn() -> None:
 
     class TrackingProxyLLM(FakeUserProxyLLM):
         def chat(self, messages, *, tools=None):
-            sys_msgs = [m["content"] for m in messages if m.get("role") == "system"]
+            sys_msgs = [m["content"] for m in messages if m.get("role") in ("system", "developer")]
             received_system_prompts.extend(sys_msgs)
             return super().chat(messages, tools=tools)
 

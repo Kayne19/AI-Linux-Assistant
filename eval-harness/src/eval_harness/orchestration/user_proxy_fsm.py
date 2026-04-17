@@ -229,7 +229,7 @@ class UserProxyFSM:
         proxy LLM without maintaining server-side state.
         """
         system_msg = {
-            "role": "system",
+            "role": "developer",
             "content": _user_proxy_system_prompt(self.observable_problem_statement),
         }
         ctx = UserProxyContext(
