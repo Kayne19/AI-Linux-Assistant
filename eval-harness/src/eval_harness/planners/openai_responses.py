@@ -32,7 +32,13 @@ def _verification_check_schema(*, description: str) -> dict[str, Any]:
             "match_mode": {"type": "string", "enum": ["all", "any"]},
             "timeout_seconds": {"type": "integer"},
         },
-        "required": ["name", "command", "intent"],
+        "required": [
+            "name", "command", "intent",
+            "expected_substrings", "expected_regexes",
+            "unexpected_substrings", "unexpected_regexes",
+            "expected_exact_match", "expected_exit_code",
+            "match_mode", "timeout_seconds",
+        ],
         "additionalProperties": False,
     }
 
@@ -72,8 +78,8 @@ def _scenario_schema(*, description: str) -> dict[str, Any]:
                 },
             },
             "initial_diagnostic_commands": {"type": "array", "items": {"type": "string"}},
-            "metadata": {"type": "object", "additionalProperties": True},
-            "planner_metadata": {"type": "object", "additionalProperties": True},
+            "metadata": {"type": "object", "properties": {}, "additionalProperties": False},
+            "planner_metadata": {"type": "object", "properties": {}, "additionalProperties": False},
         },
         "required": [
             "scenario_name",
@@ -87,6 +93,10 @@ def _scenario_schema(*, description: str) -> dict[str, Any]:
             "repair_checks",
             "judge_rubric",
             "turn_budget",
+            "context_seed",
+            "initial_diagnostic_commands",
+            "metadata",
+            "planner_metadata",
         ],
         "additionalProperties": False,
     }
@@ -100,9 +110,9 @@ def _planner_review_schema() -> dict[str, Any]:
             "summary": {"type": "string"},
             "correction_instructions": {"type": "array", "items": {"type": "string"}},
             "updated_observable_problem_statement": {"type": "string"},
-            "metadata": {"type": "object", "additionalProperties": True},
+            "metadata": {"type": "object", "properties": {}, "additionalProperties": False},
         },
-        "required": ["outcome", "summary", "correction_instructions", "updated_observable_problem_statement"],
+        "required": ["outcome", "summary", "correction_instructions", "updated_observable_problem_statement", "metadata"],
         "additionalProperties": False,
     }
 
@@ -180,7 +190,12 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
             "Before finalizing repair_checks, ask whether any check could fail even though the system is repaired; if so, replace or remove it. "
             "Repair checks must be robust and functionally verify the system rather than relying strictly on generic service states. "
             "repair_checks must collectively cover end-to-end functional restoration of the user's stated problem. If the observable problem is a user-visible action (e.g. 'I cannot SSH in,' 'curl to my service times out,' 'my cron job never runs'), at least one repair_check must actually attempt that action and verify it succeeds — not merely assert that a related daemon is loaded or active. State-level checks (systemctl is-active, ss -tlnp, file existence) are allowed in addition to a functional check, but never as the sole evidence of repair. "
-            "The observable problem statement must not reveal the sabotage method. "
+            "The observable_problem_statement must be written as a frustrated non-expert user describing what they saw and tried — not as an expert explaining the root cause. "
+            "It MAY include verbatim terminal error output the user would naturally have seen (e.g. a failed systemctl status snippet, a curl error, a log line they pasted), because that is what a real user would share. "
+            "It must NOT include: the diagnosis of why the error occurred, specific config file paths or line numbers to fix, or any statement that tells the subject where to look or what to change. "
+            "The error output gives surface-level evidence; the subject must still figure out the cause and the fix. "
+            "Example (correct): 'My website went down. I tried restarting nginx and got: Job for nginx.service failed. See `systemctl status nginx.service` for details.' "
+            "Example (incorrect): 'nginx will not start because /etc/nginx/sites-enabled/default is missing a closing brace — fix that file.' "
             "Keep the broken state objectively verifiable before cloning."
         )
 

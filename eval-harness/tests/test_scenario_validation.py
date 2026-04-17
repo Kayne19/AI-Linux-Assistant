@@ -1,6 +1,6 @@
 import pytest
 
-from eval_harness.models import ScenarioSpec, VerificationCheck
+from eval_harness.models import CommandExecutionResult, ScenarioSpec, VerificationCheck
 from eval_harness.scenario import ScenarioValidationError, validate_scenario
 
 
@@ -111,3 +111,55 @@ def test_validate_scenario_accepts_regex_and_negative_expectations() -> None:
     )
 
     validate_scenario(spec)
+
+
+# ---------------------------------------------------------------------------
+# Regression: "active" in "inactive" false positive
+# ---------------------------------------------------------------------------
+
+
+def _inactive_result(command: str) -> CommandExecutionResult:
+    return CommandExecutionResult(command=command, stdout="inactive", stderr="", exit_code=3)
+
+
+def _active_result(command: str) -> CommandExecutionResult:
+    return CommandExecutionResult(command=command, stdout="active", stderr="", exit_code=0)
+
+
+def test_repair_check_rejects_inactive_service_original_form():
+    """'active' in 'inactive' must not be a false positive for the original command form."""
+    check = VerificationCheck.from_dict({
+        "name": "svc-active",
+        "command": "systemctl is-active sshd",
+        "expected_substrings": ["active"],
+        "match_mode": "all",
+    })
+    result = _inactive_result(check.command)
+    assert not check.is_satisfied_by(result), "inactive service must not satisfy an active-check"
+    assert check.is_satisfied_by(_active_result(check.command))
+
+
+def test_repair_check_rejects_inactive_service_normalized_form():
+    """Same guarantee when the command was already normalized and stored in the DB."""
+    original = VerificationCheck.from_dict({
+        "name": "svc-active",
+        "command": "systemctl is-active postgresql@14",
+        "expected_substrings": ["active"],
+        "match_mode": "all",
+    })
+    # Round-trip through to_dict / from_dict simulates loading from the DB.
+    reloaded = VerificationCheck.from_dict(original.to_dict())
+    result = _inactive_result(reloaded.command)
+    assert not reloaded.is_satisfied_by(result), "reload from DB must not produce a false positive"
+    assert reloaded.is_satisfied_by(_active_result(reloaded.command))
+
+
+def test_verification_probe_or_true_not_broken():
+    """Probe with '|| true' checks broken state — must still pass when service is inactive."""
+    check = VerificationCheck.from_dict({
+        "name": "svc-broken",
+        "command": "systemctl is-active nginx || true",
+        "expected_substrings": ["inactive", "failed"],
+        "match_mode": "any",
+    })
+    assert check.is_satisfied_by(_inactive_result(check.command))

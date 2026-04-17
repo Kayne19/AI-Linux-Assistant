@@ -12,8 +12,25 @@ from ..mapping import scenario_spec_from_records, subject_spec_from_record
 from ..models import EvaluationRunStatus
 from ..persistence.store import EvalHarnessStore
 from .progress import FsmProgressSink
-from .user_proxy_fsm import UserProxyFSM
+from .user_proxy_fsm import USER_PROXY_MODES, UserProxyFSM
 from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMClientConfig
+
+_STATE_CHANGING_PROXY_TOOLS = frozenset({"run_command", "apply_text_edit", "interactive_send"})
+_SOFT_CLOSURE_PHRASES = (
+    "thanks",
+    "thank you",
+    "looks good",
+    "all good",
+    "all set",
+    "working now",
+    "works now",
+    "seems fixed",
+    "it started",
+    "it works",
+    "it's back",
+    "its back",
+    "that fixed it",
+)
 
 
 def _role_for_subject_message() -> str:
@@ -35,6 +52,7 @@ class BenchmarkRunOrchestrator:
         subject_adapters: dict[str, SubjectAdapter],
         store: EvalHarnessStore,
         user_proxy_llm: UserProxyLLMClient | None = None,
+        user_proxy_mode: str = "strict_relay",
         progress: FsmProgressSink | None = None,
     ):
         self.backend = backend
@@ -42,6 +60,10 @@ class BenchmarkRunOrchestrator:
         self.subject_adapters = dict(subject_adapters)
         self.store = store
         self._user_proxy_llm = user_proxy_llm
+        normalized_mode = str(user_proxy_mode or "strict_relay").strip().lower() or "strict_relay"
+        if normalized_mode not in USER_PROXY_MODES:
+            raise ValueError(f"Unsupported user proxy mode {user_proxy_mode!r}")
+        self.user_proxy_mode = normalized_mode
         self.progress = progress
 
     def _get_user_proxy_llm(self) -> UserProxyLLMClient:
@@ -59,15 +81,30 @@ class BenchmarkRunOrchestrator:
         )
 
     def _repair_result_payload(self, scenario, command_results) -> dict:
+        snapshot = self._repair_snapshot(scenario, command_results)
         return {
-            "checks": [
+            "checks": list(snapshot["last_repair_check_results"]),
+            **snapshot,
+        }
+
+    def _repair_snapshot(self, scenario, command_results) -> dict:
+        checks: list[dict[str, Any]] = []
+        failed_check_names: list[str] = []
+        for check, result in zip(scenario.repair_checks, command_results, strict=True):
+            passed = check.is_satisfied_by(result)
+            checks.append(
                 {
                     "check": check.to_dict(),
                     "result": result.to_dict(),
-                    "passed": check.is_satisfied_by(result),
+                    "passed": passed,
                 }
-                for check, result in zip(scenario.repair_checks, command_results, strict=True)
-            ]
+            )
+            if not passed:
+                failed_check_names.append(check.name or result.command)
+        return {
+            "last_repair_check_results": checks,
+            "passed_check_count": len(checks) - len(failed_check_names),
+            "failed_check_names": failed_check_names,
         }
 
     def _exception_reason(self, exc: BaseException) -> str:
@@ -83,6 +120,61 @@ class BenchmarkRunOrchestrator:
         if not pairs:
             return False
         return all(check.is_satisfied_by(result) for check, result in pairs)
+
+    def _subject_message_summary(self, message: str) -> str:
+        compact = " ".join(str(message or "").split())
+        if len(compact) <= 200:
+            return compact
+        return f"{compact[:197]}..."
+
+    def _failure_resolution_payload(
+        self,
+        *,
+        reason: str,
+        last_repair_snapshot: dict | None,
+        last_subject_message_summary: str,
+        extra: dict[str, Any] | None = None,
+    ) -> dict:
+        payload = {
+            "reason": reason,
+            "last_repair_check_results": list((last_repair_snapshot or {}).get("last_repair_check_results", [])),
+            "passed_check_count": int((last_repair_snapshot or {}).get("passed_check_count", 0)),
+            "failed_check_names": list((last_repair_snapshot or {}).get("failed_check_names", [])),
+            "last_subject_message_summary": last_subject_message_summary,
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    def _soft_closure_detected(self, message: str) -> bool:
+        lowered = str(message or "").strip().lower()
+        if not lowered:
+            return False
+        return any(phrase in lowered for phrase in _SOFT_CLOSURE_PHRASES)
+
+    def _complete_success(
+        self,
+        *,
+        evaluation_run_id: str,
+        session: SubjectSession | None = None,
+        session_metadata: dict | None,
+        scenario,
+        repair_results: tuple,
+    ) -> None:
+        if session_metadata is not None:
+            resolved_session_metadata = session_metadata
+        elif session is not None:
+            resolved_session_metadata = session.close()
+        else:
+            resolved_session_metadata = {}
+        self.store.update_evaluation_run_status(
+            evaluation_run_id=evaluation_run_id,
+            status=EvaluationRunStatus.COMPLETED.value,
+            repair_success=True,
+            resolution_result=self._repair_result_payload(scenario, repair_results),
+            adapter_session_metadata=resolved_session_metadata,
+            finished=True,
+        )
 
     def _record_command_results(self, *, evaluation_run_id: str, seq: int, actor_role: str, command_results: tuple) -> int:
         for result in command_results:
@@ -153,6 +245,8 @@ class BenchmarkRunOrchestrator:
         session: SubjectSession | None = None
         seq = 1
         transcript_pairs: list[tuple[str, str]] = []
+        last_repair_snapshot: dict | None = None
+        last_subject_message_summary = ""
         try:
             self.backend.wait_until_ready(clone_handle)
             self.backend.configure_controller_runtime(clone_handle)
@@ -186,10 +280,15 @@ class BenchmarkRunOrchestrator:
                         diag_lines.append(f"\n{result.stderr}")
                 user_message = user_message + "".join(diag_lines)
 
-            scenario_turn_budget = scenario.turn_budget if scenario.turn_budget > 0 else subject_spec.max_turns
-            subject_max = subject_spec.max_turns if subject_spec.max_turns > 0 else scenario_turn_budget
-            effective_max_turns = min(scenario_turn_budget, subject_max)
-            if effective_max_turns <= 0:
+            scenario_turn_budget = scenario.turn_budget if scenario.turn_budget > 0 else 0
+            subject_max = subject_spec.max_turns if subject_spec.max_turns is not None and subject_spec.max_turns > 0 else 0
+            if scenario_turn_budget > 0 and subject_max > 0:
+                effective_max_turns = min(scenario_turn_budget, subject_max)
+            elif scenario_turn_budget > 0:
+                effective_max_turns = scenario_turn_budget
+            elif subject_max > 0:
+                effective_max_turns = subject_max
+            else:
                 effective_max_turns = 8  # absolute fallback
 
             consecutive_stalled_turns = 0
@@ -243,6 +342,7 @@ class BenchmarkRunOrchestrator:
                     },
                 )
                 transcript_pairs.append(("assistant", turn_result.assistant_message))
+                last_subject_message_summary = self._subject_message_summary(turn_result.assistant_message)
                 seq += 1
 
                 for run_event in turn_result.events:
@@ -264,18 +364,17 @@ class BenchmarkRunOrchestrator:
                     verification_agent_id=verification_agent_id,
                 )
                 _passed = self._repair_checks_pass(scenario, repair_results)
+                last_repair_snapshot = self._repair_snapshot(scenario, repair_results)
                 _emit("repair_check_done", {"turn": turn_index_outer, "passed": _passed})
 
                 if _passed:
                     session_metadata = session.close()
                     session = None
-                    self.store.update_evaluation_run_status(
+                    self._complete_success(
                         evaluation_run_id=evaluation_run_id,
-                        status=EvaluationRunStatus.COMPLETED.value,
-                        repair_success=True,
-                        resolution_result=self._repair_result_payload(scenario, repair_results),
-                        adapter_session_metadata=session_metadata,
-                        finished=True,
+                        session_metadata=session_metadata,
+                        scenario=scenario,
+                        repair_results=repair_results,
                     )
                     _emit("evaluation_completed", {"repair_success": True})
                     return
@@ -288,6 +387,7 @@ class BenchmarkRunOrchestrator:
                     observable_problem_statement=scenario.observable_problem_statement,
                     scenario_name=_scenario_name,
                     subject_name=_subject_name,
+                    user_proxy_mode=self.user_proxy_mode,
                     progress=self.progress,
                     turn=turn_index,
                 )
@@ -304,6 +404,31 @@ class BenchmarkRunOrchestrator:
                         actor_role="user_proxy_exec",
                         command_results=proxy_result.tool_results,
                     )
+                    ran_state_changing_tool = any(
+                        result.metadata.get("user_proxy_tool_name") in _STATE_CHANGING_PROXY_TOOLS
+                        for result in proxy_result.tool_results
+                    )
+                    if ran_state_changing_tool:
+                        repair_results, seq = self._execute_repair_checks(
+                            controller=controller,
+                            scenario=scenario,
+                            evaluation_run_id=evaluation_run_id,
+                            seq=seq,
+                            verification_agent_id=verification_agent_id,
+                        )
+                        last_repair_snapshot = self._repair_snapshot(scenario, repair_results)
+                        if self._repair_checks_pass(scenario, repair_results):
+                            session_metadata = session.close()
+                            self._complete_success(
+                                evaluation_run_id=evaluation_run_id,
+                                session=session,
+                                session_metadata=session_metadata,
+                                scenario=scenario,
+                                repair_results=repair_results,
+                            )
+                            session = None
+                            _emit("evaluation_completed", {"repair_success": True, "source": "post_proxy_action"})
+                            return
 
                 turn_index += 1
 
@@ -316,7 +441,11 @@ class BenchmarkRunOrchestrator:
                             evaluation_run_id=evaluation_run_id,
                             status=EvaluationRunStatus.FAILED.value,
                             repair_success=False,
-                            resolution_result={"reason": "proxy_stalled"},
+                            resolution_result=self._failure_resolution_payload(
+                                reason="proxy_stalled",
+                                last_repair_snapshot=last_repair_snapshot,
+                                last_subject_message_summary=last_subject_message_summary,
+                            ),
                             adapter_session_metadata=session_metadata,
                             finished=True,
                         )
@@ -328,6 +457,28 @@ class BenchmarkRunOrchestrator:
 
                 consecutive_stalled_turns = 0
 
+                if self._soft_closure_detected(proxy_result.user_message):
+                    repair_results, seq = self._execute_repair_checks(
+                        controller=controller,
+                        scenario=scenario,
+                        evaluation_run_id=evaluation_run_id,
+                        seq=seq,
+                        verification_agent_id=verification_agent_id,
+                    )
+                    last_repair_snapshot = self._repair_snapshot(scenario, repair_results)
+                    if self._repair_checks_pass(scenario, repair_results):
+                        session_metadata = session.close()
+                        self._complete_success(
+                            evaluation_run_id=evaluation_run_id,
+                            session=session,
+                            session_metadata=session_metadata,
+                            scenario=scenario,
+                            repair_results=repair_results,
+                        )
+                        session = None
+                        _emit("evaluation_completed", {"repair_success": True, "source": "soft_closure"})
+                        return
+
                 user_message = proxy_result.user_message
 
             session_metadata = session.close()
@@ -336,7 +487,11 @@ class BenchmarkRunOrchestrator:
                 evaluation_run_id=evaluation_run_id,
                 status=EvaluationRunStatus.FAILED.value,
                 repair_success=False,
-                resolution_result={"reason": "turn_budget_exhausted"},
+                resolution_result=self._failure_resolution_payload(
+                    reason="turn_budget_exhausted",
+                    last_repair_snapshot=last_repair_snapshot,
+                    last_subject_message_summary=last_subject_message_summary,
+                ),
                 adapter_session_metadata=session_metadata,
                 finished=True,
             )
@@ -352,7 +507,12 @@ class BenchmarkRunOrchestrator:
                 evaluation_run_id=evaluation_run_id,
                 status=EvaluationRunStatus.FAILED.value,
                 repair_success=False,
-                resolution_result={"reason": self._exception_reason(exc), "exception_type": exc.__class__.__name__},
+                resolution_result=self._failure_resolution_payload(
+                    reason=self._exception_reason(exc),
+                    last_repair_snapshot=last_repair_snapshot,
+                    last_subject_message_summary=last_subject_message_summary,
+                    extra={"exception_type": exc.__class__.__name__},
+                ),
                 adapter_session_metadata=session_metadata,
                 finished=True,
             )

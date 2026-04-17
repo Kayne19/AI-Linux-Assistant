@@ -325,3 +325,32 @@ def test_interactive_session_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "send-keys" in fake.send_command_calls[2]["Parameters"]["commands"][0]
     assert "tmux capture-pane" in fake.send_command_calls[3]["Parameters"]["commands"][0]
     assert "tmux clear-history" in fake.send_command_calls[4]["Parameters"]["commands"][0]
+
+
+def test_open_session_reuses_existing_session_without_reset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(time, "sleep", lambda *a, **k: None)
+    fake = FakeSsmClient()
+    fake._enqueue("cmd-close-1", [_success_invocation()])
+    fake._enqueue("cmd-new-1", [_success_invocation()])
+
+    ctrl = _make_controller(fake)
+
+    first = ctrl.open_session("test-interactive")
+    second = ctrl.open_session("test-interactive")
+
+    assert first is second
+    assert len(fake.send_command_calls) == 2
+
+
+def test_interactive_send_nonzero_exit_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(time, "sleep", lambda *a, **k: None)
+    fake = FakeSsmClient()
+    fake._enqueue("cmd-close-1", [_success_invocation()])
+    fake._enqueue("cmd-new-1", [_success_invocation()])
+    fake._enqueue("cmd-send", [_success_invocation(stderr="tmux missing\n", exit_code=1)])
+
+    ctrl = _make_controller(fake)
+    session = ctrl.open_session("test-interactive")
+
+    with pytest.raises(RuntimeError, match="tmux missing"):
+        session.send_input("hello")

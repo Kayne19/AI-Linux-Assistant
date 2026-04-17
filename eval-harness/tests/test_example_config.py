@@ -19,6 +19,7 @@ def test_aws_ai_linux_assistant_example_config_is_valid_json():
     assert planner["provider"] == "openai"
     assert judge["provider"] == "openai"
     assert user_proxy_llm["provider"] == "openai"
+    assert user_proxy_llm["mode"] == "pragmatic_human"
     assert "base_url" not in planner
     assert "base_url" not in judge
     assert "base_url" not in user_proxy_llm
@@ -27,3 +28,4 @@ def test_aws_ai_linux_assistant_example_config_is_valid_json():
     assert backend["target_images"]["debian-12-ssm-golden"]["distro_vars_file"] == "infra/aws/packer/distros/debian-12.pkrvars.hcl"
     assert controller["type"] == "ssm"
     assert controller["aws_region"] == "env:EVAL_HARNESS_AWS_REGION"
+    assert "max_turns" not in payload["subjects"][0]["adapter_config"]

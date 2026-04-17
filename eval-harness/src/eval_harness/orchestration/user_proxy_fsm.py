@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable
 
-from ..controllers.base import InteractiveSession, SandboxController
+from ..controllers.base import SandboxController
 from ..models import CommandExecutionResult
 from .fs_helpers import apply_text_edit, read_file
 from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMResponse, UserProxyToolCall
@@ -48,18 +48,25 @@ _INTERACTIVE_SEND_TOOL: dict[str, Any] = {
     "type": "function",
     "name": "interactive_send",
     "description": (
-        "Send keystrokes or text to the active interactive terminal session. "
-        "Use this when you are inside an interactive program like nano or top."
+        "Send text and/or named control keys to the active interactive terminal session. "
+        "Use this when you are inside an interactive program like nano or top. "
+        "Supported control_keys include ENTER, TAB, ESC, BACKSPACE, UP, DOWN, LEFT, RIGHT, "
+        "CTRL_C, CTRL_D, CTRL_G, CTRL_O, CTRL_U, CTRL_W, CTRL_X, and CTRL_Z."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "input_text": {
                 "type": "string",
-                "description": "The exact text or keystrokes to send to the terminal",
-            }
+                "description": "Literal text to send to the terminal before any control keys. Pass empty string if sending control keys only.",
+            },
+            "control_keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Named control keys to send after input_text. Pass empty array if sending text only.",
+            },
         },
-        "required": ["input_text"],
+        "required": ["input_text", "control_keys"],
         "additionalProperties": False,
     },
     "strict": True,
@@ -74,6 +81,7 @@ _INTERACTIVE_READ_TOOL: dict[str, Any] = {
     "parameters": {
         "type": "object",
         "properties": {},
+        "required": [],
         "additionalProperties": False,
     },
     "strict": True,
@@ -138,13 +146,19 @@ DEFAULT_TOOLS: list[dict[str, Any]] = [
     _INTERACTIVE_READ_TOOL,
 ]
 
+USER_PROXY_MODES = frozenset({"strict_relay", "pragmatic_human"})
+
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
 
-def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
-    return (
+def _user_proxy_system_prompt(observable_problem_statement: str, *, mode: str = "strict_relay") -> str:
+    normalized_mode = str(mode or "strict_relay").strip().lower() or "strict_relay"
+    if normalized_mode not in USER_PROXY_MODES:
+        raise ValueError(f"Unsupported user proxy mode {mode!r}")
+
+    prompt = (
         "You are a frustrated human user at a Linux terminal. You do not know why your machine is broken or what caused it.\n\n"
         f"Your situation: {observable_problem_statement}\n\n"
         "Rules:\n"
@@ -159,6 +173,15 @@ def _user_proxy_system_prompt(observable_problem_statement: str) -> str:
         "- Never fabricate command output or file content.\n"
         "- Do not write like an AI assistant. Write like a confused user."
     )
+    if normalized_mode == "pragmatic_human":
+        prompt += (
+            "\n- In pragmatic_human mode, you may use safe read-only fallbacks when the assistant clearly wants information from the machine but did not spell out the exact command.\n"
+            "- Safe read-only fallbacks are limited to read_file, cat, sed -n, file, ls -l, and readlink -f.\n"
+            "- Use those fallbacks only to inspect files or paths the assistant already pointed you toward.\n"
+            "- Do not infer edits, restarts, package installs, privileged actions, or new diagnostics beyond that narrow read-only fallback set.\n"
+            "- Keep replies short and user-like. Never echo assistant phrasing such as 'please run this command'."
+        )
+    return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +278,7 @@ class UserProxyFSM:
         controller: SandboxController,
         evaluation_run_id: str,
         observable_problem_statement: str,
+        user_proxy_mode: str = "strict_relay",
         max_tool_calls_per_turn: int = 4,
         terminal_id: str = "term-0",
         progress: Callable[..., None] | None = None,
@@ -266,6 +290,10 @@ class UserProxyFSM:
         self.controller = controller
         self.evaluation_run_id = evaluation_run_id
         self.observable_problem_statement = observable_problem_statement
+        normalized_mode = str(user_proxy_mode or "strict_relay").strip().lower() or "strict_relay"
+        if normalized_mode not in USER_PROXY_MODES:
+            raise ValueError(f"Unsupported user proxy mode {user_proxy_mode!r}")
+        self.user_proxy_mode = normalized_mode
         self.max_tool_calls_per_turn = max_tool_calls_per_turn
         self.terminal_id = terminal_id
         self.progress = progress
@@ -313,7 +341,10 @@ class UserProxyFSM:
             transcript=list(transcript),
             assistant_reply=subject_reply,
             observable_problem_statement=self.observable_problem_statement,
-            system_prompt=_user_proxy_system_prompt(self.observable_problem_statement),
+            system_prompt=_user_proxy_system_prompt(
+                self.observable_problem_statement,
+                mode=self.user_proxy_mode,
+            ),
         )
 
         state = UserProxyState.READ_ASSISTANT
@@ -471,7 +502,7 @@ class UserProxyFSM:
         if prog in interactive_cmds:
             try:
                 session = self.controller.open_session(f"{self.evaluation_run_id}-proxy-{self.terminal_id}")
-                session.send_input(command + "\n")
+                session.send_input(input_text=command + "\n")
                 output = session.read_output()
                 return CommandExecutionResult(
                     command=command,
@@ -484,6 +515,13 @@ class UserProxyFSM:
                     command=command,
                     stdout="",
                     stderr="Error: Interactive sessions are not supported by the current environment. Please use read_file and apply_text_edit instead of an interactive editor.",
+                    exit_code=1,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return CommandExecutionResult(
+                    command=command,
+                    stdout="",
+                    stderr=f"Error: Failed to start interactive session: {exc}",
                     exit_code=1,
                 )
 
@@ -501,9 +539,16 @@ class UserProxyFSM:
         tool_call: UserProxyToolCall,
     ) -> CommandExecutionResult:
         input_text = str(tool_call.arguments.get("input_text", ""))
+        raw_control_keys = tool_call.arguments.get("control_keys", ()) or ()
+        if isinstance(raw_control_keys, (list, tuple)):
+            control_keys = tuple(str(item) for item in raw_control_keys)
+        else:
+            raise ValueError("interactive_send control_keys must be an array of strings")
+        if not input_text and not control_keys:
+            raise ValueError("interactive_send requires input_text and/or control_keys")
         try:
             session = self.controller.open_session(f"{self.evaluation_run_id}-proxy-{self.terminal_id}")
-            session.send_input(input_text)
+            session.send_input(input_text=input_text, control_keys=control_keys)
             output = session.read_output()
             return CommandExecutionResult(
                 command="[interactive_send]",
@@ -516,6 +561,13 @@ class UserProxyFSM:
                 command="[interactive_send]",
                 stdout="",
                 stderr="Error: Interactive sessions are not supported.",
+                exit_code=1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return CommandExecutionResult(
+                command="[interactive_send]",
+                stdout="",
+                stderr=f"Error: {exc}",
                 exit_code=1,
             )
 
@@ -538,6 +590,13 @@ class UserProxyFSM:
                 command="[interactive_read]",
                 stdout="",
                 stderr="Error: Interactive sessions are not supported.",
+                exit_code=1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return CommandExecutionResult(
+                command="[interactive_read]",
+                stdout="",
+                stderr=f"Error: {exc}",
                 exit_code=1,
             )
 

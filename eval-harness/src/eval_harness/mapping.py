@@ -50,12 +50,14 @@ def scenario_spec_from_records(scenario: ScenarioRecord, revision: ScenarioRevis
 
 
 def subject_spec_from_record(subject: BenchmarkSubjectRecord) -> SubjectSpec:
+    adapter_config = dict(subject.adapter_config_json or {})
+    raw_max_turns = adapter_config.get("max_turns")
     return SubjectSpec(
         subject_name=subject.subject_name,
         adapter_type=subject.adapter_type,
         display_name=subject.display_name,
-        max_turns=int((subject.adapter_config_json or {}).get("max_turns", 8)),
-        adapter_config=dict(subject.adapter_config_json or {}),
+        max_turns=(int(raw_max_turns) if raw_max_turns is not None else None),
+        adapter_config=adapter_config,
         metadata={},
     )
 

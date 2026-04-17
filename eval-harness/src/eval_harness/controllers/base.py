@@ -10,7 +10,7 @@ class InteractiveSession(ABC):
     """Persistent terminal session."""
     
     @abstractmethod
-    def send_input(self, input_text: str) -> None:
+    def send_input(self, input_text: str = "", control_keys: tuple[str, ...] = ()) -> None:
         raise NotImplementedError
 
     @abstractmethod

@@ -1046,11 +1046,20 @@ def _build_benchmark_store_and_revision(
     turn_budget: int = 3,
     repair_check_command: str = "systemctl is-active nginx",
     repair_check_expected: list[str] | None = None,
-    subject_max_turns: int = 3,
+    subject_max_turns: int | None = 3,
+    repair_checks: list[dict] | None = None,
 ) -> tuple[EvalHarnessStore, object, object]:
     """Return (store, revision, setup) wired up and ready for a benchmark run."""
     if repair_check_expected is None:
         repair_check_expected = ["active"]
+    if repair_checks is None:
+        repair_checks = [
+            {
+                "name": "fixed",
+                "command": repair_check_command,
+                "expected_substrings": repair_check_expected,
+            }
+        ]
     store = _build_store()
     scenario = store.create_scenario(title="Test scenario", scenario_name_hint="test-scenario")
     revision = store.create_scenario_revision(
@@ -1063,13 +1072,7 @@ def _build_benchmark_store_and_revision(
         verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
         judge_rubric={"items": ["diagnosis"]},
         planner_metadata={
-            "repair_checks": [
-                {
-                    "name": "fixed",
-                    "command": repair_check_command,
-                    "expected_substrings": repair_check_expected,
-                }
-            ],
+            "repair_checks": repair_checks,
             "turn_budget": turn_budget,
         },
     )
@@ -1080,11 +1083,12 @@ def _build_benchmark_store_and_revision(
         broken_image_id="ami-broken",
         planner_approved=True,
     )
+    adapter_config = {} if subject_max_turns is None else {"max_turns": subject_max_turns}
     store.upsert_subject(
         subject_name="system-a",
         adapter_type="fake_adapter",
         display_name="System A",
-        adapter_config={"max_turns": subject_max_turns},
+        adapter_config=adapter_config,
     )
     return store, revision, setup
 
@@ -1096,6 +1100,8 @@ def _run_benchmark(
     clone_controller: FakeController,
     session: FakeSubjectSession | None = None,
     proxy_llm: FakeUserProxyLLM | None = None,
+    *,
+    user_proxy_mode: str = "strict_relay",
 ) -> object:
     """Run the benchmark orchestrator and return the result."""
     if session is None:
@@ -1120,6 +1126,7 @@ def _run_benchmark(
         subject_adapters={"fake_adapter": adapter},
         store=store,
         user_proxy_llm=proxy_llm,
+        user_proxy_mode=user_proxy_mode,
     )
     return orchestrator.run(
         scenario_revision_id=revision.id,
@@ -1711,8 +1718,8 @@ def test_benchmark_stall_detection_marks_benchmark_completed_with_failures() -> 
     assert benchmark_run.status == "completed_with_failures"
 
 
-def test_benchmark_polite_phrase_does_not_trigger_completion() -> None:
-    """Soft closure phrase does not trigger early exit."""
+def test_benchmark_polite_phrase_triggers_final_verification() -> None:
+    """Soft closure phrase triggers one final verification before another subject turn."""
     store, revision, setup = _build_benchmark_store_and_revision(turn_budget=2, subject_max_turns=2)
     session = FakeSubjectSession(
         turn_results=[
@@ -1724,32 +1731,23 @@ def test_benchmark_polite_phrase_does_not_trigger_completion() -> None:
                 terminal_event_type="done",
                 events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
             ),
-            AdapterTurnResult(
-                user_message="",
-                assistant_message="Checking again...",
-                run_id="run-2",
-                status="completed",
-                terminal_event_type="done",
-                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
-            ),
         ]
     )
     clone_controller = FakeController(
         execute_batches=[
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
         ],
     )
-    # Soft closure phrase → FSM does NOT detect closure, loop continues
-    proxy_llm = _make_proxy_llm(["looks good now, thanks", "still broken though..."])
+    proxy_llm = _make_proxy_llm(["looks good now, thanks"])
 
     result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
     evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
 
     assert len(evaluation_runs) == 1
-    # Run failed because turn budget exhausted (repair_success = False)
-    assert evaluation_runs[0].status == "failed"
-    assert evaluation_runs[0].repair_success is False
+    assert evaluation_runs[0].status == "completed"
+    assert evaluation_runs[0].repair_success is True
+    assert len(session.submitted_messages) == 1
 
 
 def test_benchmark_completed_with_failures_when_subjects_do_not_repair() -> None:
@@ -1804,6 +1802,132 @@ def test_benchmark_completed_with_failures_when_subjects_do_not_repair() -> None
     assert benchmark_run.metadata_json["summary"]["repair_success_count"] == 0
     assert benchmark_run.metadata_json["summary"]["failed_evaluation_count"] == 1
     assert evaluation_runs[0].status == "failed"
+
+
+def test_benchmark_immediate_post_action_verification_completes_without_extra_subject_turn() -> None:
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=3, subject_max_turns=3)
+
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (
+                CommandExecutionResult(
+                    command="sudo systemctl restart nginx && sudo systemctl status nginx --no-pager",
+                    stdout="nginx is active",
+                    stderr="",
+                    exit_code=0,
+                ),
+            ),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run `sudo systemctl restart nginx && sudo systemctl status nginx --no-pager`.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    tool_call = UserProxyToolCall(
+        id="call-1",
+        name="run_command",
+        arguments={"command": "sudo systemctl restart nginx && sudo systemctl status nginx --no-pager"},
+    )
+    proxy_llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="", tool_calls=(tool_call,), finish_reason="tool_calls", response_id="resp-1"),
+            UserProxyLLMResponse(content="Okay, it actually started.", tool_calls=(), finish_reason="stop", response_id="resp-2"),
+        ]
+    )
+
+    result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+
+    assert len(evaluation_runs) == 1
+    assert evaluation_runs[0].status == "completed"
+    assert evaluation_runs[0].repair_success is True
+    assert len(session.submitted_messages) == 1
+
+
+def test_benchmark_failure_payload_records_partial_repair_snapshot() -> None:
+    store, revision, setup = _build_benchmark_store_and_revision(
+        turn_budget=1,
+        subject_max_turns=1,
+        repair_checks=[
+            {
+                "name": "service-active",
+                "command": "systemctl is-active nginx",
+                "expected_substrings": ["active"],
+            },
+            {
+                "name": "homepage-ok",
+                "command": "curl -sS --max-time 5 http://127.0.0.1/",
+                "expected_substrings": ["nginx is working"],
+                "expected_exit_code": 0,
+            },
+        ],
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
+                CommandExecutionResult(command="curl -sS --max-time 5 http://127.0.0.1/", stdout="", stderr="", exit_code=0),
+            ),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Try checking the homepage.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+
+    result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=_make_proxy_llm(["still weird here"]))
+    evaluation_run = store.list_evaluation_runs(result.benchmark_run_id)[0]
+
+    assert evaluation_run.status == "failed"
+    assert evaluation_run.resolution_result_json["passed_check_count"] == 1
+    assert evaluation_run.resolution_result_json["failed_check_names"] == ["homepage-ok"]
+    assert len(evaluation_run.resolution_result_json["last_repair_check_results"]) == 2
+
+
+def test_benchmark_turn_budget_uses_scenario_when_subject_cap_omitted() -> None:
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=10, subject_max_turns=None)
+
+    proxy_llm = _make_proxy_llm(["Plain text"] * 12)
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ] * 12,
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message=f"reply-{i}",
+                run_id=f"run-{i}",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            )
+            for i in range(12)
+        ]
+    )
+
+    _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
+
+    assert len(session.submitted_messages) == 10
 
 
 def test_repair_checks_pass_returns_false_when_no_checks(ssh_scenario_spec: ScenarioSpec) -> None:

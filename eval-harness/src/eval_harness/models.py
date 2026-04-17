@@ -38,7 +38,12 @@ class VerificationMatchMode(str, Enum):
 
 
 _SYSTEMCTL_IS_ACTIVE_RE = re.compile(r"^systemctl is-active\s+([A-Za-z0-9@_.:-]+)(?:\s*\|\|\s*true)?$")
+_SYSTEMCTL_IS_ACTIVE_NORMALIZED_RE = re.compile(
+    r"^bash -lc 'state=\$\(systemctl show -p ActiveState --value [A-Za-z0-9@_.:-]+"
+)
 _STATEFUL_SYSTEMCTL_STATES = frozenset({"active", "inactive", "failed", "activating", "deactivating", "reloading"})
+_ACTIVE_ONLY_STATES = frozenset({"active", "activating", "reloading"})
+_INACTIVE_STATES = frozenset({"inactive", "failed", "deactivating"})
 
 
 def _normalize_verification_shape(
@@ -56,6 +61,7 @@ def _normalize_verification_shape(
     systemctl_match = _SYSTEMCTL_IS_ACTIVE_RE.match(normalized_command)
     if systemctl_match is not None:
         unit = systemctl_match.group(1)
+        had_or_true = "|| true" in normalized_command or "||true" in normalized_command
         normalized_command = (
             "bash -lc '"
             f"state=$(systemctl show -p ActiveState --value {unit} 2>/dev/null || true); "
@@ -63,12 +69,23 @@ def _normalize_verification_shape(
             f"systemctl is-active {unit} >/dev/null 2>&1; "
             "exit $?'"
         )
+        # Without || true the caller wants the service to be active; enforce exit 0
+        # so "active" in "inactive" doesn't produce a false positive.
+        if not had_or_true and normalized_expected_exit_code is None:
+            normalized_expected_exit_code = 0
         if (
             normalized_match_mode == VerificationMatchMode.ALL
             and len(normalized_expected_substrings) > 1
             and {item.lower() for item in normalized_expected_substrings}.issubset(_STATEFUL_SYSTEMCTL_STATES)
         ):
             normalized_match_mode = VerificationMatchMode.ANY
+    elif _SYSTEMCTL_IS_ACTIVE_NORMALIZED_RE.match(normalized_command) and normalized_expected_exit_code is None:
+        # Already-normalized form loaded from the DB (pre-fix rows have no exit_code).
+        # Re-apply exit-code enforcement: require exit 0 only when checking for an
+        # active state, not when the probe is verifying a broken/stopped state.
+        lower_subs = {s.lower() for s in normalized_expected_substrings}
+        if lower_subs & _ACTIVE_ONLY_STATES and not lower_subs & _INACTIVE_STATES:
+            normalized_expected_exit_code = 0
 
     return (
         normalized_command,
@@ -266,18 +283,19 @@ class SubjectSpec:
     subject_name: str
     adapter_type: str
     display_name: str = ""
-    max_turns: int = 8
+    max_turns: int | None = None
     adapter_config: dict[str, Any] = field(default_factory=dict)
     context_seed: tuple[TurnSeed, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "SubjectSpec":
+        raw_max_turns = payload.get("max_turns")
         return cls(
             subject_name=str(payload.get("subject_name", "")).strip(),
             adapter_type=str(payload.get("adapter_type", "")).strip(),
             display_name=str(payload.get("display_name", "")).strip(),
-            max_turns=int(payload.get("max_turns", 8)),
+            max_turns=(int(raw_max_turns) if raw_max_turns is not None else None),
             adapter_config=dict(payload.get("adapter_config", {}) or {}),
             context_seed=tuple(TurnSeed.from_dict(item) for item in payload.get("context_seed", []) or []),
             metadata=dict(payload.get("metadata", {}) or {}),

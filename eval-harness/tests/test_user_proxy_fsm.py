@@ -58,12 +58,17 @@ class FakeUserProxyLLM:
 
 class FakeInteractiveSession(InteractiveSession):
     def __init__(self) -> None:
-        self.inputs: list[str] = []
+        self.inputs: list[dict[str, object]] = []
         self.output_queue: list[str] = []
         self.closed = False
 
-    def send_input(self, input_text: str) -> None:
-        self.inputs.append(input_text)
+    def send_input(self, input_text: str = "", control_keys: tuple[str, ...] = ()) -> None:
+        self.inputs.append(
+            {
+                "input_text": input_text,
+                "control_keys": tuple(control_keys),
+            }
+        )
 
     def read_output(self, timeout_seconds: float = 5.0) -> str:
         return self.output_queue.pop(0) if self.output_queue else ""
@@ -85,6 +90,7 @@ class FakeController(SandboxController):
     support_interactive: bool = True
     interactive_sessions_opened: int = 0
     current_interactive_session: FakeInteractiveSession | None = None
+    interactive_sessions_by_key: dict[str, FakeInteractiveSession] = field(default_factory=dict)
 
     def execute_commands(
         self,
@@ -107,8 +113,13 @@ class FakeController(SandboxController):
     def open_session(self, session_key: str) -> InteractiveSession:
         if not self.support_interactive:
             raise NotImplementedError("Interactive sessions not supported")
+        existing = self.interactive_sessions_by_key.get(session_key)
+        if existing is not None:
+            self.current_interactive_session = existing
+            return existing
         self.interactive_sessions_opened += 1
         self.current_interactive_session = FakeInteractiveSession()
+        self.interactive_sessions_by_key[session_key] = self.current_interactive_session
         return self.current_interactive_session
 
     def close(self) -> None:
@@ -121,6 +132,7 @@ def _make_fsm(
     *,
     max_tool_calls_per_turn: int = 4,
     transitions: list | None = None,
+    proxy_mode: str = "strict_relay",
 ) -> UserProxyFSM:
     if controller is None:
         controller = FakeController()
@@ -137,6 +149,7 @@ def _make_fsm(
         observable_problem_statement="nginx is down",
         max_tool_calls_per_turn=max_tool_calls_per_turn,
         scenario_name="test-scenario",
+        user_proxy_mode=proxy_mode,
         progress=progress,
     )
 
@@ -322,6 +335,23 @@ def test_progress_callback_emitted() -> None:
     assert ("READ_ASSISTANT", "DECIDE") in transitions
     assert ("DECIDE", "REPLY") in transitions
     assert ("REPLY", "DONE") in transitions
+
+
+def test_pragmatic_human_mode_system_prompt_includes_safe_fallbacks() -> None:
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="I checked the file.", tool_calls=(), finish_reason="stop", response_id="resp-1"),
+        ]
+    )
+    fsm = _make_fsm(llm, proxy_mode="pragmatic_human")
+
+    fsm.run_turn([], "Can you check the config file and show me what it says?")
+
+    system_prompt = llm.calls[0]["system_prompt"]
+    assert "safe read-only fallbacks" in system_prompt
+    assert "read_file" in system_prompt
+    assert "sed -n" in system_prompt
+    assert "Do not infer edits" in system_prompt
 
 
 def test_session_key_contains_eval_run_id() -> None:
@@ -536,7 +566,12 @@ def test_interactive_command_interception_success() -> None:
     
     assert controller.interactive_sessions_opened == 1
     assert controller.current_interactive_session is not None
-    assert controller.current_interactive_session.inputs == ["nano /etc/hosts\n"]
+    assert controller.current_interactive_session.inputs == [
+        {
+            "input_text": "nano /etc/hosts\n",
+            "control_keys": (),
+        }
+    ]
     
     assert len(result.tool_results) == 1
     res = result.tool_results[0]
@@ -574,3 +609,38 @@ def test_interactive_command_interception_fallback() -> None:
     assert res.command == "nano file"
     assert res.exit_code == 1
     assert "read_file and apply_text_edit" in res.stderr
+
+
+def test_interactive_follow_up_reuses_same_session_and_supports_control_keys() -> None:
+    tc1 = UserProxyToolCall(id="call-1", name="run_command", arguments={"command": "nano /etc/hosts"})
+    tc2 = UserProxyToolCall(
+        id="call-2",
+        name="interactive_send",
+        arguments={"input_text": "127.0.0.1 localhost", "control_keys": ["ENTER", "CTRL_X"]},
+    )
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="", tool_calls=(tc1,), finish_reason="tool_calls", response_id="resp-1"),
+            UserProxyLLMResponse(content="", tool_calls=(tc2,), finish_reason="tool_calls", response_id="resp-2"),
+            UserProxyLLMResponse(content="I updated the file.", tool_calls=(), finish_reason="stop", response_id="resp-3"),
+        ]
+    )
+    controller = FakeController()
+    fsm = _make_fsm(llm, controller)
+
+    result = fsm.run_turn([], "use nano to edit hosts")
+
+    assert not result.stalled
+    assert result.user_message == "I updated the file."
+    assert controller.interactive_sessions_opened == 1
+    assert controller.current_interactive_session is not None
+    assert controller.current_interactive_session.inputs == [
+        {
+            "input_text": "nano /etc/hosts\n",
+            "control_keys": (),
+        },
+        {
+            "input_text": "127.0.0.1 localhost",
+            "control_keys": ("ENTER", "CTRL_X"),
+        },
+    ]

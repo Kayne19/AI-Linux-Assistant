@@ -45,6 +45,7 @@
     "provider": "openai",
     "model": "gpt-5.4-mini",
     "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
+    "mode": "pragmatic_human",
     "request_timeout_seconds": 300,
     "reasoning_effort": "medium"
   },
@@ -69,8 +70,7 @@
       "adapter_type": "ai_linux_assistant_http",
       "display_name": "AI Linux Assistant Regular",
       "adapter_config": {
-        "magi_mode": "off",
-        "max_turns": 8
+        "magi_mode": "off"
       },
       "is_active": true
     },
@@ -79,8 +79,7 @@
       "adapter_type": "ai_linux_assistant_http",
       "display_name": "AI Linux Assistant Magi Lite",
       "adapter_config": {
-        "magi_mode": "lite",
-        "max_turns": 8
+        "magi_mode": "lite"
       },
       "is_active": true
     },
@@ -89,8 +88,7 @@
       "adapter_type": "ai_linux_assistant_http",
       "display_name": "AI Linux Assistant Magi Full",
       "adapter_config": {
-        "magi_mode": "full",
-        "max_turns": 8
+        "magi_mode": "full"
       },
       "is_active": false
     }

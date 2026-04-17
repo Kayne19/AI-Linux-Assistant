@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import shlex
 import time
 from dataclasses import dataclass
@@ -17,36 +18,92 @@ class SsmInteractiveSession(InteractiveSession):
     def __init__(self, controller: SsmController, session_key: str) -> None:
         self.controller = controller
         self.session_key = session_key
-        # Ensure the session is ready
-        self.reset()
+    
+    _TMUX_KEY_MAP: dict[str, str] = {
+        "ENTER": "Enter",
+        "TAB": "Tab",
+        "ESC": "Escape",
+        "BACKSPACE": "BSpace",
+        "UP": "Up",
+        "DOWN": "Down",
+        "LEFT": "Left",
+        "RIGHT": "Right",
+        "CTRL_A": "C-a",
+        "CTRL_C": "C-c",
+        "CTRL_D": "C-d",
+        "CTRL_E": "C-e",
+        "CTRL_G": "C-g",
+        "CTRL_O": "C-o",
+        "CTRL_U": "C-u",
+        "CTRL_W": "C-w",
+        "CTRL_X": "C-x",
+        "CTRL_Z": "C-z",
+    }
 
-    def send_input(self, input_text: str) -> None:
-        script = f"""
+    def _execute_checked(self, command: str, *, session_key_suffix: str, action: str) -> CommandExecutionResult:
+        result = self.controller.execute_command(command, session_key=f"{self.session_key}-{session_key_suffix}")
+        if result.exit_code != 0:
+            detail = (result.stderr or result.stdout or f"exit code {result.exit_code}").strip()
+            raise RuntimeError(f"{action} failed: {detail}")
+        return result
+
+    def send_input(self, input_text: str = "", control_keys: tuple[str, ...] = ()) -> None:
+        if not input_text and not control_keys:
+            raise ValueError("interactive session send_input requires text and/or control keys")
+
+        if input_text:
+            script = f"""
 import subprocess, base64
 input_bytes = base64.b64decode({repr(base64.b64encode(input_text.encode('utf-8')).decode('ascii'))})
-# Send literal characters
-subprocess.run(['tmux', 'send-keys', '-t', {repr(self.session_key)}, '-l', input_bytes.decode('utf-8')])
+subprocess.run(['tmux', 'send-keys', '-t', {repr(self.session_key)}, '-l', input_bytes.decode('utf-8')], check=True)
 """
-        self.controller.execute_command(f"python3 -c {shlex.quote(script)}", session_key=f"{self.session_key}-send")
+            self._execute_checked(
+                f"python3 -c {shlex.quote(script)}",
+                session_key_suffix="send-text",
+                action="interactive text send",
+            )
+
+        if control_keys:
+            mapped_keys: list[str] = []
+            for key in control_keys:
+                normalized = str(key).strip().upper()
+                mapped = self._TMUX_KEY_MAP.get(normalized)
+                if mapped is None:
+                    raise ValueError(f"Unsupported control key: {key}")
+                mapped_keys.append(mapped)
+
+            script = f"""
+import base64, json, subprocess
+keys = json.loads(base64.b64decode({repr(base64.b64encode(json.dumps(mapped_keys).encode('utf-8')).decode('ascii'))}))
+subprocess.run(['tmux', 'send-keys', '-t', {repr(self.session_key)}, *keys], check=True)
+"""
+            self._execute_checked(
+                f"python3 -c {shlex.quote(script)}",
+                session_key_suffix="send-keys",
+                action="interactive control-key send",
+            )
 
     def read_output(self, timeout_seconds: float = 5.0) -> str:
         # Wait briefly for output to settle
         time.sleep(timeout_seconds)
-        res = self.controller.execute_command(
+        res = self._execute_checked(
             f"tmux capture-pane -p -t {shlex.quote(self.session_key)}",
-            session_key=f"{self.session_key}-read"
+            session_key_suffix="read",
+            action="interactive read",
         )
-        self.controller.execute_command(
+        self._execute_checked(
             f"tmux clear-history -t {shlex.quote(self.session_key)}",
-            session_key=f"{self.session_key}-clear"
+            session_key_suffix="clear",
+            action="interactive clear",
         )
         return res.stdout
 
     def reset(self) -> None:
         self.close()
-        self.controller.execute_command(
+        self._execute_checked(
             f"tmux new-session -d -s {shlex.quote(self.session_key)} 'bash'",
-            session_key=f"{self.session_key}-reset"
+            session_key_suffix="reset",
+            action="interactive session start",
         )
 
     def close(self) -> None:
@@ -90,6 +147,7 @@ class SsmController(SandboxController):
 
     def __init__(self, config: SsmControllerConfig, *, ssm_client: Any | None = None) -> None:
         self.config = config
+        self._interactive_sessions: dict[str, SsmInteractiveSession] = {}
         if ssm_client is not None:
             self._ssm = ssm_client
         else:
@@ -207,11 +265,21 @@ class SsmController(SandboxController):
         return tuple(results)
 
     def open_session(self, session_key: str) -> InteractiveSession:
-        return SsmInteractiveSession(self, session_key)
+        existing = self._interactive_sessions.get(session_key)
+        if existing is not None:
+            return existing
+        session = SsmInteractiveSession(self, session_key)
+        session.reset()
+        self._interactive_sessions[session_key] = session
+        return session
 
     def close(self) -> None:
-        # SSM is stateless per call — nothing to tear down.
-        pass
+        for session in self._interactive_sessions.values():
+            try:
+                session.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self._interactive_sessions.clear()
 
 
 class SsmControllerFactory(SandboxControllerFactory):

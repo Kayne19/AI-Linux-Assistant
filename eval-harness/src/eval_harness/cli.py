@@ -342,6 +342,7 @@ def _command_run_benchmark(args: argparse.Namespace) -> int:
         subject_adapters=subject_adapters,
         store=store,
         user_proxy_llm=_user_proxy_llm_from_config(user_proxy_llm_config),
+        user_proxy_mode=str(user_proxy_llm_config.get("mode", "pragmatic_human")),
         progress=stderr_progress_sink(),
     )
     previous_sigint = signal.getsignal(signal.SIGINT)

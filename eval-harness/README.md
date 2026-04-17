@@ -142,8 +142,10 @@ For Phase 1 file editing, the proxy may also use bounded file tools:
 - `apply_text_edit(path, old_text, new_text)` to perform precise surgical edits
 
 For Phase 2, if the proxy is asked to use an interactive program like `nano` or `vim`, it initiates a persistent terminal session via `tmux` and uses:
-- `interactive_send(input_text)` to inject characters/keystrokes
+- `interactive_send(input_text?, control_keys?)` to inject literal text and/or named control keys
 - `interactive_read()` to capture the current screen buffer
+
+Interactive sessions are keyed per evaluation-run terminal and reused across follow-up proxy tool calls rather than being recreated on every send/read operation.
 
 Those tools fail closed:
 - only regular files are allowed
@@ -151,7 +153,7 @@ Those tools fail closed:
 - oversized files are rejected instead of being silently truncated
 - `apply_text_edit` succeeds only when `old_text` matches exactly one literal occurrence
 
-The proxy is a strict command relay, not a diagnostician:
+The proxy is not a diagnostician:
 - it should only relay exact commands the subject explicitly requested
 - it should not add `sudo`, extra flags, extra subcommands, or a more specific variant on its own
 - it should not bundle multiple commands unless the subject explicitly requested multiple commands
@@ -159,6 +161,18 @@ The proxy is a strict command relay, not a diagnostician:
 - if the subject does not provide an exact command, the proxy should ask what exact command to run instead of guessing
 
 The benchmark loop enforces those constraints and suppresses proxy turns that keep trying to run unrequested commands.
+
+`user_proxy_llm.mode` controls how literal the proxy is:
+- `strict_relay` keeps the old exact-command behavior
+- `pragmatic_human` is the benchmark default and allows a narrow safe read-only fallback set when the assistant's intent is obvious but underspecified
+- those fallback actions are limited to `read_file`, `cat`, `sed -n`, `file`, `ls -l`, and `readlink -f`
+- `pragmatic_human` still does not infer edits, restarts, installs, or privileged commands
+
+Benchmark verification is still objective:
+- repair checks run after every subject turn
+- if the proxy executes a potentially state-changing action such as `run_command`, `apply_text_edit`, or `interactive_send`, repair checks run again immediately instead of waiting for another subject turn
+- soft closure messages from the proxy such as "looks good now, thanks" trigger one final verification pass before the harness spends another subject turn
+- evaluation failure payloads now retain the last repair-check snapshot, passed-check count, failed-check names, and a short summary of the last subject reply so near-misses stay visible in Postgres artifacts
 
 Repair success is not decided by the proxy. After each subject turn, the benchmark loop runs the scenario's objective `repair_checks` against the live sandbox. If every check passes, the evaluation completes with `repair_success=True`; otherwise the loop continues until the turn budget is exhausted or the proxy stalls repeatedly.
 
@@ -218,6 +232,11 @@ python -m eval_harness generate-scenario \
 ```
 
 Planner, judge, and `user_proxy_llm` config sections now select their model backend with `provider: "openai" | "anthropic" | "google"` plus provider-specific credentials such as `api_key`.
+
+Benchmark subject turn limits are scenario-first:
+- `subjects[].adapter_config.max_turns` is optional
+- when omitted, the scenario's `turn_budget` is the effective cap
+- when present, it acts as an explicit lower bound for cheaper capped runs
 
 Run planner-driven scenario setup and verification:
 
