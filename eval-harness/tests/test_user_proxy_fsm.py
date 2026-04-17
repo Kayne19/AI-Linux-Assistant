@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from eval_harness.controllers.base import SandboxController
+from eval_harness.controllers.base import InteractiveSession, SandboxController
 from eval_harness.models import CommandExecutionResult
 from eval_harness.orchestration import user_proxy_llm as user_proxy_llm_module
 from eval_harness.orchestration.user_proxy_fsm import DEFAULT_TOOLS, UserProxyFSM
@@ -16,7 +16,6 @@ from eval_harness.orchestration.user_proxy_llm import (
     UserProxyLLMResponse,
     UserProxyToolCall,
 )
-
 
 @dataclass
 class FakeUserProxyLLM:
@@ -57,6 +56,24 @@ class FakeUserProxyLLM:
             return self.responses.pop(0)
         return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-default")
 
+class FakeInteractiveSession(InteractiveSession):
+    def __init__(self) -> None:
+        self.inputs: list[str] = []
+        self.output_queue: list[str] = []
+        self.closed = False
+
+    def send_input(self, input_text: str) -> None:
+        self.inputs.append(input_text)
+
+    def read_output(self, timeout_seconds: float = 5.0) -> str:
+        return self.output_queue.pop(0) if self.output_queue else ""
+
+    def reset(self) -> None:
+        self.inputs.clear()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 @dataclass
 class FakeController(SandboxController):
@@ -65,6 +82,9 @@ class FakeController(SandboxController):
     executed: list[tuple[str, ...]] = field(default_factory=list)
     session_keys: list[str] = field(default_factory=list)
     raise_on_command: str | None = None
+    support_interactive: bool = True
+    interactive_sessions_opened: int = 0
+    current_interactive_session: FakeInteractiveSession | None = None
 
     def execute_commands(
         self,
@@ -83,6 +103,13 @@ class FakeController(SandboxController):
             CommandExecutionResult(command=cmd, stdout="", stderr="", exit_code=0)
             for cmd in commands
         )
+
+    def open_session(self, session_key: str) -> InteractiveSession:
+        if not self.support_interactive:
+            raise NotImplementedError("Interactive sessions not supported")
+        self.interactive_sessions_opened += 1
+        self.current_interactive_session = FakeInteractiveSession()
+        return self.current_interactive_session
 
     def close(self) -> None:
         pass
@@ -485,3 +512,65 @@ def test_user_proxy_llm_response_dataclass() -> None:
     assert resp.finish_reason == "stop"
     assert resp.response_id == "resp-1"
     assert resp.tool_calls == ()
+
+
+def test_interactive_command_interception_success() -> None:
+    tool_call = UserProxyToolCall(id="call-1", name="run_command", arguments={"command": "nano /etc/hosts"})
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(
+                content="",
+                tool_calls=(tool_call,),
+                finish_reason="tool_calls",
+                response_id="resp-1",
+            ),
+        ]
+    )
+    controller = FakeController()
+    fsm = _make_fsm(llm, controller)
+
+    result = fsm.run_turn(
+        transcript=[("user", "my issue")],
+        subject_reply="open nano",
+    )
+    
+    assert controller.interactive_sessions_opened == 1
+    assert controller.current_interactive_session is not None
+    assert controller.current_interactive_session.inputs == ["nano /etc/hosts\n"]
+    
+    assert len(result.tool_results) == 1
+    res = result.tool_results[0]
+    assert res.command == "nano /etc/hosts"
+    assert "Interactive session started" in res.stdout
+    assert "interactive_send" in res.stderr
+    assert "interactive_read" in res.stderr
+    assert res.exit_code == 0
+
+
+def test_interactive_command_interception_fallback() -> None:
+    tool_call = UserProxyToolCall(id="call-1", name="run_command", arguments={"command": "nano file"})
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(
+                content="",
+                tool_calls=(tool_call,),
+                finish_reason="tool_calls",
+                response_id="resp-1",
+            ),
+        ]
+    )
+    controller = FakeController()
+    controller.support_interactive = False
+    fsm = _make_fsm(llm, controller)
+
+    result = fsm.run_turn(
+        transcript=[],
+        subject_reply="open nano",
+    )
+    
+    assert controller.interactive_sessions_opened == 0
+    assert len(result.tool_results) == 1
+    res = result.tool_results[0]
+    assert res.command == "nano file"
+    assert res.exit_code == 1
+    assert "read_file and apply_text_edit" in res.stderr

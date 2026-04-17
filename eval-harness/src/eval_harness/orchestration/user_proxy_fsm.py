@@ -13,18 +13,15 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable
 
-from ..controllers.base import SandboxController
+from ..controllers.base import InteractiveSession, SandboxController
 from ..models import CommandExecutionResult
 from .fs_helpers import apply_text_edit, read_file
 from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMResponse, UserProxyToolCall
-
 
 # ---------------------------------------------------------------------------
 # Tool schema registry
 # ---------------------------------------------------------------------------
 
-# Phase 3 ships only run_command.  Multi-terminal is a planned extension —
-# open_new_terminal() would allocate a fresh SSM session keyed by terminal_id.
 _RUN_COMMAND_TOOL: dict[str, Any] = {
     "type": "function",
     "name": "run_command",
@@ -42,6 +39,41 @@ _RUN_COMMAND_TOOL: dict[str, Any] = {
             }
         },
         "required": ["command"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+_INTERACTIVE_SEND_TOOL: dict[str, Any] = {
+    "type": "function",
+    "name": "interactive_send",
+    "description": (
+        "Send keystrokes or text to the active interactive terminal session. "
+        "Use this when you are inside an interactive program like nano or top."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "input_text": {
+                "type": "string",
+                "description": "The exact text or keystrokes to send to the terminal",
+            }
+        },
+        "required": ["input_text"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+_INTERACTIVE_READ_TOOL: dict[str, Any] = {
+    "type": "function",
+    "name": "interactive_read",
+    "description": (
+        "Read the current screen output from the interactive terminal session."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
         "additionalProperties": False,
     },
     "strict": True,
@@ -98,7 +130,13 @@ _APPLY_TEXT_EDIT_TOOL: dict[str, Any] = {
     "strict": True,
 }
 
-DEFAULT_TOOLS: list[dict[str, Any]] = [_RUN_COMMAND_TOOL, _READ_FILE_TOOL, _APPLY_TEXT_EDIT_TOOL]
+DEFAULT_TOOLS: list[dict[str, Any]] = [
+    _RUN_COMMAND_TOOL,
+    _READ_FILE_TOOL,
+    _APPLY_TEXT_EDIT_TOOL,
+    _INTERACTIVE_SEND_TOOL,
+    _INTERACTIVE_READ_TOOL,
+]
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -241,6 +279,8 @@ class UserProxyFSM:
             "run_command": self._handle_run_command,
             "read_file": self._handle_read_file,
             "apply_text_edit": self._handle_apply_text_edit,
+            "interactive_send": self._handle_interactive_send,
+            "interactive_read": self._handle_interactive_read,
         }
         self.tools = DEFAULT_TOOLS
 
@@ -424,6 +464,29 @@ class UserProxyFSM:
         command = str(tool_call.arguments.get("command", "")).strip()
         if not command:
             raise ValueError("run_command called with empty command")
+            
+        interactive_cmds = ("nano", "vim", "vi", "top", "htop", "less", "more")
+        parts = command.split()
+        prog = parts[1] if parts and parts[0] == "sudo" and len(parts) > 1 else (parts[0] if parts else "")
+        if prog in interactive_cmds:
+            try:
+                session = self.controller.open_session(f"{self.evaluation_run_id}-proxy-{self.terminal_id}")
+                session.send_input(command + "\n")
+                output = session.read_output()
+                return CommandExecutionResult(
+                    command=command,
+                    stdout=f"[Interactive session started]\n{output}",
+                    stderr="Note: You must now use interactive_send and interactive_read to interact with this program. Do not use run_command again until you exit the program.",
+                    exit_code=0,
+                )
+            except NotImplementedError:
+                return CommandExecutionResult(
+                    command=command,
+                    stdout="",
+                    stderr="Error: Interactive sessions are not supported by the current environment. Please use read_file and apply_text_edit instead of an interactive editor.",
+                    exit_code=1,
+                )
+
         results = self.controller.execute_commands(
             (command,),
             session_key=f"{self.evaluation_run_id}-proxy-{self.terminal_id}",
@@ -431,6 +494,52 @@ class UserProxyFSM:
         if not results:
             raise RuntimeError(f"execute_commands returned empty for command: {command!r}")
         return results[0]
+
+    def _handle_interactive_send(
+        self,
+        ctx: UserProxyContext,
+        tool_call: UserProxyToolCall,
+    ) -> CommandExecutionResult:
+        input_text = str(tool_call.arguments.get("input_text", ""))
+        try:
+            session = self.controller.open_session(f"{self.evaluation_run_id}-proxy-{self.terminal_id}")
+            session.send_input(input_text)
+            output = session.read_output()
+            return CommandExecutionResult(
+                command="[interactive_send]",
+                stdout=output,
+                stderr="",
+                exit_code=0,
+            )
+        except NotImplementedError:
+            return CommandExecutionResult(
+                command="[interactive_send]",
+                stdout="",
+                stderr="Error: Interactive sessions are not supported.",
+                exit_code=1,
+            )
+
+    def _handle_interactive_read(
+        self,
+        ctx: UserProxyContext,
+        tool_call: UserProxyToolCall,
+    ) -> CommandExecutionResult:
+        try:
+            session = self.controller.open_session(f"{self.evaluation_run_id}-proxy-{self.terminal_id}")
+            output = session.read_output()
+            return CommandExecutionResult(
+                command="[interactive_read]",
+                stdout=output,
+                stderr="",
+                exit_code=0,
+            )
+        except NotImplementedError:
+            return CommandExecutionResult(
+                command="[interactive_read]",
+                stdout="",
+                stderr="Error: Interactive sessions are not supported.",
+                exit_code=1,
+            )
 
     def _handle_read_file(
         self,

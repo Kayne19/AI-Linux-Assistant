@@ -6,6 +6,26 @@ from ..backends.base import SandboxHandle
 from ..models import CommandExecutionResult
 
 
+class InteractiveSession(ABC):
+    """Persistent terminal session."""
+    
+    @abstractmethod
+    def send_input(self, input_text: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def read_output(self, timeout_seconds: float = 5.0) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def reset(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def close(self) -> None:
+        raise NotImplementedError
+
+
 class SandboxController(ABC):
     """Controller owns sandbox interaction transport only."""
 
@@ -30,6 +50,9 @@ class SandboxController(ABC):
     ) -> CommandExecutionResult:
         results = self.execute_commands((command,), agent_id=agent_id, session_key=session_key)
         return results[0]
+
+    def open_session(self, session_key: str) -> InteractiveSession:
+        raise NotImplementedError(f"{self.__class__.__name__} does not support interactive sessions.")
 
     @abstractmethod
     def close(self) -> None:

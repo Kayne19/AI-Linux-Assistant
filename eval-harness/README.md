@@ -139,7 +139,11 @@ The proxy itself is driven by a provider-backed tool loop. OpenAI uses the Respo
 
 For Phase 1 file editing, the proxy may also use bounded file tools:
 - `read_file(path)` to inspect a regular UTF-8 text file
-- `apply_text_edit(path, old_text, new_text)` to perform one exact literal replacement
+- `apply_text_edit(path, old_text, new_text)` to perform precise surgical edits
+
+For Phase 2, if the proxy is asked to use an interactive program like `nano` or `vim`, it initiates a persistent terminal session via `tmux` and uses:
+- `interactive_send(input_text)` to inject characters/keystrokes
+- `interactive_read()` to capture the current screen buffer
 
 Those tools fail closed:
 - only regular files are allowed

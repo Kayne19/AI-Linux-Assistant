@@ -292,3 +292,36 @@ def test_agent_id_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     ctrl = _make_controller(fake)
     (result,) = ctrl.execute_commands(("echo ok",), agent_id="setup", session_key="s1")
     assert result.exit_code == 0
+
+# ── Test: InteractiveSession ──────────────────────────────────────────────────
+
+def test_interactive_session_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(time, "sleep", lambda *a, **k: None)
+    fake = FakeSsmClient()
+    
+    # open_session() does a reset() which calls close() then new-session
+    fake._enqueue("cmd-close-1", [_success_invocation()])
+    fake._enqueue("cmd-new-1", [_success_invocation()])
+    
+    # send_input
+    fake._enqueue("cmd-send", [_success_invocation()])
+    
+    # read_output
+    fake._enqueue("cmd-read", [_success_invocation(stdout="test_output\n")])
+    fake._enqueue("cmd-clear", [_success_invocation()])
+    
+    ctrl = _make_controller(fake)
+    session = ctrl.open_session("test-interactive")
+    
+    session.send_input("echo hi")
+    output = session.read_output(timeout_seconds=0)
+    
+    assert output == "test_output\n"
+    assert len(fake.send_command_calls) == 5
+    
+    assert "tmux kill-session" in fake.send_command_calls[0]["Parameters"]["commands"][0]
+    assert "tmux new-session" in fake.send_command_calls[1]["Parameters"]["commands"][0]
+    assert "tmux" in fake.send_command_calls[2]["Parameters"]["commands"][0]
+    assert "send-keys" in fake.send_command_calls[2]["Parameters"]["commands"][0]
+    assert "tmux capture-pane" in fake.send_command_calls[3]["Parameters"]["commands"][0]
+    assert "tmux clear-history" in fake.send_command_calls[4]["Parameters"]["commands"][0]

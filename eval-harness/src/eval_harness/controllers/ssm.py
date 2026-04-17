@@ -1,12 +1,59 @@
 from __future__ import annotations
 
+import base64
+import shlex
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from .base import SandboxController, SandboxControllerFactory
+from .base import InteractiveSession, SandboxController, SandboxControllerFactory
 from ..backends.base import SandboxHandle
 from ..models import CommandExecutionResult, utc_now_iso
+
+
+class SsmInteractiveSession(InteractiveSession):
+    """A persistent terminal session backed by tmux executed over SSM send_command."""
+
+    def __init__(self, controller: SsmController, session_key: str) -> None:
+        self.controller = controller
+        self.session_key = session_key
+        # Ensure the session is ready
+        self.reset()
+
+    def send_input(self, input_text: str) -> None:
+        script = f"""
+import subprocess, base64
+input_bytes = base64.b64decode({repr(base64.b64encode(input_text.encode('utf-8')).decode('ascii'))})
+# Send literal characters
+subprocess.run(['tmux', 'send-keys', '-t', {repr(self.session_key)}, '-l', input_bytes.decode('utf-8')])
+"""
+        self.controller.execute_command(f"python3 -c {shlex.quote(script)}", session_key=f"{self.session_key}-send")
+
+    def read_output(self, timeout_seconds: float = 5.0) -> str:
+        # Wait briefly for output to settle
+        time.sleep(timeout_seconds)
+        res = self.controller.execute_command(
+            f"tmux capture-pane -p -t {shlex.quote(self.session_key)}",
+            session_key=f"{self.session_key}-read"
+        )
+        self.controller.execute_command(
+            f"tmux clear-history -t {shlex.quote(self.session_key)}",
+            session_key=f"{self.session_key}-clear"
+        )
+        return res.stdout
+
+    def reset(self) -> None:
+        self.close()
+        self.controller.execute_command(
+            f"tmux new-session -d -s {shlex.quote(self.session_key)} 'bash'",
+            session_key=f"{self.session_key}-reset"
+        )
+
+    def close(self) -> None:
+        self.controller.execute_command(
+            f"tmux kill-session -t {shlex.quote(self.session_key)} || true",
+            session_key=f"{self.session_key}-close"
+        )
 
 
 def _require_boto3() -> Any:
@@ -158,6 +205,9 @@ class SsmController(SandboxController):
             )
 
         return tuple(results)
+
+    def open_session(self, session_key: str) -> InteractiveSession:
+        return SsmInteractiveSession(self, session_key)
 
     def close(self) -> None:
         # SSM is stateless per call — nothing to tear down.
