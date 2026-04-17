@@ -4,10 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import pytest
+
 from eval_harness.controllers.base import SandboxController
 from eval_harness.models import CommandExecutionResult
 from eval_harness.orchestration import user_proxy_llm as user_proxy_llm_module
-from eval_harness.orchestration.user_proxy_fsm import UserProxyFSM
+from eval_harness.orchestration.user_proxy_fsm import DEFAULT_TOOLS, UserProxyFSM
 from eval_harness.orchestration.user_proxy_llm import (
     UserProxyLLMClient,
     UserProxyLLMClientConfig,
@@ -348,15 +350,7 @@ def test_user_proxy_llm_client_start_turn_uses_responses_api_shape(monkeypatch) 
         system_prompt="You are a confused user.",
         transcript=[("user", "nginx is down")],
         assistant_reply="Run ls",
-        tools=[
-            {
-                "type": "function",
-                "name": "run_command",
-                "description": "Run a command",
-                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
-                "strict": True,
-            }
-        ],
+        tools=DEFAULT_TOOLS,
     )
 
     assert client_inits == [
@@ -376,12 +370,58 @@ def test_user_proxy_llm_client_start_turn_uses_responses_api_shape(monkeypatch) 
     assert call["max_output_tokens"] == 512
     assert call["reasoning"] == {"effort": "medium"}
     assert call["parallel_tool_calls"] is True
+    assert call["tools"][0]["parameters"]["additionalProperties"] is False
     assert call["input"] == [
         {
             "role": "user",
             "content": "Conversation so far:\nuser: nginx is down\n\nAssistant just said:\nRun ls",
         }
     ]
+
+
+def test_default_run_command_tool_is_strict_object_schema() -> None:
+    tool = DEFAULT_TOOLS[0]
+
+    assert tool["name"] == "run_command"
+    assert tool["strict"] is True
+    assert tool["parameters"]["type"] == "object"
+    assert tool["parameters"]["required"] == ["command"]
+    assert tool["parameters"]["additionalProperties"] is False
+
+
+def test_user_proxy_llm_client_rejects_strict_tools_without_closed_object_schema(monkeypatch) -> None:
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = FakeResponsesAPI([_fake_response(response_id="resp-unused")])
+
+    monkeypatch.setattr(user_proxy_llm_module, "OpenAI", FakeOpenAI, raising=False)
+    client = UserProxyLLMClient(
+        UserProxyLLMClientConfig(
+            model="gpt-5.4-mini",
+            api_key="test-key",
+            request_timeout_seconds=30.0,
+        )
+    )
+
+    with pytest.raises(ValueError, match="additionalProperties"):
+        client.start_turn(
+            system_prompt="You are a confused user.",
+            transcript=[],
+            assistant_reply="Run ls",
+            tools=[
+                {
+                    "type": "function",
+                    "name": "run_command",
+                    "description": "Run a command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                    "strict": True,
+                }
+            ],
+        )
 
 
 def test_user_proxy_llm_client_continue_turn_submits_function_outputs(monkeypatch) -> None:

@@ -85,6 +85,49 @@ def _finish_reason_for_response(response: Any, tool_calls: tuple[UserProxyToolCa
     return status or "stop"
 
 
+def _validate_openai_strict_tool_schema(schema: Any, *, tool_name: str, path: str = "parameters") -> None:
+    if not isinstance(schema, dict):
+        return
+
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        if schema.get("additionalProperties") is not False:
+            raise ValueError(
+                f"OpenAI strict tool schema for {tool_name!r} must set additionalProperties=false at {path}"
+            )
+        for property_name, property_schema in (schema.get("properties") or {}).items():
+            _validate_openai_strict_tool_schema(
+                property_schema,
+                tool_name=tool_name,
+                path=f"{path}.properties.{property_name}",
+            )
+
+    if schema_type == "array":
+        _validate_openai_strict_tool_schema(
+            schema.get("items"),
+            tool_name=tool_name,
+            path=f"{path}.items",
+        )
+
+    for keyword in ("anyOf", "allOf", "oneOf"):
+        for index, nested_schema in enumerate(schema.get(keyword) or []):
+            _validate_openai_strict_tool_schema(
+                nested_schema,
+                tool_name=tool_name,
+                path=f"{path}.{keyword}[{index}]",
+            )
+
+
+def _validate_openai_tools(tools: list[dict[str, Any]] | None) -> None:
+    for tool in tools or []:
+        if tool.get("type") != "function" or not tool.get("strict"):
+            continue
+        _validate_openai_strict_tool_schema(
+            tool.get("parameters"),
+            tool_name=str(tool.get("name", "unknown_tool")),
+        )
+
+
 class UserProxyLLMClient:
     """OpenAI Responses client for the confused-user proxy turn loop."""
 
@@ -115,6 +158,7 @@ class UserProxyLLMClient:
         if self.config.reasoning_effort is not None:
             kwargs["reasoning"] = {"effort": self.config.reasoning_effort}
         if tools:
+            _validate_openai_tools(tools)
             kwargs["tools"] = tools
             kwargs["parallel_tool_calls"] = True
         return kwargs

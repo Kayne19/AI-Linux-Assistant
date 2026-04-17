@@ -41,6 +41,7 @@ _RUN_COMMAND_TOOL: dict[str, Any] = {
             }
         },
         "required": ["command"],
+        "additionalProperties": False,
     },
     "strict": True,
 }
