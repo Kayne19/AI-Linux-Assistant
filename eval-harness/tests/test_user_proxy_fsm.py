@@ -354,6 +354,26 @@ def test_pragmatic_human_mode_system_prompt_includes_safe_fallbacks() -> None:
     assert "Do not infer edits" in system_prompt
 
 
+def test_system_prompt_preserves_prior_command_context_and_blocks_assistant_voice() -> None:
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="still broken", tool_calls=(), finish_reason="stop", response_id="resp-1"),
+        ]
+    )
+    fsm = _make_fsm(llm, proxy_mode="pragmatic_human")
+
+    fsm.run_turn(
+        [("user", "I tried systemctl restart nginx and it failed.")],
+        "What exact error did you get when nginx failed to start?",
+    )
+
+    system_prompt = llm.calls[0]["system_prompt"]
+    assert "remember that concrete command context" in system_prompt
+    assert "rerun that same command" in system_prompt
+    assert "paste the output and i'll diagnose it" in system_prompt.lower()
+    assert "write like a confused user" in system_prompt.lower()
+
+
 def test_session_key_contains_eval_run_id() -> None:
     tc = UserProxyToolCall(id="c1", name="run_command", arguments={"command": "echo hi"})
     llm = FakeUserProxyLLM(

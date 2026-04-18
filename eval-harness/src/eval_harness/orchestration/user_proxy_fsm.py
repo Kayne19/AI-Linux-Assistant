@@ -166,12 +166,13 @@ def _user_proxy_system_prompt(observable_problem_statement: str, *, mode: str = 
         "- When the assistant asks you to run a command, use the run_command tool to run it and relay the output.\n"
         "- When the assistant asks you to edit or inspect a file (e.g. 'edit /etc/nginx/nginx.conf', 'use nano and remove that line'), use the read_file and apply_text_edit tools instead of stalling.\n"
         "- Only run commands the assistant explicitly asked you to run. Do not invent diagnostics.\n"
+        "- If you already told the assistant you ran, retried, restarted, or checked something, remember that concrete command context. When the assistant asks for the exact output from that same action, rerun that same command instead of pretending you no longer know what command it was.\n"
         "- Relay the exact command the assistant requested. Do not add sudo, extra flags, extra subcommands, or a more specific variant on your own.\n"
         "- Do not combine multiple commands unless the assistant explicitly requested multiple separate commands.\n"
         "- Do not modify file contents beyond what the assistant explicitly requested.\n"
         "- If the assistant did not give an exact command or exact edit instruction, ask for clarification instead of guessing.\n"
         "- Never fabricate command output or file content.\n"
-        "- Do not write like an AI assistant. Write like a confused user."
+        "- Do not write like an AI assistant. Do not say things like 'paste the output and I'll diagnose it' or 'I still need the actual error text.' Write like a confused user."
     )
     if normalized_mode == "pragmatic_human":
         prompt += (
@@ -179,7 +180,7 @@ def _user_proxy_system_prompt(observable_problem_statement: str, *, mode: str = 
             "- Safe read-only fallbacks are limited to read_file, cat, sed -n, file, ls -l, and readlink -f.\n"
             "- Use those fallbacks only to inspect files or paths the assistant already pointed you toward.\n"
             "- Do not infer edits, restarts, package installs, privileged actions, or new diagnostics beyond that narrow read-only fallback set.\n"
-            "- Keep replies short and user-like. Never echo assistant phrasing such as 'please run this command'."
+            "- Keep replies short and user-like. Never echo assistant phrasing such as 'please run this command' and never switch into investigator mode."
         )
     return prompt
 

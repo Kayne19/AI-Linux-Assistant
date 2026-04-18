@@ -164,8 +164,10 @@ The proxy is not a diagnostician:
 - it should only relay exact commands the subject explicitly requested
 - it should not add `sudo`, extra flags, extra subcommands, or a more specific variant on its own
 - it should not bundle multiple commands unless the subject explicitly requested multiple commands
+- if the proxy already told the subject it ran or retried a concrete command, it should remember that command and reuse it when the subject asks for the exact output from that same action
 - if the subject asks for a file edit but does not specify the exact change, the proxy should inspect the file if needed and ask for clarification instead of guessing
 - if the subject does not provide an exact command, the proxy should ask what exact command to run instead of guessing
+- it should stay in first-person confused-user voice and must not flip into assistant phrasing such as "paste the output and I'll diagnose it"
 
 The benchmark loop enforces those constraints and suppresses proxy turns that keep trying to run unrequested commands.
 
