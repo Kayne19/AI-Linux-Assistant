@@ -257,6 +257,19 @@ def _judge_from_config(config: dict[str, Any]):
     raise ValueError(f"Unsupported judge provider {provider!r}.")
 
 
+def _parse_optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value {value!r}.")
+
+
 def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, SubjectAdapter]:
     adapters: dict[str, SubjectAdapter] = {}
     adapter_configs = dict(config.get("subject_adapters", {}) or {})
@@ -302,6 +315,31 @@ def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, SubjectAd
                     reasoning_effort=(
                         str(adapter_payload["reasoning_effort"]).strip()
                         if adapter_payload.get("reasoning_effort") is not None
+                        else None
+                    ),
+                    instructions=str(adapter_payload.get("instructions", "") or ""),
+                    conversation_state_mode=str(
+                        adapter_payload.get("conversation_state_mode", "conversation")
+                    ).strip()
+                    or "conversation",
+                    web_search_enabled=_parse_optional_bool(adapter_payload.get("web_search_enabled")) or False,
+                    web_search_allowed_domains=tuple(
+                        str(domain).strip()
+                        for domain in (adapter_payload.get("web_search_allowed_domains") or [])
+                        if str(domain).strip()
+                    ),
+                    web_search_user_location=(
+                        dict(adapter_payload["web_search_user_location"])
+                        if adapter_payload.get("web_search_user_location") is not None
+                        else None
+                    ),
+                    web_search_include_sources=_parse_optional_bool(
+                        adapter_payload.get("web_search_include_sources")
+                    )
+                    or False,
+                    web_search_search_context_size=(
+                        str(adapter_payload["web_search_search_context_size"]).strip()
+                        if adapter_payload.get("web_search_search_context_size") is not None
                         else None
                     ),
                 )

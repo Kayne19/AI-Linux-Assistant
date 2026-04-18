@@ -334,7 +334,10 @@ For the `ai_linux_assistant_http` subject adapter:
 For the `openai_chatgpt` subject adapter:
 
 - the harness uses the local OpenAI Responses client already used by the planner, judge, and user proxy code
-- configure it with `model` and `api_key`, plus optional `base_url`, `request_timeout_seconds`, `max_output_tokens`, and `reasoning_effort`
+- configure it with `model` and `api_key`, plus optional `base_url`, `request_timeout_seconds`, `max_output_tokens`, `reasoning_effort`, and `instructions`
+- `conversation_state_mode` defaults to `conversation`; set it to `response_chain` only when you explicitly need `previous_response_id` chaining instead of Conversations API state
+- web-search parity is config-driven via `web_search_enabled`, `web_search_allowed_domains`, `web_search_user_location`, `web_search_include_sources`, and `web_search_search_context_size`
+- when `web_search_include_sources` is enabled, the adapter appends a compact `Sources:` block to the assistant reply so blind judging sees the cited answer rather than hidden debug metadata only
 - `subjects[].adapter_config` can override those values per subject when you want to compare multiple ChatGPT baselines in the same run
 
 See:

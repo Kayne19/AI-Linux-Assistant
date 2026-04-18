@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 from .base import AdapterError, SubjectAdapter, SubjectSession
 from ..models import AdapterTurnResult, SubjectSpec, TurnSeed
-from ..openai_responses import OpenAIResponsesClient, OpenAIResponsesClientConfig
+from ..openai_responses import (
+    OpenAIResponsesClient,
+    OpenAIResponsesClientConfig,
+    build_web_search_tool,
+    extract_response_citations,
+    extract_response_source_metadata,
+)
 
 
 def _item_get(value: Any, key: str, default: Any = None) -> Any:
@@ -33,6 +39,54 @@ def _response_status(response: Any) -> str:
     return status or "completed"
 
 
+def _bool_override(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"Invalid boolean override: {value!r}")
+
+
+def _raise_for_failed_response(response: Any) -> None:
+    status = str(_item_get(response, "status", "")).strip().lower()
+    if status != "failed":
+        return
+    error = _item_get(response, "error")
+    message = str(_item_get(error, "message", "")).strip() or str(_item_get(response, "error_message", "")).strip()
+    raise AdapterError(f"OpenAI ChatGPT request failed: {message or 'unknown error'}")
+
+
+def _render_sources_block(sources: Sequence[dict[str, Any]]) -> str:
+    rendered: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for source in sources:
+        url = str(source.get("url", "")).strip()
+        title = str(source.get("title", "")).strip()
+        filename = str(source.get("filename", "")).strip()
+        label = title or filename or str(source.get("source_id", "")).strip()
+        if not label and not url:
+            continue
+        dedupe_key = (label, url)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        if url and label:
+            rendered.append(f"- {label} - {url}")
+        elif label:
+            rendered.append(f"- {label}")
+        else:
+            rendered.append(f"- {url}")
+    if not rendered:
+        return ""
+    return "\n\nSources:\n" + "\n".join(rendered)
+
+
 @dataclass(frozen=True)
 class OpenAIChatGPTConfig:
     model: str
@@ -41,6 +95,13 @@ class OpenAIChatGPTConfig:
     request_timeout_seconds: float = 60.0
     max_output_tokens: int | None = None
     reasoning_effort: str | None = None
+    instructions: str = ""
+    conversation_state_mode: str = "conversation"
+    web_search_enabled: bool = False
+    web_search_allowed_domains: tuple[str, ...] = ()
+    web_search_user_location: dict[str, Any] | None = None
+    web_search_include_sources: bool = False
+    web_search_search_context_size: str | None = None
 
 
 class OpenAIChatGPTSession(SubjectSession):
@@ -66,14 +127,22 @@ class OpenAIChatGPTSession(SubjectSession):
         )
         self.pending_context_seed: tuple[TurnSeed, ...] = ()
         self.last_response_id = ""
+        self.conversation_id = ""
         self.turn_count = 0
 
     def _resolve_config(self, *, config: OpenAIChatGPTConfig, subject: SubjectSpec) -> OpenAIChatGPTConfig:
         overrides = dict(subject.adapter_config or {})
+        mode = str(overrides.get("conversation_state_mode", config.conversation_state_mode)).strip() or "conversation"
+        if mode not in {"conversation", "response_chain"}:
+            raise ValueError(f"Unsupported conversation_state_mode {mode!r}.")
         base_url_value = overrides.get("base_url", config.base_url)
         request_timeout_seconds_value = overrides.get("request_timeout_seconds", config.request_timeout_seconds)
         max_output_tokens_value = overrides.get("max_output_tokens", config.max_output_tokens)
         reasoning_effort_value = overrides.get("reasoning_effort", config.reasoning_effort)
+        instructions_value = overrides.get("instructions", config.instructions)
+        user_location_value = overrides.get("web_search_user_location", config.web_search_user_location)
+        search_context_size_value = overrides.get("web_search_search_context_size", config.web_search_search_context_size)
+        allowed_domains_value = overrides.get("web_search_allowed_domains", config.web_search_allowed_domains)
         return OpenAIChatGPTConfig(
             model=str(overrides.get("model", config.model)).strip() or config.model,
             api_key=str(overrides.get("api_key", config.api_key)).strip() or config.api_key,
@@ -83,12 +152,30 @@ class OpenAIChatGPTSession(SubjectSession):
             ),
             max_output_tokens=int(max_output_tokens_value) if max_output_tokens_value is not None else None,
             reasoning_effort=(str(reasoning_effort_value).strip() or None) if reasoning_effort_value is not None else None,
+            instructions=str(instructions_value or ""),
+            conversation_state_mode=mode,
+            web_search_enabled=_bool_override(overrides.get("web_search_enabled"), config.web_search_enabled),
+            web_search_allowed_domains=tuple(
+                str(domain).strip()
+                for domain in (allowed_domains_value or ())
+                if str(domain).strip()
+            ),
+            web_search_user_location=dict(user_location_value) if user_location_value is not None else None,
+            web_search_include_sources=_bool_override(
+                overrides.get("web_search_include_sources"),
+                config.web_search_include_sources,
+            ),
+            web_search_search_context_size=(
+                str(search_context_size_value).strip() or None
+                if search_context_size_value is not None
+                else None
+            ),
         )
 
     def seed_context(self, context_seed: tuple[TurnSeed, ...]) -> None:
         self.pending_context_seed = tuple(context_seed)
 
-    def _input_items_for_message(self, message: str) -> list[dict[str, Any]]:
+    def _response_chain_input_items(self, message: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         if self.pending_context_seed:
             for turn in self.pending_context_seed:
@@ -97,43 +184,97 @@ class OpenAIChatGPTSession(SubjectSession):
         items.append({"role": "user", "content": message})
         return items
 
-    def submit_user_message(self, message: str) -> AdapterTurnResult:
-        input_items = self._input_items_for_message(message)
-        try:
-            response = self.client.create_response(
-                instructions="",
-                input_items=input_items,
-                previous_response_id=self.last_response_id or None,
+    def _ensure_conversation(self) -> str:
+        if self.config.conversation_state_mode != "conversation":
+            return ""
+        if self.conversation_id:
+            self.pending_context_seed = ()
+            return self.conversation_id
+        items = [
+            {"role": turn.role, "content": turn.content}
+            for turn in self.pending_context_seed
+        ]
+        metadata = {
+            "benchmark_run_id": self.benchmark_run_id,
+            "subject_name": self.subject.subject_name,
+        }
+        conversation = self.client.create_conversation(items=items, metadata=metadata)
+        self.pending_context_seed = ()
+        self.conversation_id = str(_item_get(conversation, "id", "")).strip()
+        if not self.conversation_id:
+            raise AdapterError("OpenAI ChatGPT conversation creation did not return an id.")
+        return self.conversation_id
+
+    def _web_search_tools(self) -> tuple[list[dict[str, Any]], list[str]]:
+        if not self.config.web_search_enabled:
+            return [], []
+        passthrough: dict[str, Any] = {}
+        if self.config.web_search_search_context_size is not None:
+            passthrough["search_context_size"] = self.config.web_search_search_context_size
+        include = ["web_search_call.action.sources"] if self.config.web_search_include_sources else []
+        return [
+            build_web_search_tool(
+                allowed_domains=self.config.web_search_allowed_domains,
+                user_location=self.config.web_search_user_location,
+                passthrough_config=passthrough,
             )
+        ], include
+
+    def submit_user_message(self, message: str) -> AdapterTurnResult:
+        tools, include = self._web_search_tools()
+        response_kwargs: dict[str, Any] = {
+            "instructions": self.config.instructions,
+            "tools": tools,
+            "include": include,
+        }
+        if self.config.conversation_state_mode == "conversation":
+            response_kwargs["conversation_id"] = self._ensure_conversation()
+            response_kwargs["input_items"] = [{"role": "user", "content": message}]
+        else:
+            response_kwargs["input_items"] = self._response_chain_input_items(message)
+            if self.last_response_id:
+                response_kwargs["previous_response_id"] = self.last_response_id
+        try:
+            response = self.client.create_response(**response_kwargs)
         except Exception as exc:  # pragma: no cover - exercised via adapter tests
             raise AdapterError(f"OpenAI ChatGPT request failed: {exc}") from exc
+        _raise_for_failed_response(response)
 
-        assistant_message = _response_text(response).strip()
-        if not assistant_message:
+        assistant_text = _response_text(response).strip()
+        if not assistant_text:
             raise AdapterError("OpenAI ChatGPT returned an empty assistant message.")
 
+        citations = extract_response_citations(response)
+        sources = extract_response_source_metadata(response)
+        rendered_message = assistant_text
+        if self.config.web_search_include_sources:
+            rendered_message += _render_sources_block(sources)
         self.last_response_id = str(_item_get(response, "id", "")).strip()
         self.turn_count += 1
         return AdapterTurnResult(
             user_message=message,
-            assistant_message=assistant_message,
+            assistant_message=rendered_message,
             run_id=self.last_response_id or None,
             status=_response_status(response),
             terminal_event_type="response",
             debug={
                 "response_id": self.last_response_id,
+                "conversation_id": self.conversation_id,
                 "turn_count": self.turn_count,
-                "seed_count": len(input_items) - 1,
+                "citations": citations,
+                "sources": sources,
             },
             metadata={
                 "model": self.config.model,
                 "provider": "openai",
+                "conversation_state_mode": self.config.conversation_state_mode,
             },
         )
 
     def close(self) -> dict[str, Any]:
         return {
             "last_response_id": self.last_response_id,
+            "conversation_id": self.conversation_id,
             "turn_count": self.turn_count,
         }
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -111,7 +111,30 @@ def test_subject_adapter_selection_supports_ai_linux_assistant_http_and_openai_c
     assert isinstance(adapters["openai_chatgpt"], OpenAIChatGPTAdapter)
 
 
-def test_openai_chatgpt_session_uses_openai_responses_and_context_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_chatgpt_adapter_selection_parses_string_booleans() -> None:
+    adapters = _subject_adapters_from_config(
+        {
+            "subject_adapters": {
+                "openai_chatgpt": {
+                    "type": "openai_chatgpt",
+                    "api_key": "chatgpt-key",
+                    "model": "gpt-5.4",
+                    "web_search_enabled": "false",
+                    "web_search_include_sources": "true",
+                },
+            }
+        }
+    )
+
+    adapter = adapters["openai_chatgpt"]
+    assert isinstance(adapter, OpenAIChatGPTAdapter)
+    assert adapter.config.web_search_enabled is False
+    assert adapter.config.web_search_include_sources is True
+
+
+def test_openai_chatgpt_session_uses_conversation_mode_web_search_and_source_rendering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class _FakeResponsesAPI:
         def __init__(self, responses: list[object]):
             self._responses = list(responses)
@@ -121,6 +144,14 @@ def test_openai_chatgpt_session_uses_openai_responses_and_context_seed(monkeypat
             self.calls.append(kwargs)
             return self._responses.pop(0)
 
+    class _FakeConversationsAPI:
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(id="conv_123", object="conversation")
+
     class _FakeOpenAI:
         instances: list["_FakeOpenAI"] = []
         queued_responses: list[list[object]] = []
@@ -128,19 +159,47 @@ def test_openai_chatgpt_session_uses_openai_responses_and_context_seed(monkeypat
         def __init__(self, **kwargs):
             self.init_kwargs = kwargs
             self.responses = _FakeResponsesAPI(self.queued_responses.pop(0))
+            self.conversations = _FakeConversationsAPI()
             self.__class__.instances.append(self)
 
     def _response(*, response_id: str, output_text: str):
-        return type(
-            "Response",
-            (),
-            {
-                "id": response_id,
-                "status": "completed",
-                "output_text": output_text,
-                "output": [],
-            },
-        )()
+        return SimpleNamespace(
+            id=response_id,
+            status="completed",
+            output_text=output_text,
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[
+                        SimpleNamespace(
+                            type="output_text",
+                            text=output_text,
+                            annotations=[
+                                SimpleNamespace(
+                                    type="url_citation",
+                                    url="https://platform.openai.com/docs",
+                                    title="OpenAI Docs",
+                                    start_index=0,
+                                    end_index=6,
+                                )
+                            ],
+                        )
+                    ],
+                ),
+                SimpleNamespace(
+                    type="web_search_call",
+                    action=SimpleNamespace(
+                        sources=[
+                            SimpleNamespace(
+                                type="url",
+                                title="OpenAI Docs",
+                                url="https://platform.openai.com/docs",
+                            )
+                        ]
+                    ),
+                ),
+            ],
+        )
 
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(response_id="resp-1", output_text="first"), _response(response_id="resp-2", output_text="second")]]
@@ -153,6 +212,9 @@ def test_openai_chatgpt_session_uses_openai_responses_and_context_seed(monkeypat
             model="gpt-5.4",
             api_key="chatgpt-key",
             request_timeout_seconds=12.5,
+            web_search_enabled=True,
+            web_search_allowed_domains=("platform.openai.com",),
+            web_search_include_sources=True,
         ),
         benchmark_run_id="bench-1",
         subject=SubjectSpec(subject_name="baseline", adapter_type="openai_chatgpt"),
@@ -164,15 +226,159 @@ def test_openai_chatgpt_session_uses_openai_responses_and_context_seed(monkeypat
 
     fake_client = _FakeOpenAI.instances[-1]
     assert fake_client.init_kwargs == {"api_key": "chatgpt-key", "timeout": 12.5}
-    assert first.assistant_message == "first"
-    assert second.assistant_message == "second"
+    assert first.assistant_message == "first\n\nSources:\n- OpenAI Docs - https://platform.openai.com/docs"
+    assert second.assistant_message == "second\n\nSources:\n- OpenAI Docs - https://platform.openai.com/docs"
+    assert fake_client.conversations.calls == [
+        {
+            "items": [
+                {"type": "message", "role": "system", "content": "Prior context"},
+                {"type": "message", "role": "assistant", "content": "Okay"},
+            ],
+            "metadata": {
+                "benchmark_run_id": "bench-1",
+                "subject_name": "baseline",
+            },
+        }
+    ]
+    assert fake_client.responses.calls == [
+        {
+            "model": "gpt-5.4",
+            "instructions": "",
+            "input": [{"role": "user", "content": "Fix nginx."}],
+            "conversation": {"id": "conv_123"},
+            "tools": [{"type": "web_search", "filters": {"allowed_domains": ["platform.openai.com"]}}],
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+            "include": ["web_search_call.action.sources"],
+        },
+        {
+            "model": "gpt-5.4",
+            "instructions": "",
+            "input": [{"role": "user", "content": "What changed?"}],
+            "conversation": {"id": "conv_123"},
+            "tools": [{"type": "web_search", "filters": {"allowed_domains": ["platform.openai.com"]}}],
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+            "include": ["web_search_call.action.sources"],
+        },
+    ]
+    assert first.debug["conversation_id"] == "conv_123"
+    assert first.debug["citations"] == (
+        {
+            "type": "url_citation",
+            "start_index": 0,
+            "end_index": 6,
+            "url": "https://platform.openai.com/docs",
+            "title": "OpenAI Docs",
+            "text": "first",
+        },
+    )
+
+
+def test_openai_chatgpt_session_surfaces_failed_response_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeResponsesAPI:
+        def __init__(self, responses: list[object]):
+            self._responses = list(responses)
+
+        def create(self, **kwargs):
+            del kwargs
+            return self._responses.pop(0)
+
+    class _FakeConversationsAPI:
+        def create(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(id="conv_123", object="conversation")
+
+    class _FakeOpenAI:
+        queued_responses: list[list[object]] = []
+
+        def __init__(self, **kwargs):
+            del kwargs
+            self.responses = _FakeResponsesAPI(self.queued_responses.pop(0))
+            self.conversations = _FakeConversationsAPI()
+
+    _FakeOpenAI.queued_responses = [[
+        SimpleNamespace(
+            id="resp_failed",
+            status="failed",
+            output_text="",
+            output=[],
+            error=SimpleNamespace(message="backend exploded"),
+        )
+    ]]
+    monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
+
+    from eval_harness.adapters.openai_chatgpt import OpenAIChatGPTConfig, OpenAIChatGPTSession
+
+    session = OpenAIChatGPTSession(
+        config=OpenAIChatGPTConfig(model="gpt-5.4", api_key="chatgpt-key"),
+        benchmark_run_id="bench-1",
+        subject=SubjectSpec(subject_name="baseline", adapter_type="openai_chatgpt"),
+    )
+
+    with pytest.raises(Exception, match="backend exploded"):
+        session.submit_user_message("Fix nginx.")
+
+
+def test_openai_chatgpt_session_supports_response_chain_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeResponsesAPI:
+        def __init__(self, responses: list[object]):
+            self._responses = list(responses)
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return self._responses.pop(0)
+
+    class _FakeConversationsAPI:
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(id="conv_unused", object="conversation")
+
+    class _FakeOpenAI:
+        instances: list["_FakeOpenAI"] = []
+        queued_responses: list[list[object]] = []
+
+        def __init__(self, **kwargs):
+            self.init_kwargs = kwargs
+            self.responses = _FakeResponsesAPI(self.queued_responses.pop(0))
+            self.conversations = _FakeConversationsAPI()
+            self.__class__.instances.append(self)
+
+    _FakeOpenAI.instances.clear()
+    _FakeOpenAI.queued_responses = [[
+        SimpleNamespace(id="resp-1", status="completed", output_text="first", output=[]),
+        SimpleNamespace(id="resp-2", status="completed", output_text="second", output=[]),
+    ]]
+    monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
+
+    from eval_harness.adapters.openai_chatgpt import OpenAIChatGPTConfig, OpenAIChatGPTSession
+
+    session = OpenAIChatGPTSession(
+        config=OpenAIChatGPTConfig(
+            model="gpt-5.4",
+            api_key="chatgpt-key",
+            conversation_state_mode="response_chain",
+        ),
+        benchmark_run_id="bench-1",
+        subject=SubjectSpec(subject_name="baseline", adapter_type="openai_chatgpt"),
+    )
+    session.seed_context((TurnSeed(role="system", content="Prior context"),))
+
+    session.submit_user_message("Fix nginx.")
+    session.submit_user_message("What changed?")
+
+    fake_client = _FakeOpenAI.instances[-1]
+    assert fake_client.conversations.calls == []
     assert fake_client.responses.calls == [
         {
             "model": "gpt-5.4",
             "instructions": "",
             "input": [
                 {"role": "system", "content": "Prior context"},
-                {"role": "assistant", "content": "Okay"},
                 {"role": "user", "content": "Fix nginx."},
             ],
         },
@@ -183,6 +389,85 @@ def test_openai_chatgpt_session_uses_openai_responses_and_context_seed(monkeypat
             "previous_response_id": "resp-1",
         },
     ]
+
+
+def test_openai_chatgpt_session_does_not_append_sources_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeResponsesAPI:
+        def __init__(self, responses: list[object]):
+            self._responses = list(responses)
+
+        def create(self, **kwargs):
+            del kwargs
+            return self._responses.pop(0)
+
+    class _FakeConversationsAPI:
+        def create(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(id="conv_123", object="conversation")
+
+    class _FakeOpenAI:
+        queued_responses: list[list[object]] = []
+
+        def __init__(self, **kwargs):
+            del kwargs
+            self.responses = _FakeResponsesAPI(self.queued_responses.pop(0))
+            self.conversations = _FakeConversationsAPI()
+
+    _FakeOpenAI.queued_responses = [[
+        SimpleNamespace(
+            id="resp-1",
+            status="completed",
+            output_text="first",
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[
+                        SimpleNamespace(
+                            type="output_text",
+                            text="first",
+                            annotations=[
+                                SimpleNamespace(
+                                    type="url_citation",
+                                    url="https://platform.openai.com/docs",
+                                    title="OpenAI Docs",
+                                    start_index=0,
+                                    end_index=5,
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+    ]]
+    monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
+
+    from eval_harness.adapters.openai_chatgpt import OpenAIChatGPTConfig, OpenAIChatGPTSession
+
+    session = OpenAIChatGPTSession(
+        config=OpenAIChatGPTConfig(
+            model="gpt-5.4",
+            api_key="chatgpt-key",
+            web_search_enabled=True,
+            web_search_include_sources=False,
+        ),
+        benchmark_run_id="bench-1",
+        subject=SubjectSpec(subject_name="baseline", adapter_type="openai_chatgpt"),
+    )
+
+    result = session.submit_user_message("Fix nginx.")
+
+    assert result.assistant_message == "first"
+    assert result.debug["citations"] == (
+        {
+            "type": "url_citation",
+            "start_index": 0,
+            "end_index": 5,
+            "url": "https://platform.openai.com/docs",
+            "title": "OpenAI Docs",
+            "text": "first",
+        },
+    )
 
 
 def test_openai_planner_config_controls_web_search_and_reasoning() -> None:

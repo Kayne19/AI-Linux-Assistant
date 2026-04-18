@@ -66,6 +66,9 @@
       "type": "openai_chatgpt",
       "api_key": "env:EVAL_HARNESS_CHATGPT_API_KEY",
       "model": "gpt-5.4",
+      "conversation_state_mode": "conversation",
+      "web_search_enabled": true,
+      "web_search_include_sources": true,
       "request_timeout_seconds": 60,
       "max_output_tokens": 1024
     }

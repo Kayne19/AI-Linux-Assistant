@@ -43,4 +43,8 @@ def test_aws_ai_linux_assistant_vs_chatgpt_example_config_is_valid_json():
     assert adapters["openai_chatgpt"]["type"] == "openai_chatgpt"
     assert adapters["openai_chatgpt"]["api_key"] == "env:EVAL_HARNESS_CHATGPT_API_KEY"
     assert adapters["openai_chatgpt"]["model"] == "gpt-5.4"
+    assert adapters["openai_chatgpt"]["conversation_state_mode"] == "conversation"
+    assert adapters["openai_chatgpt"]["web_search_enabled"] is True
+    assert adapters["openai_chatgpt"]["web_search_include_sources"] is True
+    assert "web_search_allowed_domains" not in adapters["openai_chatgpt"]
     assert {subject["adapter_type"] for subject in subjects} == {"ai_linux_assistant_http", "openai_chatgpt"}
