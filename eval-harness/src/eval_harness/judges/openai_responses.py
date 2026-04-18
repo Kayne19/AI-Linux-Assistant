@@ -5,23 +5,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from .base import BlindJudge
+from .schema import blind_judge_schema, normalize_blind_judge_payload
 from ..models import BlindJudgeRequest, BlindJudgeResult
 from ..openai_responses import OpenAIResponsesClient, OpenAIResponsesClientConfig
 
 
 def _blind_judge_schema() -> dict[str, Any]:
-    return {
-        "type": "object",
-        "properties": {
-            "blind_label": {"type": "string"},
-            "summary": {"type": "string"},
-            "scores": {"type": "object", "additionalProperties": True},
-            "raw_response": {"type": "object", "additionalProperties": True},
-            "metadata": {"type": "object", "additionalProperties": True},
-        },
-        "required": ["summary", "scores"],
-        "additionalProperties": False,
-    }
+    return blind_judge_schema()
 
 
 @dataclass(frozen=True)
@@ -71,15 +61,13 @@ class OpenAIResponsesBlindJudge(BlindJudge):
         payload = self._request_json_schema(
             instructions=(
                 "You are a blind benchmark judge. Grade the transcript against the rubric without inferring system identity. "
-                "Return structured data with blind_label, summary, and scores."
+                "Return structured data with blind_label, summary, and scores. "
+                "The scores field must be an array with one item per rubric entry. "
+                "Each item must contain the rubric text unchanged in criterion and an integer score."
             ),
             user_input=json.dumps(request.to_dict(), indent=2),
             schema_name="blind_judge_result",
             schema=_blind_judge_schema(),
             schema_description="Blind benchmark grading result.",
         )
-        if "blind_label" not in payload:
-            payload["blind_label"] = request.blind_label
-        if "raw_response" not in payload:
-            payload["raw_response"] = dict(payload)
-        return BlindJudgeResult.from_dict(payload)
+        return BlindJudgeResult.from_dict(normalize_blind_judge_payload(payload, blind_label=request.blind_label))

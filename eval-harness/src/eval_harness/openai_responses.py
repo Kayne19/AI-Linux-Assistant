@@ -263,6 +263,7 @@ class OpenAIResponsesClient:
         max_output_tokens: int | None = None,
         reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
+        self._validate_strict_json_schema(schema, schema_name=schema_name)
         response = self.create_response(
             instructions=instructions,
             input_items=user_input,
@@ -300,6 +301,48 @@ class OpenAIResponsesClient:
                 f"response_id={_item_get(response, 'id', '')!r}; payload_type={type(payload).__name__!r}"
             )
         return payload
+
+    def _validate_strict_json_schema(self, schema: Any, *, schema_name: str, path: str = "schema") -> None:
+        if not isinstance(schema, dict):
+            return
+
+        schema_type = schema.get("type")
+        if path == "schema" and schema_type != "object":
+            raise ValueError(
+                f"OpenAI strict JSON schema for {schema_name!r} must use an object root schema."
+            )
+
+        if schema_type == "object":
+            if schema.get("additionalProperties") is not False:
+                raise ValueError(
+                    f"OpenAI strict JSON schema for {schema_name!r} must set additionalProperties=false at {path}."
+                )
+            properties = schema.get("properties") or {}
+            required = schema.get("required") or []
+            if sorted(required) != sorted(properties.keys()):
+                raise ValueError(
+                    f"OpenAI strict JSON schema for {schema_name!r} must declare every property as required at {path}."
+                )
+            for property_name, property_schema in properties.items():
+                self._validate_strict_json_schema(
+                    property_schema,
+                    schema_name=schema_name,
+                    path=f"{path}.properties.{property_name}",
+                )
+        elif schema_type == "array":
+            self._validate_strict_json_schema(
+                schema.get("items"),
+                schema_name=schema_name,
+                path=f"{path}.items",
+            )
+
+        for keyword in ("anyOf", "allOf", "oneOf"):
+            for index, nested_schema in enumerate(schema.get(keyword) or []):
+                self._validate_strict_json_schema(
+                    nested_schema,
+                    schema_name=schema_name,
+                    path=f"{path}.{keyword}[{index}]",
+                )
 
     def _normalize_input_items(self, input_items: str | Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(input_items, str):
