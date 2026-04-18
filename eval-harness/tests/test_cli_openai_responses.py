@@ -12,7 +12,8 @@ if "eval_harness" not in sys.modules:
     namespace_pkg.__path__ = [str(SRC_EVAL_HARNESS)]  # type: ignore[attr-defined]
     sys.modules["eval_harness"] = namespace_pkg
 
-from eval_harness.cli import _judge_from_config, _planner_from_config, _user_proxy_llm_from_config
+from eval_harness.cli import _judge_from_config, _planner_from_config, _subject_adapters_from_config, _user_proxy_llm_from_config
+from eval_harness.adapters import AILinuxAssistantHttpAdapter, OpenAIChatGPTAdapter
 from eval_harness.judges.anthropic import AnthropicBlindJudge
 from eval_harness.judges.google_genai import GoogleGenAIBlindJudge
 from eval_harness.judges.openai_responses import OpenAIResponsesBlindJudge
@@ -22,6 +23,7 @@ from eval_harness.orchestration.user_proxy_llm_google import GoogleGenAIUserProx
 from eval_harness.planners.anthropic import AnthropicScenarioPlanner
 from eval_harness.planners.google_genai import GoogleGenAIScenarioPlanner
 from eval_harness.planners.openai_responses import OpenAIResponsesScenarioPlanner
+from eval_harness.models import SubjectSpec, TurnSeed
 
 
 def test_planner_and_judge_default_to_openai_responses() -> None:
@@ -85,6 +87,102 @@ def test_role_provider_selection_supports_openai_anthropic_and_google() -> None:
         _user_proxy_llm_from_config({"provider": "google", "model": "gemini-2.5-flash", "api_key": "proxy-key"}),
         GoogleGenAIUserProxyLLMClient,
     )
+
+
+def test_subject_adapter_selection_supports_ai_linux_assistant_http_and_openai_chatgpt() -> None:
+    adapters = _subject_adapters_from_config(
+        {
+            "subject_adapters": {
+                "ai_linux_assistant_http": {
+                    "type": "ai_linux_assistant_http",
+                    "base_url": "https://ai.example.invalid",
+                },
+                "openai_chatgpt": {
+                    "type": "openai_chatgpt",
+                    "api_key": "chatgpt-key",
+                    "model": "gpt-5.4",
+                },
+            }
+        }
+    )
+
+    assert set(adapters) == {"ai_linux_assistant_http", "openai_chatgpt"}
+    assert isinstance(adapters["ai_linux_assistant_http"], AILinuxAssistantHttpAdapter)
+    assert isinstance(adapters["openai_chatgpt"], OpenAIChatGPTAdapter)
+
+
+def test_openai_chatgpt_session_uses_openai_responses_and_context_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeResponsesAPI:
+        def __init__(self, responses: list[object]):
+            self._responses = list(responses)
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return self._responses.pop(0)
+
+    class _FakeOpenAI:
+        instances: list["_FakeOpenAI"] = []
+        queued_responses: list[list[object]] = []
+
+        def __init__(self, **kwargs):
+            self.init_kwargs = kwargs
+            self.responses = _FakeResponsesAPI(self.queued_responses.pop(0))
+            self.__class__.instances.append(self)
+
+    def _response(*, response_id: str, output_text: str):
+        return type(
+            "Response",
+            (),
+            {
+                "id": response_id,
+                "status": "completed",
+                "output_text": output_text,
+                "output": [],
+            },
+        )()
+
+    _FakeOpenAI.instances.clear()
+    _FakeOpenAI.queued_responses = [[_response(response_id="resp-1", output_text="first"), _response(response_id="resp-2", output_text="second")]]
+    monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
+
+    from eval_harness.adapters.openai_chatgpt import OpenAIChatGPTConfig, OpenAIChatGPTSession
+
+    session = OpenAIChatGPTSession(
+        config=OpenAIChatGPTConfig(
+            model="gpt-5.4",
+            api_key="chatgpt-key",
+            request_timeout_seconds=12.5,
+        ),
+        benchmark_run_id="bench-1",
+        subject=SubjectSpec(subject_name="baseline", adapter_type="openai_chatgpt"),
+    )
+    session.seed_context((TurnSeed(role="system", content="Prior context"), TurnSeed(role="assistant", content="Okay")))
+
+    first = session.submit_user_message("Fix nginx.")
+    second = session.submit_user_message("What changed?")
+
+    fake_client = _FakeOpenAI.instances[-1]
+    assert fake_client.init_kwargs == {"api_key": "chatgpt-key", "timeout": 12.5}
+    assert first.assistant_message == "first"
+    assert second.assistant_message == "second"
+    assert fake_client.responses.calls == [
+        {
+            "model": "gpt-5.4",
+            "instructions": "",
+            "input": [
+                {"role": "system", "content": "Prior context"},
+                {"role": "assistant", "content": "Okay"},
+                {"role": "user", "content": "Fix nginx."},
+            ],
+        },
+        {
+            "model": "gpt-5.4",
+            "instructions": "",
+            "input": [{"role": "user", "content": "What changed?"}],
+            "previous_response_id": "resp-1",
+        },
+    ]
 
 
 def test_openai_planner_config_controls_web_search_and_reasoning() -> None:

@@ -331,8 +331,15 @@ For the `ai_linux_assistant_http` subject adapter:
 - the minimum public flow is create project, create chat, create run, poll run, and poll run events
 - bearer-token auth is the recommended public path
 
+For the `openai_chatgpt` subject adapter:
+
+- the harness uses the local OpenAI Responses client already used by the planner, judge, and user proxy code
+- configure it with `model` and `api_key`, plus optional `base_url`, `request_timeout_seconds`, `max_output_tokens`, and `reasoning_effort`
+- `subjects[].adapter_config` can override those values per subject when you want to compare multiple ChatGPT baselines in the same run
+
 See:
 - [aws_ai_linux_assistant_config.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/aws_ai_linux_assistant_config.json)
+- [aws_ai_linux_assistant_vs_chatgpt_config.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/aws_ai_linux_assistant_vs_chatgpt_config.json)
 - [nginx_recovery_request.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/planner_requests/nginx_recovery_request.json)
 - [nginx_service_repair.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/scenarios/nginx_service_repair.json)
 

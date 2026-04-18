@@ -1,0 +1,91 @@
+{
+  "database": {
+    "url": "env:EVAL_HARNESS_DATABASE_URL"
+  },
+  "backend": {
+    "type": "aws_ec2",
+    "region": "env:EVAL_HARNESS_AWS_REGION",
+    "subnet_id": "env:EVAL_HARNESS_SUBNET_ID",
+    "security_group_ids": [
+      "env:EVAL_HARNESS_SECURITY_GROUP_ID"
+    ],
+    "instance_profile_name": "env:EVAL_HARNESS_INSTANCE_PROFILE_NAME",
+    "instance_type": "t3.small",
+    "default_target_image": "debian-12-ssm-golden",
+    "target_images": {
+      "debian-12-ssm-golden": {
+        "packer_template_dir": "infra/aws/packer",
+        "distro_vars_file": "infra/aws/packer/distros/debian-12.pkrvars.hcl"
+      }
+    },
+    "default_tags": {
+      "Project": "eval-harness",
+      "Owner": "research"
+    }
+  },
+  "controller": {
+    "type": "ssm",
+    "aws_region": "env:EVAL_HARNESS_AWS_REGION",
+    "default_session_key_prefix": "eval-harness",
+    "command_timeout_seconds": 600
+  },
+  "planner": {
+    "provider": "openai",
+    "model": "gpt-5.4",
+    "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
+    "reasoning_effort": "xhigh",
+    "web_search_enabled": true
+  },
+  "judge": {
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
+    "request_timeout_seconds": 90
+  },
+  "user_proxy_llm": {
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
+    "mode": "pragmatic_human",
+    "request_timeout_seconds": 300,
+    "reasoning_effort": "medium"
+  },
+  "subject_adapters": {
+    "ai_linux_assistant_http": {
+      "type": "ai_linux_assistant_http",
+      "base_url": "env:EVAL_HARNESS_AI_API_BASE_URL",
+      "request_timeout_seconds": 30,
+      "poll_interval_seconds": 1,
+      "poll_timeout_seconds": 1800,
+      "project_name_prefix": "eval-harness",
+      "bearer_tokens_by_subject": {
+        "ai-linux-assistant": "env:EVAL_HARNESS_AI_LINUX_ASSISTANT_TOKEN"
+      }
+    },
+    "openai_chatgpt": {
+      "type": "openai_chatgpt",
+      "api_key": "env:EVAL_HARNESS_CHATGPT_API_KEY",
+      "model": "gpt-5.4",
+      "request_timeout_seconds": 60,
+      "max_output_tokens": 1024
+    }
+  },
+  "subjects": [
+    {
+      "subject_name": "ai-linux-assistant",
+      "adapter_type": "ai_linux_assistant_http",
+      "display_name": "AI Linux Assistant",
+      "adapter_config": {
+        "magi_mode": "off"
+      },
+      "is_active": true
+    },
+    {
+      "subject_name": "chatgpt-baseline",
+      "adapter_type": "openai_chatgpt",
+      "display_name": "ChatGPT Baseline",
+      "adapter_config": {},
+      "is_active": true
+    }
+  ]
+}

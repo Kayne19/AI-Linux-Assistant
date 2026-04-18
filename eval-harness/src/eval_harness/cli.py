@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from .adapters.ai_linux_assistant_http import AILinuxAssistantHttpAdapter, AILinuxAssistantHttpConfig
+from .adapters.openai_chatgpt import OpenAIChatGPTAdapter, OpenAIChatGPTConfig
 from .artifacts import ArtifactStore, PostgresArtifactExporter
 from .backends.aws import AwsEc2Backend, AwsEc2BackendConfig, AwsTargetImageConfig
 from .controllers.ssm import SsmControllerFactory, SsmControllerFactoryConfig
@@ -25,6 +26,7 @@ from .planners.anthropic import AnthropicScenarioPlanner, AnthropicScenarioPlann
 from .planners.google_genai import GoogleGenAIScenarioPlanner, GoogleGenAIScenarioPlannerConfig
 from .planners.openai_responses import OpenAIResponsesScenarioPlanner, OpenAIResponsesScenarioPlannerConfig
 from .scenario import load_scenario, validate_scenario
+from .adapters.base import SubjectAdapter
 from .models import PlannerScenarioRequest
 
 
@@ -255,34 +257,57 @@ def _judge_from_config(config: dict[str, Any]):
     raise ValueError(f"Unsupported judge provider {provider!r}.")
 
 
-def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, AILinuxAssistantHttpAdapter]:
-    adapters: dict[str, AILinuxAssistantHttpAdapter] = {}
+def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, SubjectAdapter]:
+    adapters: dict[str, SubjectAdapter] = {}
     adapter_configs = dict(config.get("subject_adapters", {}) or {})
     if not adapter_configs and config.get("adapter"):
         adapter_configs = {"ai_linux_assistant_http": dict(config.get("adapter", {}) or {})}
     for adapter_type, adapter_config in adapter_configs.items():
         adapter_payload = dict(adapter_config or {})
         resolved_type = str(adapter_payload.get("type", adapter_type))
-        if resolved_type != "ai_linux_assistant_http":
-            raise ValueError(f"Unsupported subject adapter type {resolved_type!r}.")
-        adapters[adapter_type] = AILinuxAssistantHttpAdapter(
-            AILinuxAssistantHttpConfig(
-                base_url=str(adapter_payload["base_url"]),
-                request_timeout_seconds=float(adapter_payload.get("request_timeout_seconds", 30.0)),
-                poll_interval_seconds=float(adapter_payload.get("poll_interval_seconds", 1.0)),
-                poll_timeout_seconds=float(adapter_payload.get("poll_timeout_seconds", 1800.0)),
-                project_name_prefix=str(adapter_payload.get("project_name_prefix", "eval-harness")),
-                default_bearer_token=adapter_payload.get("default_bearer_token"),
-                bearer_tokens_by_subject={
-                    str(key): str(value)
-                    for key, value in dict(adapter_payload.get("bearer_tokens_by_subject", {}) or {}).items()
-                },
-                legacy_bootstrap_usernames_by_subject={
-                    str(key): str(value)
-                    for key, value in dict(adapter_payload.get("legacy_bootstrap_usernames_by_subject", {}) or {}).items()
-                },
+        if resolved_type == "ai_linux_assistant_http":
+            adapters[adapter_type] = AILinuxAssistantHttpAdapter(
+                AILinuxAssistantHttpConfig(
+                    base_url=str(adapter_payload["base_url"]),
+                    request_timeout_seconds=float(adapter_payload.get("request_timeout_seconds", 30.0)),
+                    poll_interval_seconds=float(adapter_payload.get("poll_interval_seconds", 1.0)),
+                    poll_timeout_seconds=float(adapter_payload.get("poll_timeout_seconds", 1800.0)),
+                    project_name_prefix=str(adapter_payload.get("project_name_prefix", "eval-harness")),
+                    default_bearer_token=adapter_payload.get("default_bearer_token"),
+                    bearer_tokens_by_subject={
+                        str(key): str(value)
+                        for key, value in dict(adapter_payload.get("bearer_tokens_by_subject", {}) or {}).items()
+                    },
+                    legacy_bootstrap_usernames_by_subject={
+                        str(key): str(value)
+                        for key, value in dict(adapter_payload.get("legacy_bootstrap_usernames_by_subject", {}) or {}).items()
+                    },
+                )
             )
-        )
+            continue
+        if resolved_type == "openai_chatgpt":
+            if "model" not in adapter_payload:
+                raise ValueError("subject_adapters.openai_chatgpt is missing model.")
+            if "api_key" not in adapter_payload:
+                raise ValueError("subject_adapters.openai_chatgpt is missing api_key.")
+            adapters[adapter_type] = OpenAIChatGPTAdapter(
+                OpenAIChatGPTConfig(
+                    model=str(adapter_payload["model"]),
+                    api_key=str(adapter_payload["api_key"]),
+                    base_url=(str(adapter_payload["base_url"]).strip() if adapter_payload.get("base_url") is not None else None),
+                    request_timeout_seconds=float(adapter_payload.get("request_timeout_seconds", 60.0)),
+                    max_output_tokens=(
+                        int(adapter_payload["max_output_tokens"]) if adapter_payload.get("max_output_tokens") is not None else None
+                    ),
+                    reasoning_effort=(
+                        str(adapter_payload["reasoning_effort"]).strip()
+                        if adapter_payload.get("reasoning_effort") is not None
+                        else None
+                    ),
+                )
+            )
+            continue
+        raise ValueError(f"Unsupported subject adapter type {resolved_type!r}.")
     return adapters
 
 

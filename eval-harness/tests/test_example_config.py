@@ -29,3 +29,18 @@ def test_aws_ai_linux_assistant_example_config_is_valid_json():
     assert controller["type"] == "ssm"
     assert controller["aws_region"] == "env:EVAL_HARNESS_AWS_REGION"
     assert "max_turns" not in payload["subjects"][0]["adapter_config"]
+
+
+def test_aws_ai_linux_assistant_vs_chatgpt_example_config_is_valid_json():
+    config_path = Path(__file__).resolve().parents[1] / "examples" / "aws_ai_linux_assistant_vs_chatgpt_config.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+
+    adapters = payload["subject_adapters"]
+    subjects = payload["subjects"]
+
+    assert "ai_linux_assistant_http" in adapters
+    assert "openai_chatgpt" in adapters
+    assert adapters["openai_chatgpt"]["type"] == "openai_chatgpt"
+    assert adapters["openai_chatgpt"]["api_key"] == "env:EVAL_HARNESS_CHATGPT_API_KEY"
+    assert adapters["openai_chatgpt"]["model"] == "gpt-5.4"
+    assert {subject["adapter_type"] for subject in subjects} == {"ai_linux_assistant_http", "openai_chatgpt"}
