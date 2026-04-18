@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
 from time import monotonic
+from threading import Event, Thread
 from typing import Any, Callable
 
 from ..backends.base import SandboxBackend, SandboxHandle
@@ -112,6 +113,7 @@ _TERMINAL_SETUP_STATUSES = frozenset(
         ScenarioSetupStatus.FAILED_INFRA.value,
     }
 )
+_PLANNER_HEARTBEAT_SECONDS = 30.0
 
 
 class ScenarioBuilderFSM:
@@ -302,7 +304,28 @@ class ScenarioBuilderFSM:
     def _call_planner(self, ctx: ScenarioBuilderContext, *, phase: str, action: Callable[[], Any]) -> Any:
         self._emit_event(ctx, event="planner_thinking_start", payload={"phase": phase})
         started_at = monotonic()
-        result = action()
+        stop_event = Event()
+
+        def _heartbeat() -> None:
+            while not stop_event.wait(_PLANNER_HEARTBEAT_SECONDS):
+                elapsed_seconds = round(monotonic() - started_at, 2)
+                self._emit_event(
+                    ctx,
+                    event="planner_thinking_heartbeat",
+                    payload={"phase": phase, "elapsed_seconds": elapsed_seconds},
+                )
+
+        heartbeat_thread = Thread(
+            target=_heartbeat,
+            name=f"planner-heartbeat-{phase}",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+        try:
+            result = action()
+        finally:
+            stop_event.set()
+            heartbeat_thread.join()
         elapsed_seconds = round(monotonic() - started_at, 2)
         self._emit_event(
             ctx,

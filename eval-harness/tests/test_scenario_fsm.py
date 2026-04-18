@@ -808,8 +808,33 @@ def test_progress_callback_reports_planner_timing(monkeypatch: pytest.MonkeyPatc
     store = _build_store()
     calls: list[tuple[str, str, dict]] = []
 
-    ticks = iter([10.0, 12.5, 20.0, 20.75])
+    class FakeEvent:
+        def __init__(self) -> None:
+            self._wait_results = iter([False, True])
+
+        def wait(self, timeout: float | None = None) -> bool:
+            del timeout
+            return next(self._wait_results)
+
+        def set(self) -> None:
+            return None
+
+    class FakeThread:
+        def __init__(self, *, target, name: str, daemon: bool) -> None:
+            del name, daemon
+            self._target = target
+
+        def start(self) -> None:
+            self._target()
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+            return None
+
+    ticks = iter([10.0, 40.0, 42.5, 50.0, 80.0, 80.75])
     monkeypatch.setattr("eval_harness.orchestration.scenario_fsm.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("eval_harness.orchestration.scenario_fsm.Event", FakeEvent)
+    monkeypatch.setattr("eval_harness.orchestration.scenario_fsm.Thread", FakeThread)
 
     def progress(fsm_name, scenario_name, details):
         calls.append((fsm_name, scenario_name, details))
@@ -821,9 +846,11 @@ def test_progress_callback_reports_planner_timing(monkeypatch: pytest.MonkeyPatc
 
     assert planner_events == [
         {"event": "planner_thinking_start", "phase": "generate_scenario"},
-        {"event": "planner_thinking_done", "phase": "generate_scenario", "elapsed_seconds": 2.5},
+        {"event": "planner_thinking_heartbeat", "phase": "generate_scenario", "elapsed_seconds": 30.0},
+        {"event": "planner_thinking_done", "phase": "generate_scenario", "elapsed_seconds": 32.5},
         {"event": "planner_thinking_start", "phase": "review_sabotage"},
-        {"event": "planner_thinking_done", "phase": "review_sabotage", "elapsed_seconds": 0.75},
+        {"event": "planner_thinking_heartbeat", "phase": "review_sabotage", "elapsed_seconds": 30.0},
+        {"event": "planner_thinking_done", "phase": "review_sabotage", "elapsed_seconds": 30.75},
     ]
 
 

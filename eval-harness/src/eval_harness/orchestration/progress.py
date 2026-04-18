@@ -117,6 +117,10 @@ def _render_message(fsm_name: str, scenario_name: str, details: dict) -> str:
     if event == "planner_thinking_start":
         phase = str(details.get("phase", "planner"))
         return f"Planner thinking: {phase}"
+    if event == "planner_thinking_heartbeat":
+        phase = str(details.get("phase", "planner"))
+        elapsed = details.get("elapsed_seconds", "?")
+        return f"Planner still thinking: {phase} ({elapsed}s)"
     if event == "planner_thinking_done":
         phase = str(details.get("phase", "planner"))
         elapsed = details.get("elapsed_seconds", "?")
