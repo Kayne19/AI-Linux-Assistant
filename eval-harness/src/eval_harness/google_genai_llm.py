@@ -15,7 +15,7 @@ class GoogleGenAIStructuredOutputClientConfig:
     model: str
     api_key: str
     base_url: str | None = None
-    request_timeout_seconds: float = 60.0
+    request_timeout_seconds: float | None = None
     max_output_tokens: int | None = None
     reasoning_effort: str | None = None
 
@@ -27,10 +27,12 @@ class GoogleGenAIStructuredOutputClient:
         if config.base_url:
             raise ValueError("Google GenAI client does not support base_url overrides in the eval harness.")
         self.config = config
-        self.client = genai.Client(
-            api_key=config.api_key,
-            http_options={"timeout": config.request_timeout_seconds},
-        )
+        client_kwargs: dict[str, Any] = {
+            "api_key": config.api_key,
+        }
+        if config.request_timeout_seconds is not None:
+            client_kwargs["http_options"] = {"timeout": config.request_timeout_seconds}
+        self.client = genai.Client(**client_kwargs)
 
     def request_json(
         self,

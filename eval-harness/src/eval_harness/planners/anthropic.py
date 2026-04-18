@@ -159,7 +159,7 @@ class AnthropicScenarioPlannerConfig:
     model: str
     api_key: str
     base_url: str | None = None
-    request_timeout_seconds: float = 60.0
+    request_timeout_seconds: float | None = None
     max_output_tokens: int | None = None
     reasoning_effort: str | None = None
 

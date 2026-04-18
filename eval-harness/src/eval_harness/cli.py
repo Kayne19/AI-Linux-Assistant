@@ -187,11 +187,12 @@ def _provider_from_role_config(config: dict[str, Any], *, default_provider: str 
 def _planner_from_config(config: dict[str, Any]):
     provider = _provider_from_role_config(config)
     base_url = str(config["base_url"]).strip() if config.get("base_url") is not None else None
+    raw_timeout = config.get("request_timeout_seconds")
     common_kwargs = {
         "model": str(config["model"]),
         "api_key": str(config["api_key"]),
         "base_url": base_url,
-        "request_timeout_seconds": float(config.get("request_timeout_seconds", 60.0)),
+        "request_timeout_seconds": float(raw_timeout) if raw_timeout is not None else None,
         "max_output_tokens": int(config["max_output_tokens"]) if config.get("max_output_tokens") is not None else None,
         "reasoning_effort": str(config["reasoning_effort"]) if config.get("reasoning_effort") is not None else None,
     }

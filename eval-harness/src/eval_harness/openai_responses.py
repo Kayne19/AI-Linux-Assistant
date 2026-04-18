@@ -21,7 +21,7 @@ class OpenAIResponsesClientConfig:
     model: str
     api_key: str
     base_url: str | None = None
-    request_timeout_seconds: float = 60.0
+    request_timeout_seconds: float | None = None
     max_output_tokens: int | None = None
     reasoning_effort: str | None = None
 
@@ -75,8 +75,9 @@ class OpenAIResponsesClient:
             raise RuntimeError("OpenAI SDK is not installed. Add the 'openai' package to use Responses API clients.")
         client_kwargs: dict[str, Any] = {
             "api_key": config.api_key,
-            "timeout": config.request_timeout_seconds,
         }
+        if config.request_timeout_seconds is not None:
+            client_kwargs["timeout"] = config.request_timeout_seconds
         if config.base_url:
             client_kwargs["base_url"] = config.base_url
         return OpenAI(**client_kwargs)

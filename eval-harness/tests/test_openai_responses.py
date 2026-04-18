@@ -121,6 +121,39 @@ def test_request_json_uses_responses_structured_outputs_and_config_defaults(monk
     ]
 
 
+def test_request_json_omits_timeout_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeOpenAI.instances.clear()
+    _FakeOpenAI.queued_responses = [[_response(output_text='{"ok": true}')]]
+    monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
+
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(
+            model="gpt-5.4-mini",
+            api_key="test-key",
+            request_timeout_seconds=None,
+        )
+    )
+
+    payload = client.request_json(
+        instructions="Return a JSON object.",
+        user_input="hello world",
+        schema_name="planner_result",
+        schema={
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        },
+        schema_description="Structured planner result.",
+    )
+
+    assert payload == {"ok": True}
+    fake_client = _FakeOpenAI.instances[-1]
+    assert fake_client.init_kwargs == {
+        "api_key": "test-key",
+    }
+
+
 def test_request_json_supports_tools_without_breaking_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(output_text='{"ok": true}')]]
@@ -205,7 +238,6 @@ def test_create_response_supports_previous_response_id_and_tool_outputs(monkeypa
     assert fake_client.init_kwargs == {
         "api_key": "test-key",
         "base_url": "https://api.example.invalid/v1",
-        "timeout": 60.0,
     }
     assert fake_client.responses.calls == [
         {

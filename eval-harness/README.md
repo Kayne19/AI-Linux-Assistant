@@ -243,6 +243,7 @@ Planner, judge, and `user_proxy_llm` config sections now select their model back
 OpenAI planner defaults:
 - when `planner.reasoning_effort` is omitted, the OpenAI planner uses `xhigh`
 - `planner.web_search_enabled` defaults to `true` on the OpenAI planner path and enables Responses web search for scenario generation, validation repair, sabotage review, and rectification planning
+- when `planner.request_timeout_seconds` is omitted, planner requests run without a client-side timeout
 - broad web search is the current v1 behavior; non-OpenAI planner providers ignore that toggle
 
 Benchmark subject turn limits are scenario-first:

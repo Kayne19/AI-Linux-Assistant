@@ -33,7 +33,6 @@
     "provider": "openai",
     "model": "gpt-5.4",
     "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
-    "request_timeout_seconds": 90,
     "reasoning_effort": "xhigh",
     "web_search_enabled": true
   },

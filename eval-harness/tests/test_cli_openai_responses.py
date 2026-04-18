@@ -34,6 +34,7 @@ def test_planner_and_judge_default_to_openai_responses() -> None:
     assert isinstance(judge, OpenAIResponsesBlindJudge)
     assert planner.config.web_search_enabled is True
     assert planner.client.config.reasoning_effort == "xhigh"
+    assert planner.client.config.request_timeout_seconds is None
 
 
 def test_planner_and_judge_reject_legacy_type() -> None:
@@ -100,6 +101,20 @@ def test_openai_planner_config_controls_web_search_and_reasoning() -> None:
     assert isinstance(planner, OpenAIResponsesScenarioPlanner)
     assert planner.config.web_search_enabled is False
     assert planner.client.config.reasoning_effort == "medium"
+
+
+def test_openai_planner_config_accepts_explicit_timeout_when_set() -> None:
+    planner = _planner_from_config(
+        {
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "api_key": "planner-key",
+            "request_timeout_seconds": 600,
+        }
+    )
+
+    assert isinstance(planner, OpenAIResponsesScenarioPlanner)
+    assert planner.client.config.request_timeout_seconds == 600.0
 
 
 def test_openai_planner_config_rejects_invalid_web_search_string() -> None:

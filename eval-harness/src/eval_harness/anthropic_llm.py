@@ -14,7 +14,7 @@ class AnthropicStructuredOutputClientConfig:
     model: str
     api_key: str
     base_url: str | None = None
-    request_timeout_seconds: float = 60.0
+    request_timeout_seconds: float | None = None
     max_output_tokens: int | None = None
     reasoning_effort: str | None = None
 
@@ -25,8 +25,9 @@ class AnthropicStructuredOutputClient:
             raise RuntimeError("Anthropic SDK is not installed. Add the 'anthropic' package to use Anthropic clients.")
         client_kwargs: dict[str, Any] = {
             "api_key": config.api_key,
-            "timeout": config.request_timeout_seconds,
         }
+        if config.request_timeout_seconds is not None:
+            client_kwargs["timeout"] = config.request_timeout_seconds
         if config.base_url:
             client_kwargs["base_url"] = config.base_url
         self.config = config
