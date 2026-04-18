@@ -59,7 +59,9 @@
       "poll_timeout_seconds": 1800,
       "project_name_prefix": "eval-harness",
       "bearer_tokens_by_subject": {
-        "ai-linux-assistant": "env:EVAL_HARNESS_AI_LINUX_ASSISTANT_TOKEN"
+        "regular": "env:EVAL_HARNESS_REGULAR_TOKEN",
+        "magi-lite": "env:EVAL_HARNESS_MAGI_LITE_TOKEN",
+        "magi-full": "env:EVAL_HARNESS_MAGI_FULL_TOKEN"
       }
     },
     "openai_chatgpt": {
@@ -76,13 +78,31 @@
   },
   "subjects": [
     {
-      "subject_name": "ai-linux-assistant",
+      "subject_name": "regular",
       "adapter_type": "ai_linux_assistant_http",
-      "display_name": "AI Linux Assistant",
+      "display_name": "AI Linux Assistant Regular",
       "adapter_config": {
         "magi_mode": "off"
       },
       "is_active": true
+    },
+    {
+      "subject_name": "magi-lite",
+      "adapter_type": "ai_linux_assistant_http",
+      "display_name": "AI Linux Assistant Magi Lite",
+      "adapter_config": {
+        "magi_mode": "lite"
+      },
+      "is_active": true
+    },
+    {
+      "subject_name": "magi-full",
+      "adapter_type": "ai_linux_assistant_http",
+      "display_name": "AI Linux Assistant Magi Full",
+      "adapter_config": {
+        "magi_mode": "full"
+      },
+      "is_active": false
     },
     {
       "subject_name": "chatgpt-baseline",
