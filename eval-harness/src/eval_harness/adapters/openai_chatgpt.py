@@ -232,9 +232,6 @@ class OpenAIChatGPTSession(SubjectSession):
             "turn_index": str(self.turn_count),
         }
 
-    def _response_user(self) -> str:
-        return f"eval-harness:{self.benchmark_run_id}:{self.subject.subject_name}"
-
     def _response_chain_input_items(self, message: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         if self.pending_context_seed:
@@ -291,7 +288,6 @@ class OpenAIChatGPTSession(SubjectSession):
             "instructions": self._resolved_instructions(),
             "tools": tools,
             "include": include,
-            "user": self._response_user(),
             "metadata": self._response_metadata(),
         }
         if self.config.truncation:

@@ -305,7 +305,6 @@ def test_openai_chatgpt_session_uses_conversation_mode_web_search_and_source_ren
             "parallel_tool_calls": True,
             "include": ["web_search_call.action.sources"],
             "truncation": "auto",
-            "user": "eval-harness:bench-1:baseline",
             "metadata": {
                 "benchmark_run_id": "bench-1",
                 "subject_name": "baseline",
@@ -322,7 +321,6 @@ def test_openai_chatgpt_session_uses_conversation_mode_web_search_and_source_ren
             "parallel_tool_calls": True,
             "include": ["web_search_call.action.sources"],
             "truncation": "auto",
-            "user": "eval-harness:bench-1:baseline",
             "metadata": {
                 "benchmark_run_id": "bench-1",
                 "subject_name": "baseline",
@@ -454,7 +452,6 @@ def test_openai_chatgpt_session_supports_response_chain_fallback(monkeypatch: py
             "instructions": expected_instructions,
             "input": [{"role": "user", "content": "Fix nginx."}],
             "truncation": "auto",
-            "user": "eval-harness:bench-1:baseline",
             "metadata": {
                 "benchmark_run_id": "bench-1",
                 "subject_name": "baseline",
@@ -467,7 +464,6 @@ def test_openai_chatgpt_session_supports_response_chain_fallback(monkeypatch: py
             "input": [{"role": "user", "content": "What changed?"}],
             "previous_response_id": "resp-1",
             "truncation": "auto",
-            "user": "eval-harness:bench-1:baseline",
             "metadata": {
                 "benchmark_run_id": "bench-1",
                 "subject_name": "baseline",
@@ -617,7 +613,7 @@ def test_openai_chatgpt_session_defaults_enable_web_search_and_code_interpreter_
     assert call["tool_choice"] == "auto"
     assert call["parallel_tool_calls"] is True
     assert call["truncation"] == "auto"
-    assert call["user"] == "eval-harness:bench-2:baseline"
+    assert "user" not in call
     assert call["metadata"] == {
         "benchmark_run_id": "bench-2",
         "subject_name": "baseline",
