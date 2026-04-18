@@ -18,9 +18,15 @@ from eval_harness.scenario import ScenarioValidationError
 
 
 class FakePlanner(OpenAIResponsesScenarioPlanner):
-    def __init__(self, responses: list[dict]):
+    def __init__(
+        self,
+        responses: list[dict],
+        *,
+        config: OpenAIResponsesScenarioPlannerConfig | None = None,
+    ):
         super().__init__(
-            OpenAIResponsesScenarioPlannerConfig(
+            config
+            or OpenAIResponsesScenarioPlannerConfig(
                 model="test-model",
                 api_key="test-key",
             )
@@ -36,6 +42,7 @@ class FakePlanner(OpenAIResponsesScenarioPlanner):
         schema_name: str,
         schema: dict,
         schema_description: str = "",
+        tools=None,
     ) -> dict:
         self.calls.append(
             {
@@ -44,6 +51,7 @@ class FakePlanner(OpenAIResponsesScenarioPlanner):
                 "schema_name": schema_name,
                 "schema": schema,
                 "schema_description": schema_description,
+                "tools": tools,
             }
         )
         return self.responses.pop(0)
@@ -62,6 +70,27 @@ def _config() -> OpenAIResponsesScenarioPlannerConfig:
         model="test-model",
         api_key="test-key",
     )
+
+
+def test_openai_planner_defaults_web_search_and_xhigh_reasoning() -> None:
+    planner = OpenAIResponsesScenarioPlanner(_config())
+
+    assert planner.config.web_search_enabled is True
+    assert planner.client.config.reasoning_effort == "xhigh"
+
+
+def test_openai_planner_respects_explicit_reasoning_and_web_search_toggle() -> None:
+    planner = OpenAIResponsesScenarioPlanner(
+        OpenAIResponsesScenarioPlannerConfig(
+            model="test-model",
+            api_key="test-key",
+            reasoning_effort="medium",
+            web_search_enabled=False,
+        )
+    )
+
+    assert planner.config.web_search_enabled is False
+    assert planner.client.config.reasoning_effort == "medium"
 
 
 def _valid_payload() -> dict:
@@ -103,6 +132,29 @@ def _scenario():
     return FakePlanner([_valid_payload()]).generate_scenario(_request())
 
 
+def test_generate_scenario_passes_web_search_tools_by_default() -> None:
+    planner = FakePlanner([_valid_payload()])
+
+    planner.generate_scenario(_request())
+
+    assert planner.calls[0]["tools"] == ({"type": "web_search"},)
+
+
+def test_generate_scenario_omits_web_search_tools_when_disabled() -> None:
+    planner = FakePlanner(
+        [_valid_payload()],
+        config=OpenAIResponsesScenarioPlannerConfig(
+            model="test-model",
+            api_key="test-key",
+            web_search_enabled=False,
+        ),
+    )
+
+    planner.generate_scenario(_request())
+
+    assert planner.calls[0]["tools"] is None
+
+
 def test_generate_scenario_repairs_invalid_initial_payload() -> None:
     planner = FakePlanner(
         [
@@ -117,6 +169,7 @@ def test_generate_scenario_repairs_invalid_initial_payload() -> None:
     assert len(planner.calls) == 2
     assert planner.calls[0]["schema_name"] == "planner_scenario"
     assert planner.calls[1]["schema_name"] == "planner_scenario_repair"
+    assert planner.calls[1]["tools"] == ({"type": "web_search"},)
     assert "validation_errors" in str(planner.calls[1]["user_input"])
     assert scenario.verification_probes[0].command.startswith("bash -lc 'state=$(systemctl show -p ActiveState --value nginx")
     assert scenario.verification_probes[0].match_mode.value == "any"

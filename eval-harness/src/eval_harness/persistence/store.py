@@ -196,6 +196,20 @@ class EvalHarnessStore:
             session.add(row)
             session.commit()
 
+    def update_scenario_revision_verification_plan(
+        self,
+        *,
+        revision_id: str,
+        verification_plan: dict,
+    ) -> None:
+        with self._session_factory() as session:
+            row = session.get(ScenarioRevisionRecord, revision_id)
+            if row is None:
+                raise ValueError(f"Unknown revision_id: {revision_id}")
+            row.verification_plan_json = dict(verification_plan)
+            session.add(row)
+            session.commit()
+
     def create_setup_run(
         self,
         *,

@@ -32,6 +32,8 @@ def test_planner_and_judge_default_to_openai_responses() -> None:
     assert judge.name == "openai_responses_blind_judge"
     assert isinstance(planner, OpenAIResponsesScenarioPlanner)
     assert isinstance(judge, OpenAIResponsesBlindJudge)
+    assert planner.config.web_search_enabled is True
+    assert planner.client.config.reasoning_effort == "xhigh"
 
 
 def test_planner_and_judge_reject_legacy_type() -> None:
@@ -82,6 +84,34 @@ def test_role_provider_selection_supports_openai_anthropic_and_google() -> None:
         _user_proxy_llm_from_config({"provider": "google", "model": "gemini-2.5-flash", "api_key": "proxy-key"}),
         GoogleGenAIUserProxyLLMClient,
     )
+
+
+def test_openai_planner_config_controls_web_search_and_reasoning() -> None:
+    planner = _planner_from_config(
+        {
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "api_key": "planner-key",
+            "reasoning_effort": "medium",
+            "web_search_enabled": False,
+        }
+    )
+
+    assert isinstance(planner, OpenAIResponsesScenarioPlanner)
+    assert planner.config.web_search_enabled is False
+    assert planner.client.config.reasoning_effort == "medium"
+
+
+def test_openai_planner_config_rejects_invalid_web_search_string() -> None:
+    with pytest.raises(ValueError, match="web_search_enabled"):
+        _planner_from_config(
+            {
+                "provider": "openai",
+                "model": "gpt-5.4",
+                "api_key": "planner-key",
+                "web_search_enabled": "fasle",
+            }
+        )
 
 
 def test_role_provider_selection_rejects_unknown_provider() -> None:

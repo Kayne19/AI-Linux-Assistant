@@ -112,9 +112,20 @@ def _planner_review_schema() -> dict[str, Any]:
             "summary": {"type": "string"},
             "correction_instructions": {"type": "array", "items": {"type": "string"}},
             "updated_observable_problem_statement": {"type": "string"},
+            "updated_verification_probes": {
+                "type": "array",
+                "items": _verification_check_schema(description="Normalized pre-clone broken-state verification probe."),
+            },
             "metadata": {"type": "object", "properties": {}, "additionalProperties": False},
         },
-        "required": ["outcome", "summary", "correction_instructions", "updated_observable_problem_statement", "metadata"],
+        "required": [
+            "outcome",
+            "summary",
+            "correction_instructions",
+            "updated_observable_problem_statement",
+            "updated_verification_probes",
+            "metadata",
+        ],
         "additionalProperties": False,
     }
 
@@ -162,6 +173,7 @@ class OpenAIResponsesScenarioPlannerConfig:
     request_timeout_seconds: float = 60.0
     max_output_tokens: int | None = None
     reasoning_effort: str | None = None
+    web_search_enabled: bool = True
 
 
 class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
@@ -176,9 +188,14 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
                 base_url=config.base_url,
                 request_timeout_seconds=config.request_timeout_seconds,
                 max_output_tokens=config.max_output_tokens,
-                reasoning_effort=config.reasoning_effort,
+                reasoning_effort=config.reasoning_effort if config.reasoning_effort is not None else "xhigh",
             )
         )
+
+    def _responses_tools(self) -> tuple[dict[str, Any], ...] | None:
+        if not self.config.web_search_enabled:
+            return None
+        return ({"type": "web_search"},)
 
     def _request_json_schema(
         self,
@@ -188,6 +205,7 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
         schema_name: str,
         schema: dict[str, Any],
         schema_description: str = "",
+        tools: tuple[dict[str, Any], ...] | None = None,
     ) -> dict[str, Any]:
         return self.client.request_json(
             instructions=instructions,
@@ -195,6 +213,7 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
             schema_name=schema_name,
             schema=schema,
             schema_description=schema_description,
+            tools=tools,
         )
 
     def _scenario_generation_prompt(self) -> str:
@@ -282,6 +301,7 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
                 schema_name="planner_scenario_repair",
                 schema=_scenario_schema(description="Corrected runnable troubleshooting scenario."),
                 schema_description="Corrected troubleshooting scenario.",
+                tools=self._responses_tools(),
             )
             return self._validated_scenario_from_payload(
                 repaired_payload,
@@ -296,6 +316,7 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
             schema_name="planner_scenario",
             schema=_scenario_schema(description="Runnable troubleshooting benchmark scenario."),
             schema_description="Runnable troubleshooting benchmark scenario.",
+            tools=self._responses_tools(),
         )
         return self._validated_scenario_from_payload(payload, request=request, allow_repair=True)
 
@@ -317,6 +338,7 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
             schema_name="planner_initial_user_message",
             schema=_initial_user_message_schema(),
             schema_description="Canonical first-turn benchmark user message.",
+            tools=self._responses_tools(),
         )
         return InitialUserMessageDraft.from_dict(payload)
 
@@ -338,6 +360,7 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
             schema_name="planner_initial_user_message_review",
             schema=_initial_user_message_review_schema(),
             schema_description="Self-review for a canonical first-turn benchmark user message.",
+            tools=self._responses_tools(),
         )
         return InitialUserMessageReview.from_dict(payload)
 
@@ -348,11 +371,15 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
         round_index: int,
         command_results: tuple[CommandExecutionResult, ...],
         correction_count: int,
+        verification_snapshot: dict[str, Any] | None = None,
     ) -> PlannerReviewDecision:
         instructions = (
             "You are reviewing whether a sabotage was applied correctly. "
             "Return a structured decision with outcome=approve or outcome=correct. "
-            "If correcting, provide comprehensive correction_instructions."
+            "If the machine is in the intended broken state but the verification probes are brittle, "
+            "approve and rewrite updated_verification_probes to make them robust across equivalent outputs. "
+            "Only return updated_verification_probes when the sabotage is correct and the matcher is the problem. "
+            "If correcting, provide comprehensive correction_instructions and leave updated_verification_probes empty."
         )
         payload = self._request_json_schema(
             instructions=instructions,
@@ -361,6 +388,7 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
                     "scenario": scenario.to_dict(),
                     "round_index": round_index,
                     "correction_count": correction_count,
+                    "verification_snapshot": verification_snapshot or {},
                     "command_results": [item.to_dict() for item in command_results],
                 },
                 indent=2,
@@ -368,6 +396,7 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
             schema_name="planner_review_decision",
             schema=_planner_review_schema(),
             schema_description="Planner review of sabotage verification results.",
+            tools=self._responses_tools(),
         )
         return PlannerReviewDecision.from_dict(payload)
 
@@ -408,6 +437,7 @@ class OpenAIResponsesScenarioPlanner(ScenarioPlanner):
             schema_name="planner_rectification",
             schema=_planner_rectification_schema(),
             schema_description="Concrete rectification shell commands.",
+            tools=self._responses_tools(),
         )
         commands = payload.get("commands")
         if not isinstance(commands, list):

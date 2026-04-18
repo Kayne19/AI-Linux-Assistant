@@ -28,7 +28,8 @@ V1 benchmark flow:
 - the ScenarioBuilderFSM applies sabotage on staging via SSM shell commands and runs the planner’s probes
 - the setup agent is explicitly told it is operating inside a disposable benchmark sandbox and must not refuse bounded sabotage on generic safety grounds
 - the verifier runs the exact probe commands and returns structured results; both verifier and setup-agent command execution are exercised before setup continues
-- planner reviews raw probe output and either approves or issues a correction
+- planner reviews raw probe output plus the harness-computed probe pass/fail snapshot and either approves or issues a correction
+- when the machine is in the intended broken state but a probe matcher is brittle, planner approval may rewrite `verification_probes` before the scenario revision is finalized
 - if the planner has to correct sabotage twice, the setup run fails
 - only planner-approved broken environments are cloned
 - each evaluation clone must still satisfy the scenario's `verification_probes` before the first subject turn; drifted clones fail immediately with `scenario_fidelity_failed`
@@ -238,6 +239,11 @@ python -m eval_harness generate-scenario \
 ```
 
 Planner, judge, and `user_proxy_llm` config sections now select their model backend with `provider: "openai" | "anthropic" | "google"` plus provider-specific credentials such as `api_key`.
+
+OpenAI planner defaults:
+- when `planner.reasoning_effort` is omitted, the OpenAI planner uses `xhigh`
+- `planner.web_search_enabled` defaults to `true` on the OpenAI planner path and enables Responses web search for scenario generation, validation repair, sabotage review, and rectification planning
+- broad web search is the current v1 behavior; non-OpenAI planner providers ignore that toggle
 
 Benchmark subject turn limits are scenario-first:
 - `subjects[].adapter_config.max_turns` is optional

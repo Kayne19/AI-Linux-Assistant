@@ -413,6 +413,7 @@ class PlannerReviewDecision:
     summary: str
     correction_instructions: tuple[str, ...] = ()
     updated_observable_problem_statement: str = ""
+    updated_verification_probes: tuple[VerificationCheck, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -429,6 +430,9 @@ class PlannerReviewDecision:
                 str(item).strip() for item in correction_items if str(item).strip()
             ),
             updated_observable_problem_statement=str(payload.get("updated_observable_problem_statement", "")).strip(),
+            updated_verification_probes=tuple(
+                VerificationCheck.from_dict(item) for item in payload.get("updated_verification_probes", []) or []
+            ),
             metadata=dict(payload.get("metadata", {}) or {}),
         )
 

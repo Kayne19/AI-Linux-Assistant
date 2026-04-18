@@ -11,6 +11,7 @@ from ..controllers.base import SandboxController, SandboxControllerFactory
 from ..mapping import scenario_spec_from_records, subject_spec_from_record
 from ..models import EvaluationRunStatus
 from ..persistence.store import EvalHarnessStore
+from ..scenario import build_verification_snapshot
 from .progress import FsmProgressSink
 from .user_proxy_fsm import USER_PROXY_MODES, UserProxyFSM
 from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMClientConfig
@@ -108,34 +109,7 @@ class BenchmarkRunOrchestrator:
         }
 
     def _verification_snapshot(self, scenario, command_results) -> dict:
-        checks: list[dict[str, Any]] = []
-        failed_probe_names: list[str] = []
-        paired_count = min(len(scenario.verification_probes), len(command_results))
-        for check, result in zip(scenario.verification_probes[:paired_count], command_results[:paired_count]):
-            passed = check.is_satisfied_by(result)
-            checks.append(
-                {
-                    "check": check.to_dict(),
-                    "result": result.to_dict(),
-                    "passed": passed,
-                }
-            )
-            if not passed:
-                failed_probe_names.append(check.name or result.command)
-        if len(command_results) != len(scenario.verification_probes):
-            for check in scenario.verification_probes[paired_count:]:
-                failed_probe_names.append(check.name or check.command)
-        passed_probe_count = sum(1 for item in checks if item["passed"])
-        return {
-            "verification_probe_results": checks,
-            "passed_verification_probe_count": passed_probe_count,
-            "failed_verification_probe_names": failed_probe_names,
-            "verification_probe_count": len(scenario.verification_probes),
-            "verification_command_result_count": len(command_results),
-            "verification_passed": len(command_results) == len(scenario.verification_probes) and passed_probe_count == len(
-                scenario.verification_probes
-            ),
-        }
+        return build_verification_snapshot(scenario, command_results)
 
     def _exception_reason(self, exc: BaseException) -> str:
         message = str(exc).strip()

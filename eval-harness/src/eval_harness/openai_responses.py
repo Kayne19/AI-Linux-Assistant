@@ -109,6 +109,7 @@ class OpenAIResponsesClient:
             request_kwargs["previous_response_id"] = previous_response_id
         if tools:
             request_kwargs["tools"] = list(tools)
+            request_kwargs["tool_choice"] = "auto"
             request_kwargs["parallel_tool_calls"] = True
         if text_format is not None:
             request_kwargs["text"] = {"format": text_format}

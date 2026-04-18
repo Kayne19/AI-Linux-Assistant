@@ -448,6 +448,134 @@ def test_correct_then_fix_then_approve() -> None:
     assert planner.review_calls == [(0, 0), (1, 1)]
 
 
+def test_scenario_fsm_persists_updated_verification_probes_on_approve() -> None:
+    store = _build_store()
+    controller = FakeController(
+        execute_batches=[
+            (
+                CommandExecutionResult(
+                    command="nginx -t",
+                    stdout="",
+                    stderr='2026/04/18 09:18:51 [emerg] unknown directive "invalid_directive"',
+                    exit_code=1,
+                ),
+            ),
+        ]
+    )
+    planner = FakePlanner(
+        review_decisions=[
+            PlannerReviewDecision(
+                outcome=PlannerReviewOutcome.APPROVE,
+                summary="Broken state is correct; normalize the matcher.",
+                updated_verification_probes=(
+                    VerificationCheck(
+                        name="nginx-config-broken",
+                        command="nginx -t",
+                        intent="Verify nginx config test fails.",
+                        expected_regexes=("(?i)(unknown|invalid) directive",),
+                        expected_exit_code=1,
+                    ),
+                ),
+                metadata={"probe_normalization": "rewrote brittle matcher"},
+            )
+        ],
+    )
+
+    fsm = _build_fsm(store=store, controller=controller, planner=planner)
+    result = fsm.run()
+    revision = store.get_scenario_revision(result.scenario_revision_id)
+
+    assert revision is not None
+    assert revision.verification_plan_json == {
+        "probes": [
+            {
+                "name": "nginx-config-broken",
+                "command": "nginx -t",
+                "intent": "Verify nginx config test fails.",
+                "expected_substrings": [],
+                "expected_regexes": ["(?i)(unknown|invalid) directive"],
+                "unexpected_substrings": [],
+                "unexpected_regexes": [],
+                "expected_exact_match": None,
+                "expected_exit_code": 1,
+                "match_mode": "all",
+                "timeout_seconds": 60,
+            }
+        ]
+    }
+    assert planner.review_snapshots[0]["verification_passed"] is False
+    assert planner.review_snapshots[0]["failed_verification_probe_names"] == ["nginx-broken"]
+
+
+def test_scenario_fsm_does_not_persist_updated_verification_probes_on_correct() -> None:
+    store = _build_store()
+    planner = FakePlanner(
+        review_decisions=[
+            PlannerReviewDecision(
+                outcome=PlannerReviewOutcome.CORRECT,
+                summary="Broken state is still wrong; do not rewrite probes yet.",
+                correction_instructions=("re-run sabotage",),
+                updated_verification_probes=(
+                    VerificationCheck(
+                        name="should-not-persist",
+                        command="nginx -t",
+                        intent="This should be ignored until approval.",
+                        expected_exit_code=1,
+                    ),
+                ),
+            ),
+        ],
+        rectification_commands=("echo fix",),
+    )
+    controller = FakeController(
+        execute_batches=[
+            (),  # BUILD
+            (),  # VERIFY
+            (),  # FIX_EXECUTE
+            (),  # VERIFY after rectification
+        ]
+    )
+
+    fsm = _build_fsm(store=store, controller=controller, planner=planner, max_corrections=2)
+    result = fsm.run()
+    revision = store.get_scenario_revision(result.scenario_revision_id)
+
+    assert revision is not None
+    assert revision.verification_plan_json["probes"][0]["name"] == "nginx-broken"
+
+
+def test_scenario_fsm_rejects_invalid_updated_verification_probes() -> None:
+    store = _build_store()
+    planner = FakePlanner(
+        review_decisions=[
+            PlannerReviewDecision(
+                outcome=PlannerReviewOutcome.APPROVE,
+                summary="Approve with malformed probe rewrite.",
+                updated_verification_probes=(
+                    VerificationCheck(
+                        name="broken-probe",
+                        command="nginx -t",
+                        intent="Missing machine-checkable expectation should fail validation.",
+                    ),
+                ),
+            ),
+        ],
+    )
+    controller = FakeController(
+        execute_batches=[
+            (),  # BUILD
+            (),  # VERIFY
+        ]
+    )
+
+    fsm = _build_fsm(store=store, controller=controller, planner=planner, max_corrections=2)
+
+    with pytest.raises(ScenarioSetupFailedError) as exc_info:
+        fsm.run()
+
+    assert "invalid_updated_verification_probes" in str(exc_info.value)
+
+
 def test_invalid_rectification_commands_fail_before_execution() -> None:
     store = _build_store()
 

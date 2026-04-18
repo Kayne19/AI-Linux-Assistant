@@ -72,6 +72,21 @@ def _resolve_env_placeholders(value: Any) -> Any:
     return value
 
 
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError(f"Invalid boolean value {value!r}; expected one of: true/false, yes/no, on/off, 1/0")
+    return bool(value)
+
+
 def _load_resolved_config(path: str | Path) -> dict[str, Any]:
     return _resolve_env_placeholders(_load_json(path))
 
@@ -181,7 +196,16 @@ def _planner_from_config(config: dict[str, Any]):
         "reasoning_effort": str(config["reasoning_effort"]) if config.get("reasoning_effort") is not None else None,
     }
     if provider == "openai":
-        return OpenAIResponsesScenarioPlanner(OpenAIResponsesScenarioPlannerConfig(**common_kwargs))
+        try:
+            web_search_enabled = _coerce_bool(config.get("web_search_enabled"), default=True)
+        except ValueError as exc:
+            raise ValueError(f"Invalid planner.web_search_enabled value: {exc}") from exc
+        return OpenAIResponsesScenarioPlanner(
+            OpenAIResponsesScenarioPlannerConfig(
+                **common_kwargs,
+                web_search_enabled=web_search_enabled,
+            )
+        )
     if provider == "anthropic":
         return AnthropicScenarioPlanner(AnthropicScenarioPlannerConfig(**common_kwargs))
     if provider == "google":

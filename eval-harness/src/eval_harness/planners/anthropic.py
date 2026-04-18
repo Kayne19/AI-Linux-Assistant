@@ -102,9 +102,19 @@ def _planner_review_schema() -> dict[str, Any]:
             "summary": {"type": "string"},
             "correction_instructions": {"type": "array", "items": {"type": "string"}},
             "updated_observable_problem_statement": {"type": "string"},
+            "updated_verification_probes": {
+                "type": "array",
+                "items": _verification_check_schema(description="Normalized pre-clone broken-state verification probe."),
+            },
             "metadata": {"type": "object", "additionalProperties": True},
         },
-        "required": ["outcome", "summary", "correction_instructions", "updated_observable_problem_statement"],
+        "required": [
+            "outcome",
+            "summary",
+            "correction_instructions",
+            "updated_observable_problem_statement",
+            "updated_verification_probes",
+        ],
         "additionalProperties": False,
     }
 
@@ -333,11 +343,15 @@ class AnthropicScenarioPlanner(ScenarioPlanner):
         round_index: int,
         command_results: tuple[CommandExecutionResult, ...],
         correction_count: int,
+        verification_snapshot: dict[str, Any] | None = None,
     ) -> PlannerReviewDecision:
         instructions = (
             "You are reviewing whether a sabotage was applied correctly. "
             "Return a structured decision with outcome=approve or outcome=correct. "
-            "If correcting, provide comprehensive correction_instructions."
+            "If the machine is in the intended broken state but the verification probes are brittle, "
+            "approve and rewrite updated_verification_probes to make them robust across equivalent outputs. "
+            "Only return updated_verification_probes when the sabotage is correct and the matcher is the problem. "
+            "If correcting, provide comprehensive correction_instructions and leave updated_verification_probes empty."
         )
         payload = self._request_json_schema(
             instructions=instructions,
@@ -346,6 +360,7 @@ class AnthropicScenarioPlanner(ScenarioPlanner):
                     "scenario": scenario.to_dict(),
                     "round_index": round_index,
                     "correction_count": correction_count,
+                    "verification_snapshot": verification_snapshot or {},
                     "command_results": [result.to_dict() for result in command_results],
                 },
                 indent=2,

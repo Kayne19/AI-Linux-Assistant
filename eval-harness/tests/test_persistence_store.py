@@ -287,3 +287,46 @@ def test_setup_run_status_merges_backend_metadata() -> None:
         "resolved_golden_ami_id": "ami-golden",
         "golden_image_build_triggered": True,
     }
+
+
+def test_update_scenario_revision_verification_plan_replaces_probes() -> None:
+    store, session_factory = _build_store()
+    scenario = store.create_scenario(title="Verification Plan", scenario_name_hint="verification-plan")
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-2",
+        summary="verification plan issue",
+        what_it_tests={"category": "verification"},
+        observable_problem_statement="nginx is broken",
+        sabotage_plan={"steps": ["noop"]},
+        verification_plan={"probes": [{"name": "broken", "command": "nginx -t", "expected_exit_code": 1}]},
+        judge_rubric={"criteria": ["verification"]},
+    )
+
+    store.update_scenario_revision_verification_plan(
+        revision_id=revision.id,
+        verification_plan={
+            "probes": [
+                {
+                    "name": "nginx-config-broken",
+                    "command": "nginx -t",
+                    "expected_exit_code": 1,
+                    "expected_regexes": ["(?i)(unknown|invalid) directive"],
+                }
+            ]
+        },
+    )
+
+    with session_factory() as session:
+        stored = session.get(ScenarioRevisionRecord, revision.id)
+        assert stored is not None
+        assert stored.verification_plan_json == {
+            "probes": [
+                {
+                    "name": "nginx-config-broken",
+                    "command": "nginx -t",
+                    "expected_exit_code": 1,
+                    "expected_regexes": ["(?i)(unknown|invalid) directive"],
+                }
+            ]
+        }

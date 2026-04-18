@@ -48,6 +48,7 @@ class ScenarioPlanner(ABC):
         round_index: int,
         command_results: tuple[CommandExecutionResult, ...],
         correction_count: int,
+        verification_snapshot: dict[str, Any] | None = None,
     ) -> PlannerReviewDecision:
         raise NotImplementedError
 

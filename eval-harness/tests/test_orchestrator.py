@@ -82,6 +82,7 @@ class FakePlanner(ScenarioPlanner):
     generated_scenario: ScenarioSpec = field(default_factory=_scenario)
     review_decisions: list[PlannerReviewDecision] = field(default_factory=list)
     review_calls: list[tuple[int, int]] = field(default_factory=list)
+    review_snapshots: list[dict[str, object]] = field(default_factory=list)
     rectification_commands: tuple[str, ...] = ("echo fake rectify",)
     rectification_calls: list[dict] = field(default_factory=list)
     name: str = "fake_planner"
@@ -115,9 +116,11 @@ class FakePlanner(ScenarioPlanner):
         round_index: int,
         command_results: tuple[CommandExecutionResult, ...],
         correction_count: int,
+        verification_snapshot: dict[str, Any] | None = None,
     ) -> PlannerReviewDecision:
         del scenario, command_results
         self.review_calls.append((round_index, correction_count))
+        self.review_snapshots.append(dict(verification_snapshot or {}))
         if self.review_decisions:
             return self.review_decisions.pop(0)
         return PlannerReviewDecision(outcome=PlannerReviewOutcome.APPROVE, summary="approved")
@@ -584,6 +587,37 @@ def test_planner_review_decision_normalizes_string_correction_instructions() -> 
     )
 
     assert decision.correction_instructions == ("Install nginx and retry sabotage.",)
+
+
+def test_planner_review_decision_parses_updated_verification_probes() -> None:
+    decision = PlannerReviewDecision.from_dict(
+        {
+            "outcome": "approve",
+            "summary": "The sabotage is correct but the matcher is brittle.",
+            "correction_instructions": [],
+            "updated_observable_problem_statement": "",
+            "updated_verification_probes": [
+                {
+                    "name": "nginx-config-broken",
+                    "command": "nginx -t",
+                    "intent": "Verify nginx config test fails.",
+                    "expected_substrings": [],
+                    "expected_regexes": ["(?i)(unknown|invalid) directive"],
+                    "unexpected_substrings": [],
+                    "unexpected_regexes": [],
+                    "expected_exact_match": None,
+                    "expected_exit_code": 1,
+                    "match_mode": "all",
+                    "timeout_seconds": 10,
+                }
+            ],
+            "metadata": {"probe_normalization": "rewrote brittle matcher"},
+        }
+    )
+
+    assert len(decision.updated_verification_probes) == 1
+    assert decision.updated_verification_probes[0].expected_regexes == ("(?i)(unknown|invalid) directive",)
+    assert decision.metadata == {"probe_normalization": "rewrote brittle matcher"}
 
 
 def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair() -> None:

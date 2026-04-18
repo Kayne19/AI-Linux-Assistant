@@ -22,7 +22,7 @@ from ..models import (
 )
 from ..persistence.store import EvalHarnessStore
 from ..planners.base import ScenarioPlanner
-from ..scenario import validate_sabotage_step, validate_scenario
+from ..scenario import ScenarioValidationError, build_verification_snapshot, validate_sabotage_step, validate_scenario
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +451,7 @@ class ScenarioBuilderFSM:
             round_index=ctx.round_index,
             command_results=ctx.last_command_results,
             correction_count=ctx.correction_count,
+            verification_snapshot=build_verification_snapshot(ctx.scenario, ctx.last_command_results),
         )
         ctx.last_review_decision = decision
 
@@ -492,6 +493,28 @@ class ScenarioBuilderFSM:
             payload=decision.to_dict(),
         )
         ctx.seq += 1
+
+        if decision.outcome.value == "approve" and decision.updated_verification_probes:
+            updated_scenario = replace(
+                ctx.scenario,
+                verification_probes=decision.updated_verification_probes,
+            )
+            try:
+                validate_scenario(updated_scenario)
+            except ScenarioValidationError as exc:
+                ctx.failure_reason = "invalid_updated_verification_probes"
+                ctx.failure_metadata = {
+                    "validation_error": str(exc),
+                    "updated_verification_probes": [item.to_dict() for item in decision.updated_verification_probes],
+                    "round_index": ctx.round_index,
+                }
+                return ScenarioBuilderState.FAILED
+            verification_plan = {"probes": [item.to_dict() for item in decision.updated_verification_probes]}
+            self.store.update_scenario_revision_verification_plan(
+                revision_id=ctx.revision_row.id,
+                verification_plan=verification_plan,
+            )
+            ctx.scenario = updated_scenario
 
         if decision.outcome.value == "approve":
             return ScenarioBuilderState.CREATE_IMAGE

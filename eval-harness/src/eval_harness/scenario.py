@@ -79,6 +79,36 @@ def evaluate_verification(check: VerificationCheck, result: CommandExecutionResu
     return check.is_satisfied_by(result)
 
 
+def build_verification_snapshot(scenario: ScenarioSpec, command_results: tuple[CommandExecutionResult, ...]) -> dict[str, object]:
+    checks: list[dict[str, object]] = []
+    failed_probe_names: list[str] = []
+    paired_count = min(len(scenario.verification_probes), len(command_results))
+    for check, result in zip(scenario.verification_probes[:paired_count], command_results[:paired_count]):
+        passed = check.is_satisfied_by(result)
+        checks.append(
+            {
+                "check": check.to_dict(),
+                "result": result.to_dict(),
+                "passed": passed,
+            }
+        )
+        if not passed:
+            failed_probe_names.append(check.name or result.command)
+    if len(command_results) != len(scenario.verification_probes):
+        for check in scenario.verification_probes[paired_count:]:
+            failed_probe_names.append(check.name or check.command)
+    passed_probe_count = sum(1 for item in checks if item["passed"])
+    return {
+        "verification_probe_results": checks,
+        "passed_verification_probe_count": passed_probe_count,
+        "failed_verification_probe_names": failed_probe_names,
+        "verification_probe_count": len(scenario.verification_probes),
+        "verification_command_result_count": len(command_results),
+        "verification_passed": len(command_results) == len(scenario.verification_probes)
+        and passed_probe_count == len(scenario.verification_probes),
+    }
+
+
 def validate_sabotage_step(step: str, index: int, *, field_name: str = "sabotage_procedure") -> str | None:
     stripped = step.strip()
     if not stripped:

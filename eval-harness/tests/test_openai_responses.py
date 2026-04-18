@@ -121,6 +121,66 @@ def test_request_json_uses_responses_structured_outputs_and_config_defaults(monk
     ]
 
 
+def test_request_json_supports_tools_without_breaking_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeOpenAI.instances.clear()
+    _FakeOpenAI.queued_responses = [[_response(output_text='{"ok": true}')]]
+    monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
+
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(
+            model="gpt-5.4-mini",
+            api_key="test-key",
+            request_timeout_seconds=12.5,
+            base_url=None,
+            max_output_tokens=321,
+            reasoning_effort="medium",
+        )
+    )
+
+    payload = client.request_json(
+        instructions="Return a JSON object.",
+        user_input="hello world",
+        schema_name="planner_result",
+        schema={
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        },
+        schema_description="Structured planner result.",
+        tools=[{"type": "web_search"}],
+    )
+
+    assert payload == {"ok": True}
+    fake_client = _FakeOpenAI.instances[-1]
+    assert fake_client.responses.calls == [
+        {
+            "model": "gpt-5.4-mini",
+            "instructions": "Return a JSON object.",
+            "input": [{"role": "user", "content": "hello world"}],
+            "max_output_tokens": 321,
+            "reasoning": {"effort": "medium"},
+            "tools": [{"type": "web_search"}],
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "planner_result",
+                    "description": "Structured planner result.",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+        }
+    ]
+
+
 def test_create_response_supports_previous_response_id_and_tool_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(output_text="done")]]
@@ -226,4 +286,3 @@ def test_extract_function_calls_parses_stringified_arguments() -> None:
     assert tool_calls[0].name == "run_command"
     assert tool_calls[0].call_id == "call_456"
     assert tool_calls[0].arguments == {"command": "uname -a"}
-
