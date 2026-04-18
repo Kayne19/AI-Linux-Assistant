@@ -209,6 +209,9 @@ class OpenAIResponsesClient:
         include: Sequence[str] | None = None,
         max_output_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        truncation: str | None = None,
+        user: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Any:
         request_kwargs: dict[str, Any] = {
             "model": self.config.model,
@@ -234,6 +237,18 @@ class OpenAIResponsesClient:
             request_kwargs["include"] = [str(item) for item in include if str(item).strip()]
         if text_format is not None:
             request_kwargs["text"] = {"format": text_format}
+        if truncation:
+            request_kwargs["truncation"] = truncation
+        cleaned_user = str(user or "").strip()
+        if cleaned_user:
+            request_kwargs["user"] = cleaned_user
+        cleaned_metadata = {
+            str(key): str(value)
+            for key, value in dict(metadata or {}).items()
+            if str(key).strip() and value is not None
+        }
+        if cleaned_metadata:
+            request_kwargs["metadata"] = cleaned_metadata
         return self.client.responses.create(**request_kwargs)
 
     def create_conversation(

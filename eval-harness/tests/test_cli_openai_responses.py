@@ -132,6 +132,55 @@ def test_openai_chatgpt_adapter_selection_parses_string_booleans() -> None:
     assert adapter.config.web_search_include_sources is True
 
 
+def test_openai_chatgpt_adapter_defaults_mirror_chatgpt_browser() -> None:
+    adapters = _subject_adapters_from_config(
+        {
+            "subject_adapters": {
+                "openai_chatgpt": {
+                    "type": "openai_chatgpt",
+                    "api_key": "chatgpt-key",
+                    "model": "gpt-5.4",
+                },
+            }
+        }
+    )
+
+    adapter = adapters["openai_chatgpt"]
+    assert isinstance(adapter, OpenAIChatGPTAdapter)
+    assert adapter.config.web_search_enabled is True
+    assert adapter.config.code_interpreter_enabled is True
+    assert adapter.config.truncation == "auto"
+    assert adapter.config.request_timeout_seconds is None
+    assert adapter.config.max_output_tokens is None
+
+
+def test_openai_chatgpt_adapter_parses_code_interpreter_and_truncation_overrides() -> None:
+    adapters = _subject_adapters_from_config(
+        {
+            "subject_adapters": {
+                "openai_chatgpt": {
+                    "type": "openai_chatgpt",
+                    "api_key": "chatgpt-key",
+                    "model": "gpt-5.4",
+                    "code_interpreter_enabled": "false",
+                    "truncation": "disabled",
+                },
+            }
+        }
+    )
+
+    adapter = adapters["openai_chatgpt"]
+    assert isinstance(adapter, OpenAIChatGPTAdapter)
+    assert adapter.config.code_interpreter_enabled is False
+    assert adapter.config.truncation == "disabled"
+
+
+def _fixed_clock():
+    from datetime import datetime, timezone
+
+    return lambda: datetime(2026, 4, 18, 12, 0, 0, tzinfo=timezone.utc)
+
+
 def test_openai_chatgpt_session_uses_conversation_mode_web_search_and_source_rendering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -215,9 +264,11 @@ def test_openai_chatgpt_session_uses_conversation_mode_web_search_and_source_ren
             web_search_enabled=True,
             web_search_allowed_domains=("platform.openai.com",),
             web_search_include_sources=True,
+            code_interpreter_enabled=False,
         ),
         benchmark_run_id="bench-1",
         subject=SubjectSpec(subject_name="baseline", adapter_type="openai_chatgpt"),
+        clock=_fixed_clock(),
     )
     session.seed_context((TurnSeed(role="system", content="Prior context"), TurnSeed(role="assistant", content="Okay")))
 
@@ -231,7 +282,6 @@ def test_openai_chatgpt_session_uses_conversation_mode_web_search_and_source_ren
     assert fake_client.conversations.calls == [
         {
             "items": [
-                {"type": "message", "role": "system", "content": "Prior context"},
                 {"type": "message", "role": "assistant", "content": "Okay"},
             ],
             "metadata": {
@@ -240,26 +290,44 @@ def test_openai_chatgpt_session_uses_conversation_mode_web_search_and_source_ren
             },
         }
     ]
+    expected_instructions = (
+        "You are ChatGPT, a large language model trained by OpenAI.\n"
+        "Current date: 2026-04-18\n\nPrior context"
+    )
     assert fake_client.responses.calls == [
         {
             "model": "gpt-5.4",
-            "instructions": "",
+            "instructions": expected_instructions,
             "input": [{"role": "user", "content": "Fix nginx."}],
             "conversation": {"id": "conv_123"},
             "tools": [{"type": "web_search", "filters": {"allowed_domains": ["platform.openai.com"]}}],
             "tool_choice": "auto",
             "parallel_tool_calls": True,
             "include": ["web_search_call.action.sources"],
+            "truncation": "auto",
+            "user": "eval-harness:bench-1:baseline",
+            "metadata": {
+                "benchmark_run_id": "bench-1",
+                "subject_name": "baseline",
+                "turn_index": "0",
+            },
         },
         {
             "model": "gpt-5.4",
-            "instructions": "",
+            "instructions": expected_instructions,
             "input": [{"role": "user", "content": "What changed?"}],
             "conversation": {"id": "conv_123"},
             "tools": [{"type": "web_search", "filters": {"allowed_domains": ["platform.openai.com"]}}],
             "tool_choice": "auto",
             "parallel_tool_calls": True,
             "include": ["web_search_call.action.sources"],
+            "truncation": "auto",
+            "user": "eval-harness:bench-1:baseline",
+            "metadata": {
+                "benchmark_run_id": "bench-1",
+                "subject_name": "baseline",
+                "turn_index": "1",
+            },
         },
     ]
     assert first.debug["conversation_id"] == "conv_123"
@@ -362,9 +430,12 @@ def test_openai_chatgpt_session_supports_response_chain_fallback(monkeypatch: py
             model="gpt-5.4",
             api_key="chatgpt-key",
             conversation_state_mode="response_chain",
+            web_search_enabled=False,
+            code_interpreter_enabled=False,
         ),
         benchmark_run_id="bench-1",
         subject=SubjectSpec(subject_name="baseline", adapter_type="openai_chatgpt"),
+        clock=_fixed_clock(),
     )
     session.seed_context((TurnSeed(role="system", content="Prior context"),))
 
@@ -372,21 +443,36 @@ def test_openai_chatgpt_session_supports_response_chain_fallback(monkeypatch: py
     session.submit_user_message("What changed?")
 
     fake_client = _FakeOpenAI.instances[-1]
+    expected_instructions = (
+        "You are ChatGPT, a large language model trained by OpenAI.\n"
+        "Current date: 2026-04-18\n\nPrior context"
+    )
     assert fake_client.conversations.calls == []
     assert fake_client.responses.calls == [
         {
             "model": "gpt-5.4",
-            "instructions": "",
-            "input": [
-                {"role": "system", "content": "Prior context"},
-                {"role": "user", "content": "Fix nginx."},
-            ],
+            "instructions": expected_instructions,
+            "input": [{"role": "user", "content": "Fix nginx."}],
+            "truncation": "auto",
+            "user": "eval-harness:bench-1:baseline",
+            "metadata": {
+                "benchmark_run_id": "bench-1",
+                "subject_name": "baseline",
+                "turn_index": "0",
+            },
         },
         {
             "model": "gpt-5.4",
-            "instructions": "",
+            "instructions": expected_instructions,
             "input": [{"role": "user", "content": "What changed?"}],
             "previous_response_id": "resp-1",
+            "truncation": "auto",
+            "user": "eval-harness:bench-1:baseline",
+            "metadata": {
+                "benchmark_run_id": "bench-1",
+                "subject_name": "baseline",
+                "turn_index": "1",
+            },
         },
     ]
 
@@ -467,6 +553,135 @@ def test_openai_chatgpt_session_does_not_append_sources_when_disabled(monkeypatc
             "title": "OpenAI Docs",
             "text": "first",
         },
+    )
+
+
+def test_openai_chatgpt_session_defaults_enable_web_search_and_code_interpreter_with_auto_preamble(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeResponsesAPI:
+        def __init__(self, responses):
+            self._responses = list(responses)
+            self.calls: list[dict] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return self._responses.pop(0)
+
+    class _FakeConversationsAPI:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(id="conv_default", object="conversation")
+
+    class _FakeOpenAI:
+        instances: list = []
+        queued_responses: list = []
+
+        def __init__(self, **kwargs):
+            self.init_kwargs = kwargs
+            self.responses = _FakeResponsesAPI(self.queued_responses.pop(0))
+            self.conversations = _FakeConversationsAPI()
+            self.__class__.instances.append(self)
+
+    _FakeOpenAI.instances.clear()
+    _FakeOpenAI.queued_responses = [[
+        SimpleNamespace(id="resp-1", status="completed", output_text="Hi.", output=[]),
+    ]]
+    monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
+
+    from eval_harness.adapters.openai_chatgpt import OpenAIChatGPTConfig, OpenAIChatGPTSession
+
+    session = OpenAIChatGPTSession(
+        config=OpenAIChatGPTConfig(model="gpt-5.4", api_key="chatgpt-key"),
+        benchmark_run_id="bench-2",
+        subject=SubjectSpec(subject_name="baseline", adapter_type="openai_chatgpt"),
+        clock=_fixed_clock(),
+    )
+
+    session.submit_user_message("Hello.")
+
+    fake_client = _FakeOpenAI.instances[-1]
+    assert fake_client.init_kwargs == {"api_key": "chatgpt-key"}
+    call = fake_client.responses.calls[0]
+    assert call["instructions"] == (
+        "You are ChatGPT, a large language model trained by OpenAI.\n"
+        "Current date: 2026-04-18"
+    )
+    assert call["tools"] == [
+        {"type": "web_search"},
+        {"type": "code_interpreter", "container": {"type": "auto"}},
+    ]
+    assert call["tool_choice"] == "auto"
+    assert call["parallel_tool_calls"] is True
+    assert call["truncation"] == "auto"
+    assert call["user"] == "eval-harness:bench-2:baseline"
+    assert call["metadata"] == {
+        "benchmark_run_id": "bench-2",
+        "subject_name": "baseline",
+        "turn_index": "0",
+    }
+    assert "include" not in call
+
+
+def test_openai_chatgpt_session_respects_explicit_instructions_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeResponsesAPI:
+        def __init__(self, responses):
+            self._responses = list(responses)
+            self.calls: list[dict] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return self._responses.pop(0)
+
+    class _FakeConversationsAPI:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(id="conv_explicit", object="conversation")
+
+    class _FakeOpenAI:
+        instances: list = []
+        queued_responses: list = []
+
+        def __init__(self, **kwargs):
+            del kwargs
+            self.responses = _FakeResponsesAPI(self.queued_responses.pop(0))
+            self.conversations = _FakeConversationsAPI()
+            self.__class__.instances.append(self)
+
+    _FakeOpenAI.instances.clear()
+    _FakeOpenAI.queued_responses = [[
+        SimpleNamespace(id="resp-1", status="completed", output_text="Hi.", output=[]),
+    ]]
+    monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
+
+    from eval_harness.adapters.openai_chatgpt import OpenAIChatGPTConfig, OpenAIChatGPTSession
+
+    session = OpenAIChatGPTSession(
+        config=OpenAIChatGPTConfig(
+            model="gpt-5.4",
+            api_key="chatgpt-key",
+            instructions="You are a helpful pirate.",
+            web_search_enabled=False,
+            code_interpreter_enabled=False,
+        ),
+        benchmark_run_id="bench-3",
+        subject=SubjectSpec(subject_name="baseline", adapter_type="openai_chatgpt"),
+        clock=_fixed_clock(),
+    )
+    session.seed_context((TurnSeed(role="system", content="Stay in scope."),))
+    session.submit_user_message("Ahoy.")
+
+    fake_client = _FakeOpenAI.instances[-1]
+    assert fake_client.responses.calls[0]["instructions"] == (
+        "You are a helpful pirate.\n\nStay in scope."
     )
 
 

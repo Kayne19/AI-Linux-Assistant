@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from datetime import datetime, timezone
+from typing import Any, Callable, Sequence
 
 from .base import AdapterError, SubjectAdapter, SubjectSession
 from ..models import AdapterTurnResult, SubjectSpec, TurnSeed
@@ -12,6 +13,18 @@ from ..openai_responses import (
     extract_response_citations,
     extract_response_source_metadata,
 )
+
+
+DEFAULT_CHATGPT_IDENTITY = "You are ChatGPT, a large language model trained by OpenAI."
+
+
+def _default_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def build_default_chatgpt_preamble(clock: Callable[[], datetime] = _default_clock) -> str:
+    today = clock().date().isoformat()
+    return f"{DEFAULT_CHATGPT_IDENTITY}\nCurrent date: {today}"
 
 
 def _item_get(value: Any, key: str, default: Any = None) -> Any:
@@ -92,16 +105,18 @@ class OpenAIChatGPTConfig:
     model: str
     api_key: str
     base_url: str | None = None
-    request_timeout_seconds: float = 60.0
+    request_timeout_seconds: float | None = None
     max_output_tokens: int | None = None
     reasoning_effort: str | None = None
     instructions: str = ""
     conversation_state_mode: str = "conversation"
-    web_search_enabled: bool = False
+    web_search_enabled: bool = True
     web_search_allowed_domains: tuple[str, ...] = ()
     web_search_user_location: dict[str, Any] | None = None
     web_search_include_sources: bool = False
     web_search_search_context_size: str | None = None
+    code_interpreter_enabled: bool = True
+    truncation: str | None = "auto"
 
 
 class OpenAIChatGPTSession(SubjectSession):
@@ -111,10 +126,12 @@ class OpenAIChatGPTSession(SubjectSession):
         config: OpenAIChatGPTConfig,
         benchmark_run_id: str,
         subject: SubjectSpec,
+        clock: Callable[[], datetime] = _default_clock,
     ):
         self.config = self._resolve_config(config=config, subject=subject)
         self.benchmark_run_id = benchmark_run_id
         self.subject = subject
+        self.clock = clock
         self.client = OpenAIResponsesClient(
             OpenAIResponsesClientConfig(
                 model=self.config.model,
@@ -126,6 +143,7 @@ class OpenAIChatGPTSession(SubjectSession):
             )
         )
         self.pending_context_seed: tuple[TurnSeed, ...] = ()
+        self.system_preamble_suffix = ""
         self.last_response_id = ""
         self.conversation_id = ""
         self.turn_count = 0
@@ -143,12 +161,15 @@ class OpenAIChatGPTSession(SubjectSession):
         user_location_value = overrides.get("web_search_user_location", config.web_search_user_location)
         search_context_size_value = overrides.get("web_search_search_context_size", config.web_search_search_context_size)
         allowed_domains_value = overrides.get("web_search_allowed_domains", config.web_search_allowed_domains)
+        truncation_value = overrides.get("truncation", config.truncation)
         return OpenAIChatGPTConfig(
             model=str(overrides.get("model", config.model)).strip() or config.model,
             api_key=str(overrides.get("api_key", config.api_key)).strip() or config.api_key,
             base_url=(str(base_url_value).strip() or None) if base_url_value is not None else None,
-            request_timeout_seconds=float(
-                request_timeout_seconds_value if request_timeout_seconds_value is not None else config.request_timeout_seconds
+            request_timeout_seconds=(
+                float(request_timeout_seconds_value)
+                if request_timeout_seconds_value is not None
+                else config.request_timeout_seconds
             ),
             max_output_tokens=int(max_output_tokens_value) if max_output_tokens_value is not None else None,
             reasoning_effort=(str(reasoning_effort_value).strip() or None) if reasoning_effort_value is not None else None,
@@ -170,10 +191,49 @@ class OpenAIChatGPTSession(SubjectSession):
                 if search_context_size_value is not None
                 else None
             ),
+            code_interpreter_enabled=_bool_override(
+                overrides.get("code_interpreter_enabled"),
+                config.code_interpreter_enabled,
+            ),
+            truncation=(
+                (str(truncation_value).strip() or None) if truncation_value is not None else None
+            ),
         )
 
     def seed_context(self, context_seed: tuple[TurnSeed, ...]) -> None:
-        self.pending_context_seed = tuple(context_seed)
+        system_parts: list[str] = []
+        non_system: list[TurnSeed] = []
+        for turn in context_seed:
+            if str(turn.role).strip().lower() == "system":
+                content = str(turn.content).strip()
+                if content:
+                    system_parts.append(content)
+            else:
+                non_system.append(turn)
+        if system_parts:
+            addition = "\n\n".join(system_parts)
+            self.system_preamble_suffix = (
+                f"{self.system_preamble_suffix}\n\n{addition}".strip()
+                if self.system_preamble_suffix
+                else addition
+            )
+        self.pending_context_seed = tuple(non_system)
+
+    def _resolved_instructions(self) -> str:
+        base = self.config.instructions.strip() or build_default_chatgpt_preamble(self.clock)
+        if self.system_preamble_suffix:
+            return f"{base}\n\n{self.system_preamble_suffix}"
+        return base
+
+    def _response_metadata(self) -> dict[str, str]:
+        return {
+            "benchmark_run_id": self.benchmark_run_id,
+            "subject_name": self.subject.subject_name,
+            "turn_index": str(self.turn_count),
+        }
+
+    def _response_user(self) -> str:
+        return f"eval-harness:{self.benchmark_run_id}:{self.subject.subject_name}"
 
     def _response_chain_input_items(self, message: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -205,28 +265,37 @@ class OpenAIChatGPTSession(SubjectSession):
             raise AdapterError("OpenAI ChatGPT conversation creation did not return an id.")
         return self.conversation_id
 
-    def _web_search_tools(self) -> tuple[list[dict[str, Any]], list[str]]:
-        if not self.config.web_search_enabled:
-            return [], []
-        passthrough: dict[str, Any] = {}
-        if self.config.web_search_search_context_size is not None:
-            passthrough["search_context_size"] = self.config.web_search_search_context_size
-        include = ["web_search_call.action.sources"] if self.config.web_search_include_sources else []
-        return [
-            build_web_search_tool(
-                allowed_domains=self.config.web_search_allowed_domains,
-                user_location=self.config.web_search_user_location,
-                passthrough_config=passthrough,
+    def _browser_parity_tools(self) -> tuple[list[dict[str, Any]], list[str]]:
+        tools: list[dict[str, Any]] = []
+        include: list[str] = []
+        if self.config.web_search_enabled:
+            passthrough: dict[str, Any] = {}
+            if self.config.web_search_search_context_size is not None:
+                passthrough["search_context_size"] = self.config.web_search_search_context_size
+            tools.append(
+                build_web_search_tool(
+                    allowed_domains=self.config.web_search_allowed_domains,
+                    user_location=self.config.web_search_user_location,
+                    passthrough_config=passthrough,
+                )
             )
-        ], include
+            if self.config.web_search_include_sources:
+                include.append("web_search_call.action.sources")
+        if self.config.code_interpreter_enabled:
+            tools.append({"type": "code_interpreter", "container": {"type": "auto"}})
+        return tools, include
 
     def submit_user_message(self, message: str) -> AdapterTurnResult:
-        tools, include = self._web_search_tools()
+        tools, include = self._browser_parity_tools()
         response_kwargs: dict[str, Any] = {
-            "instructions": self.config.instructions,
+            "instructions": self._resolved_instructions(),
             "tools": tools,
             "include": include,
+            "user": self._response_user(),
+            "metadata": self._response_metadata(),
         }
+        if self.config.truncation:
+            response_kwargs["truncation"] = self.config.truncation
         if self.config.conversation_state_mode == "conversation":
             response_kwargs["conversation_id"] = self._ensure_conversation()
             response_kwargs["input_items"] = [{"role": "user", "content": message}]

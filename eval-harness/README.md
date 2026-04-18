@@ -336,9 +336,15 @@ For the `openai_chatgpt` subject adapter:
 - the harness uses the local OpenAI Responses client already used by the planner, judge, and user proxy code
 - configure it with `model` and `api_key`, plus optional `base_url`, `request_timeout_seconds`, `max_output_tokens`, `reasoning_effort`, and `instructions`
 - `conversation_state_mode` defaults to `conversation`; set it to `response_chain` only when you explicitly need `previous_response_id` chaining instead of Conversations API state
-- web-search parity is config-driven via `web_search_enabled`, `web_search_allowed_domains`, `web_search_user_location`, `web_search_include_sources`, and `web_search_search_context_size`
+- `web_search_enabled` defaults to `true` to mirror chatgpt.com's browser defaults; `code_interpreter_enabled` also defaults to `true` and appends the OpenAI-hosted `code_interpreter` tool with `container.type="auto"`
+- other web-search parity knobs: `web_search_allowed_domains`, `web_search_user_location`, `web_search_include_sources`, and `web_search_search_context_size`
 - when `web_search_include_sources` is enabled, the adapter appends a compact `Sources:` block to the assistant reply so blind judging sees the cited answer rather than hidden debug metadata only
-- `subjects[].adapter_config` can override those values per subject when you want to compare multiple ChatGPT baselines in the same run
+- when `instructions` is omitted, the adapter auto-injects a minimal ChatGPT-style system preamble (`"You are ChatGPT, a large language model trained by OpenAI.\nCurrent date: YYYY-MM-DD"`) so the baseline is grounded in the current date the way the chatgpt.com browser UI is; setting `instructions` explicitly overrides the auto-preamble
+- any `system`-role entries in `subjects[].context_seed` are merged into `instructions` rather than injected as conversation items, because the Responses API treats the top-level `instructions` field as the model's base system prompt
+- `truncation` defaults to `"auto"` so long multi-turn runs do not overflow the context window
+- when `request_timeout_seconds` is omitted, the client runs without a client-side timeout, matching the planner path
+- every response request carries a stable `user` identifier (`eval-harness:<benchmark_run_id>:<subject_name>`) and a `metadata` block with `benchmark_run_id`, `subject_name`, and `turn_index` for abuse-monitoring parity and forensic lookup in the OpenAI dashboard
+- `subjects[].adapter_config` can override any of those values per subject when you want to compare multiple ChatGPT baselines in the same run
 
 See:
 - [aws_ai_linux_assistant_config.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/aws_ai_linux_assistant_config.json)

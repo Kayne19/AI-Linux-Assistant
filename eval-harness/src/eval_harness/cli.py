@@ -257,19 +257,6 @@ def _judge_from_config(config: dict[str, Any]):
     raise ValueError(f"Unsupported judge provider {provider!r}.")
 
 
-def _parse_optional_bool(value: Any) -> bool | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"Invalid boolean value {value!r}.")
-
-
 def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, SubjectAdapter]:
     adapters: dict[str, SubjectAdapter] = {}
     adapter_configs = dict(config.get("subject_adapters", {}) or {})
@@ -308,7 +295,11 @@ def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, SubjectAd
                     model=str(adapter_payload["model"]),
                     api_key=str(adapter_payload["api_key"]),
                     base_url=(str(adapter_payload["base_url"]).strip() if adapter_payload.get("base_url") is not None else None),
-                    request_timeout_seconds=float(adapter_payload.get("request_timeout_seconds", 60.0)),
+                    request_timeout_seconds=(
+                        float(adapter_payload["request_timeout_seconds"])
+                        if adapter_payload.get("request_timeout_seconds") is not None
+                        else None
+                    ),
                     max_output_tokens=(
                         int(adapter_payload["max_output_tokens"]) if adapter_payload.get("max_output_tokens") is not None else None
                     ),
@@ -322,7 +313,9 @@ def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, SubjectAd
                         adapter_payload.get("conversation_state_mode", "conversation")
                     ).strip()
                     or "conversation",
-                    web_search_enabled=_parse_optional_bool(adapter_payload.get("web_search_enabled")) or False,
+                    web_search_enabled=_coerce_bool(
+                        adapter_payload.get("web_search_enabled"), default=True
+                    ),
                     web_search_allowed_domains=tuple(
                         str(domain).strip()
                         for domain in (adapter_payload.get("web_search_allowed_domains") or [])
@@ -333,14 +326,21 @@ def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, SubjectAd
                         if adapter_payload.get("web_search_user_location") is not None
                         else None
                     ),
-                    web_search_include_sources=_parse_optional_bool(
-                        adapter_payload.get("web_search_include_sources")
-                    )
-                    or False,
+                    web_search_include_sources=_coerce_bool(
+                        adapter_payload.get("web_search_include_sources"), default=False
+                    ),
                     web_search_search_context_size=(
                         str(adapter_payload["web_search_search_context_size"]).strip()
                         if adapter_payload.get("web_search_search_context_size") is not None
                         else None
+                    ),
+                    code_interpreter_enabled=_coerce_bool(
+                        adapter_payload.get("code_interpreter_enabled"), default=True
+                    ),
+                    truncation=(
+                        (str(adapter_payload["truncation"]).strip() or None)
+                        if adapter_payload.get("truncation") is not None
+                        else "auto"
                     ),
                 )
             )
