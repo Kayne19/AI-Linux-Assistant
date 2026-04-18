@@ -114,6 +114,14 @@ def _render_message(fsm_name: str, scenario_name: str, details: dict) -> str:
             return f"Proxy LLM done \u2014 {tc} tool call(s), finish={finish}"
         return f"Proxy LLM done \u2014 text reply, finish={finish}"
 
+    if event == "planner_thinking_start":
+        phase = str(details.get("phase", "planner"))
+        return f"Planner thinking: {phase}"
+    if event == "planner_thinking_done":
+        phase = str(details.get("phase", "planner"))
+        elapsed = details.get("elapsed_seconds", "?")
+        return f"Planner done: {phase} ({elapsed}s)"
+
     # scenario-builder or other FSMs: fall back to a clean key=value line
     _SKIP = {"event", "turn", "from", "to", "subject_name", "tool_call_count"}
     parts = [event] if event else []

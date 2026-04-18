@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
+from time import monotonic
 from typing import Any, Callable
 
 from ..backends.base import SandboxBackend, SandboxHandle
@@ -281,6 +282,35 @@ class ScenarioBuilderFSM:
             )
             ctx.seq += 1
 
+    def _emit_event(self, ctx: ScenarioBuilderContext, *, event: str, payload: dict[str, Any]) -> None:
+        self.progress(
+            fsm_name="scenario-builder",
+            scenario_name=self._scenario_name(ctx),
+            details={"event": event, **payload},
+        )
+        if ctx.setup_run is not None:
+            self.store.append_setup_event(
+                setup_run_id=ctx.setup_run.id,
+                round_index=ctx.round_index,
+                seq=ctx.seq,
+                actor_role="planner",
+                event_kind=event,
+                payload=payload,
+            )
+            ctx.seq += 1
+
+    def _call_planner(self, ctx: ScenarioBuilderContext, *, phase: str, action: Callable[[], Any]) -> Any:
+        self._emit_event(ctx, event="planner_thinking_start", payload={"phase": phase})
+        started_at = monotonic()
+        result = action()
+        elapsed_seconds = round(monotonic() - started_at, 2)
+        self._emit_event(
+            ctx,
+            event="planner_thinking_done",
+            payload={"phase": phase, "elapsed_seconds": elapsed_seconds},
+        )
+        return result
+
     def _persisted_scenario(
         self,
         draft: ScenarioSpec,
@@ -343,7 +373,11 @@ class ScenarioBuilderFSM:
     def _handle_design(self, ctx: ScenarioBuilderContext) -> ScenarioBuilderState:
         from dataclasses import replace
 
-        draft = self.planner.generate_scenario(ctx.request)
+        draft = self._call_planner(
+            ctx,
+            phase="generate_scenario",
+            action=lambda: self.planner.generate_scenario(ctx.request),
+        )
         validate_scenario(draft)
         initial_user_message, generation_metadata = self._generate_initial_user_message(draft)
         draft = replace(
@@ -446,12 +480,16 @@ class ScenarioBuilderFSM:
     def _handle_review(self, ctx: ScenarioBuilderContext) -> ScenarioBuilderState:
         from dataclasses import replace
 
-        decision = self.planner.review_sabotage(
-            ctx.scenario,
-            round_index=ctx.round_index,
-            command_results=ctx.last_command_results,
-            correction_count=ctx.correction_count,
-            verification_snapshot=build_verification_snapshot(ctx.scenario, ctx.last_command_results),
+        decision = self._call_planner(
+            ctx,
+            phase="review_sabotage",
+            action=lambda: self.planner.review_sabotage(
+                ctx.scenario,
+                round_index=ctx.round_index,
+                command_results=ctx.last_command_results,
+                correction_count=ctx.correction_count,
+                verification_snapshot=build_verification_snapshot(ctx.scenario, ctx.last_command_results),
+            ),
         )
         ctx.last_review_decision = decision
 
@@ -527,11 +565,15 @@ class ScenarioBuilderFSM:
         return ScenarioBuilderState.SCRAP
 
     def _handle_fix_plan(self, ctx: ScenarioBuilderContext) -> ScenarioBuilderState:
-        fix_commands = self.planner.plan_rectification(
-            ctx.scenario,
-            failed_command_results=ctx.last_command_results,
-            correction_instructions=ctx.last_review_decision.correction_instructions,
-            round_index=ctx.round_index,
+        fix_commands = self._call_planner(
+            ctx,
+            phase="plan_rectification",
+            action=lambda: self.planner.plan_rectification(
+                ctx.scenario,
+                failed_command_results=ctx.last_command_results,
+                correction_instructions=ctx.last_review_decision.correction_instructions,
+                round_index=ctx.round_index,
+            ),
         )
         if not fix_commands:
             ctx.failure_reason = "planner_returned_empty_rectification"

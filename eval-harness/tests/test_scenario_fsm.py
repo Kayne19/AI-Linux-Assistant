@@ -377,6 +377,8 @@ def test_happy_path_approve_on_first_review() -> None:
     transitions: list[tuple[str, str]] = []
 
     def progress(fsm_name, scenario_name, details):
+        if "from" not in details:
+            return
         transitions.append((details["from"], details["to"]))
 
     fsm = _build_fsm(store=store, progress=progress)
@@ -777,6 +779,8 @@ def test_progress_callback_receives_state_transitions() -> None:
     calls: list[tuple[str, str, str, dict]] = []
 
     def progress(fsm_name, scenario_name, details):
+        if "from" not in details:
+            return
         calls.append((fsm_name, scenario_name, details["from"], details))
 
     fsm = _build_fsm(store=store, progress=progress)
@@ -798,6 +802,29 @@ def test_progress_callback_receives_state_transitions() -> None:
         assert "round_index" in details
         assert "correction_count" in details
         assert "scrap_count" in details
+
+
+def test_progress_callback_reports_planner_timing(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _build_store()
+    calls: list[tuple[str, str, dict]] = []
+
+    ticks = iter([10.0, 12.5, 20.0, 20.75])
+    monkeypatch.setattr("eval_harness.orchestration.scenario_fsm.monotonic", lambda: next(ticks))
+
+    def progress(fsm_name, scenario_name, details):
+        calls.append((fsm_name, scenario_name, details))
+
+    fsm = _build_fsm(store=store, progress=progress)
+    fsm.run()
+
+    planner_events = [details for fsm_name, _, details in calls if fsm_name == "scenario-builder" and details.get("event")]
+
+    assert planner_events == [
+        {"event": "planner_thinking_start", "phase": "generate_scenario"},
+        {"event": "planner_thinking_done", "phase": "generate_scenario", "elapsed_seconds": 2.5},
+        {"event": "planner_thinking_start", "phase": "review_sabotage"},
+        {"event": "planner_thinking_done", "phase": "review_sabotage", "elapsed_seconds": 0.75},
+    ]
 
 
 # ---------------------------------------------------------------------------
