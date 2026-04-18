@@ -232,6 +232,8 @@ def _user_proxy_system_prompt(observable_problem_statement: str, *, mode: str = 
             "\n- In pragmatic_human mode, you may use safe read-only fallbacks when the assistant clearly wants information from the machine but did not spell out the exact command.\n"
             "- Safe read-only fallbacks are limited to read_file, cat, sed -n, file, ls -l, and readlink -f.\n"
             "- Use those fallbacks only to inspect files or paths the assistant already pointed you toward.\n"
+            "- After you complete an assistant-prescribed repair step, you may do a small amount of obvious follow-through on that same thing, like retrying the service start or checking whether it came back.\n"
+            "- Do not use that follow-through to invent new diagnostics, new fixes, or branching troubleshooting.\n"
             "- Do not infer edits, restarts, package installs, privileged actions, or new diagnostics beyond that narrow read-only fallback set.\n"
             "- Keep replies short and user-like. Never echo assistant phrasing such as 'please run this command' and never switch into investigator mode."
         )

@@ -184,6 +184,9 @@ _REVIEW_SYSTEM_PROMPT = (
     "Fix any issues in the draft: remove assistant-like directives (do not say 'you should', "
     "'please run', 'let me know', or similar), ensure the reply accurately reports terminal "
     "output rather than fabricating it, and write in first-person confused-user voice. "
+    "If the assistant asked for logs, exact output, or command output, return the evidence only "
+    "using the terminal output that was actually observed; do not diagnose the issue, do not say "
+    "'that's why', do not identify a root cause, and do not propose the next fix. "
     "Return ONLY the corrected reply text with no explanation or preamble."
 )
 

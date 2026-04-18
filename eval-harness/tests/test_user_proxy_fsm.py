@@ -26,6 +26,7 @@ from eval_harness.orchestration.user_proxy_llm import (
     UserProxyLLMResponse,
     UserProxyReplyReview,
     UserProxyToolCall,
+    _REVIEW_SYSTEM_PROMPT,
     build_proxy_native_history,
 )
 
@@ -929,6 +930,14 @@ def test_review_call_includes_tool_outputs() -> None:
     assert "echo hi" in combined or "hi" in combined
 
 
+def test_review_prompt_demands_evidence_only_for_log_requests() -> None:
+    assert "If the assistant asked for logs, exact output, or command output" in _REVIEW_SYSTEM_PROMPT
+    assert "return the evidence only" in _REVIEW_SYSTEM_PROMPT
+    assert "do not diagnose the issue" in _REVIEW_SYSTEM_PROMPT
+    assert "do not identify a root cause" in _REVIEW_SYSTEM_PROMPT
+    assert "do not propose the next fix" in _REVIEW_SYSTEM_PROMPT
+
+
 def test_review_pass_skipped_when_client_lacks_method() -> None:
     """If llm_client has no review_reply, the draft is used as-is."""
     llm = FakeUserProxyLLM(
@@ -1112,3 +1121,18 @@ def test_check_reply_issues_clean_reply() -> None:
     prior = ["opener", "I ran the command and got exit 1."]
     issues = _check_reply_issues("Now it shows a different error.", prior_proxy_replies=prior)
     assert issues == []
+
+
+def test_pragmatic_human_prompt_allows_limited_follow_through_after_repair() -> None:
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="I fixed it and checked again.", tool_calls=(), finish_reason="stop", response_id="resp-1"),
+        ]
+    )
+    fsm = _make_fsm(llm, proxy_mode="pragmatic_human")
+
+    fsm.run_turn([], "Remove that bad line, start nginx again, and tell me what happens.")
+
+    system_prompt = llm.calls[0]["system_prompt"]
+    assert "small amount of obvious follow-through" in system_prompt
+    assert "Do not use that follow-through to invent new diagnostics" in system_prompt

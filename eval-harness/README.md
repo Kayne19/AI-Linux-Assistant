@@ -175,6 +175,7 @@ The benchmark loop enforces those constraints and suppresses proxy turns that ke
 - `strict_relay` keeps the old exact-command behavior
 - `pragmatic_human` is the benchmark default and allows a narrow safe read-only fallback set when the assistant's intent is obvious but underspecified
 - those fallback actions are limited to `read_file`, `cat`, `sed -n`, `file`, `ls -l`, and `readlink -f`
+- after an assistant-prescribed repair, `pragmatic_human` may do a small amount of obvious follow-through on that same thing, like retrying the service or checking whether it came back
 - `pragmatic_human` still does not infer edits, restarts, installs, or privileged commands
 
 Benchmark verification is still objective:
@@ -197,7 +198,7 @@ If the subject asks for the exact output of a command the proxy already ran in a
 
 #### Always-on revision pass
 
-After the proxy LLM generates a reply, the FSM makes a second API call — `review_reply(...)` — using the same model and provider. The reviewer rewrites the draft to fix assistant-voice phrasing (e.g. "paste the output and I'll diagnose it"), ensure the reply stays in first-person confused-user voice, and strip any accidental disclosure of sabotage details or diagnostic intent. The reviewer receives the draft reply, the recent tool outputs, and the full recent terminal memory snapshot. The revised reply replaces the draft before it is returned to the benchmark loop.
+After the proxy LLM generates a reply, the FSM makes a second API call — `review_reply(...)` — using the same model and provider. The reviewer rewrites the draft to fix assistant-voice phrasing (e.g. "paste the output and I'll diagnose it"), ensure the reply stays in first-person confused-user voice, and strip any accidental disclosure of sabotage details or diagnostic intent. When the subject asked for logs or exact command output, the reviewer is explicitly instructed to return only the observed evidence and not add its own diagnosis or next-step fix. The reviewer receives the draft reply, the recent tool outputs, and the full recent terminal memory snapshot. The revised reply replaces the draft before it is returned to the benchmark loop.
 
 #### Stall behavior
 
