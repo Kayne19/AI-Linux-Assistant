@@ -36,6 +36,13 @@ class UserProxyLLMResponse:
     response_id: str
 
 
+@dataclass(frozen=True)
+class UserProxyReplyReview:
+    """Result of the always-on revision pass for a proxy draft reply."""
+    final_reply: str
+    issues: tuple[str, ...]
+
+
 def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
     if isinstance(arguments, dict):
         return arguments
@@ -128,6 +135,59 @@ def _validate_openai_tools(tools: list[dict[str, Any]] | None) -> None:
         )
 
 
+def build_proxy_native_history(
+    transcript: list[tuple[str, str]],
+    subject_reply: str,
+    *,
+    recent_memory_text: str | None = None,
+) -> list[tuple[str, str]]:
+    """Build proxy-relative (role, content) pairs for the LLM.
+
+    Transcript is from the benchmark perspective:
+    - ("user", content)      = prior proxy reply
+    - ("assistant", content) = subject (assistant) reply
+
+    For the proxy's view, roles are flipped:
+    - subject replies  → "user"  (what the proxy receives)
+    - proxy replies    → "assistant" (what the proxy previously said)
+
+    Leading proxy turns (before any subject reply) are skipped because
+    the opening message is already covered by the system prompt's problem
+    statement. This also avoids starting native history with an "assistant"
+    turn, which some providers reject.
+
+    The current subject_reply is appended as the final "user" turn.
+    If recent_memory_text is provided it is appended to that final message
+    as a labelled context block.
+    """
+    # Skip leading proxy turns that precede the first subject reply.
+    i = 0
+    while i < len(transcript) and transcript[i][0] == "user":
+        i += 1
+
+    pairs: list[tuple[str, str]] = []
+    for role, content in transcript[i:]:
+        proxy_role = "user" if role == "assistant" else "assistant"
+        pairs.append((proxy_role, content))
+
+    # Build final user turn, optionally including recent terminal memory.
+    final_content = subject_reply
+    if recent_memory_text:
+        final_content = f"{subject_reply}\n\n[Recent terminal actions]\n{recent_memory_text}"
+    pairs.append(("user", final_content))
+    return pairs
+
+
+_REVIEW_SYSTEM_PROMPT = (
+    "You are reviewing a draft reply from someone simulating a confused Linux user. "
+    "The user is at a terminal and an assistant is trying to help them fix a problem. "
+    "Fix any issues in the draft: remove assistant-like directives (do not say 'you should', "
+    "'please run', 'let me know', or similar), ensure the reply accurately reports terminal "
+    "output rather than fabricating it, and write in first-person confused-user voice. "
+    "Return ONLY the corrected reply text with no explanation or preamble."
+)
+
+
 class UserProxyLLMClient:
     """OpenAI Responses client for the confused-user proxy turn loop."""
 
@@ -189,14 +249,13 @@ class UserProxyLLMClient:
         transcript: list[tuple[str, str]],
         assistant_reply: str,
         tools: list[dict[str, Any]] | None = None,
+        recent_memory_text: str | None = None,
     ) -> UserProxyLLMResponse:
-        rendered = "\n".join(f"{role}: {content}" for role, content in transcript)
-        if rendered:
-            turn_text = f"Conversation so far:\n{rendered}\n\nAssistant just said:\n{assistant_reply}"
-        else:
-            turn_text = assistant_reply
+        pairs = build_proxy_native_history(
+            transcript, assistant_reply, recent_memory_text=recent_memory_text
+        )
         request_kwargs = self._request_kwargs(system_prompt=system_prompt, tools=tools)
-        request_kwargs["input"] = [{"role": "user", "content": turn_text}]
+        request_kwargs["input"] = [{"role": role, "content": content} for role, content in pairs]
         response = self.client.responses.create(**request_kwargs)
         return self._coerce_response(response)
 
@@ -213,3 +272,37 @@ class UserProxyLLMClient:
         request_kwargs["input"] = list(tool_outputs)
         response = self.client.responses.create(**request_kwargs)
         return self._coerce_response(response)
+
+    def review_reply(
+        self,
+        *,
+        system_prompt: str,
+        transcript: list[tuple[str, str]],
+        subject_reply: str,
+        recent_memory_text: str | None,
+        tool_outputs_text: list[str],
+        draft_reply: str,
+    ) -> UserProxyReplyReview:
+        """Always-on revision pass: ask the model to fix the draft reply."""
+        context_parts = [f"[Assistant message]\n{subject_reply}"]
+        if recent_memory_text:
+            context_parts.append(f"[Recent terminal actions]\n{recent_memory_text}")
+        if tool_outputs_text:
+            combined = "\n\n".join(tool_outputs_text)
+            context_parts.append(f"[Terminal output this turn]\n{combined}")
+        context_parts.append(f"[Draft reply]\n{draft_reply}")
+        review_input = "\n\n".join(context_parts)
+
+        kwargs: dict[str, Any] = {
+            "model": self.config.model,
+            "instructions": _REVIEW_SYSTEM_PROMPT,
+            "input": [{"role": "user", "content": review_input}],
+        }
+        if self.config.max_output_tokens is not None:
+            kwargs["max_output_tokens"] = self.config.max_output_tokens
+        try:
+            response = self.client.responses.create(**kwargs)
+            final = str(getattr(response, "output_text", "") or "").strip()
+        except Exception:  # noqa: BLE001
+            final = draft_reply
+        return UserProxyReplyReview(final_reply=final or draft_reply, issues=())

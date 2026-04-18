@@ -9,6 +9,7 @@ in tests).  No controller.send() is used.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable
@@ -16,7 +17,59 @@ from typing import Any, Callable
 from ..controllers.base import SandboxController
 from ..models import CommandExecutionResult
 from .fs_helpers import apply_text_edit, read_file
-from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMResponse, UserProxyToolCall
+from .user_proxy_llm import (
+    UserProxyLLMClient,
+    UserProxyLLMResponse,
+    UserProxyReplyReview,
+    UserProxyToolCall,
+)
+
+# ---------------------------------------------------------------------------
+# Proxy recent-action memory types
+# ---------------------------------------------------------------------------
+
+_SAFE_RERUN_COMMANDS = frozenset({
+    "cat", "ls", "head", "tail", "grep", "find", "df", "du", "free",
+    "uname", "hostname", "id", "whoami", "ps", "file", "readlink", "stat",
+    "systemctl", "journalctl", "ip", "ifconfig", "netstat", "ss",
+    "dmesg", "lscpu", "lsblk", "lsof",
+})
+
+_EXACT_OUTPUT_KEYWORDS = (
+    "exact output",
+    "exactly what",
+    "paste the output",
+    "show me the output",
+    "what did it print",
+    "what does it say",
+    "copy the output",
+    "what was the output",
+    "show the exact",
+    "exact error",
+    "exact text",
+    "what exactly",
+)
+
+_FALLBACK_CLARIFICATION = "I'm not sure what you need me to do exactly — can you be more specific?"
+
+
+@dataclass(frozen=True)
+class ProxyRecentAction:
+    """One item in the cross-turn terminal memory."""
+    tool_name: str
+    turn_index: int
+    command: str
+    result_text: str
+    exit_code: int
+    state_changing: bool
+    safe_rerun: bool
+
+
+@dataclass(frozen=True)
+class ProxyRecentMemorySnapshot:
+    """Immutable snapshot of the bounded recent-action queue."""
+    actions: tuple[ProxyRecentAction, ...]
+
 
 # ---------------------------------------------------------------------------
 # Tool schema registry
@@ -216,6 +269,8 @@ class UserProxyContext:
     last_response_id: str | None = None
     last_assistant_content: str = ""
     stalled: bool = False
+    skip_review: bool = False
+    recent_memory: ProxyRecentMemorySnapshot | None = None
     # Pending tool calls from last assistant message (set in DECIDE, consumed in TOOL_EXEC)
     _pending_tool_calls: list[UserProxyToolCall] = field(default_factory=list)
     _pending_tool_outputs: list[dict[str, Any]] = field(default_factory=list)
@@ -251,6 +306,59 @@ def _render_tool_result(result: CommandExecutionResult) -> str:
     return "\n".join(parts)
 
 
+def _render_recent_memory(snapshot: ProxyRecentMemorySnapshot) -> str:
+    if not snapshot.actions:
+        return ""
+    return "\n\n".join(action.result_text for action in snapshot.actions)
+
+
+def _find_cached_exact_output(
+    subject_message: str,
+    memory: ProxyRecentMemorySnapshot | None,
+) -> str | None:
+    """Return cached result text if the subject is asking for exact output of a known command."""
+    if memory is None or not memory.actions:
+        return None
+    lower_msg = subject_message.lower()
+    if not any(kw in lower_msg for kw in _EXACT_OUTPUT_KEYWORDS):
+        return None
+    for action in reversed(memory.actions):
+        if not action.command:
+            continue
+        cmd_parts = action.command.split()
+        cmd_base = cmd_parts[0] if cmd_parts else ""
+        if (cmd_base and re.search(r'\b' + re.escape(cmd_base) + r'\b', lower_msg)) or action.command in lower_msg:
+            return action.result_text
+    return None
+
+
+def _check_reply_issues(
+    reply: str,
+    *,
+    prior_proxy_replies: list[str],
+) -> list[str]:
+    """Return a list of issue codes for host-side post-review checks."""
+    issues: list[str] = []
+
+    if not reply.strip():
+        issues.append("empty_reply")
+        return issues
+
+    # Reject repeated opener when the conversation has advanced past the first exchange.
+    if len(prior_proxy_replies) > 1:
+        opener = prior_proxy_replies[0]
+        if opener and reply.strip() == opener.strip():
+            issues.append("repeated_opener")
+
+    # Reject reply identical to the immediately prior proxy reply.
+    # Only check when there are at least 2 prior replies; with 1 entry the only
+    # prior reply is the opener, which is already guarded by repeated_opener above.
+    if len(prior_proxy_replies) > 1:
+        last_prior = prior_proxy_replies[-1]
+        if last_prior and reply.strip() == last_prior.strip():
+            issues.append("repeated_prior_reply")
+
+    return issues
 
 
 # ---------------------------------------------------------------------------
@@ -331,12 +439,18 @@ class UserProxyFSM:
         self,
         transcript: list[tuple[str, str]],
         subject_reply: str,
+        *,
+        proxy_recent_memory: ProxyRecentMemorySnapshot | None = None,
     ) -> UserProxyTurnResult:
         """Run one proxy turn (READ_ASSISTANT → ... → DONE | STALLED).
 
         Each call is self-contained: a fresh context and message history is
         built from the provided transcript so earlier turns are visible to the
         proxy LLM without maintaining server-side state.
+
+        transcript should NOT include the current subject_reply; pass it
+        separately so it is injected once as the final "user" turn in the
+        provider-native history.
         """
         ctx = UserProxyContext(
             transcript=list(transcript),
@@ -346,6 +460,7 @@ class UserProxyFSM:
                 self.observable_problem_statement,
                 mode=self.user_proxy_mode,
             ),
+            recent_memory=proxy_recent_memory,
         )
 
         state = UserProxyState.READ_ASSISTANT
@@ -372,16 +487,32 @@ class UserProxyFSM:
     def _state_decide(self, ctx: UserProxyContext) -> UserProxyState:
         """Call the LLM and decide what to do next."""
         is_first_response = ctx.last_response_id is None
+
+        if is_first_response:
+            # Host-side exact-output shortcut: if the subject is clearly asking
+            # for the exact output of a command we have cached, return it
+            # directly without an LLM call.
+            exact_output = _find_cached_exact_output(ctx.assistant_reply, ctx.recent_memory)
+            if exact_output:
+                ctx.last_assistant_content = exact_output
+                ctx.skip_review = True  # cached terminal output must not be rewritten by reviewer
+                return UserProxyState.REPLY
+
         wait_payload = {"mode": "start" if is_first_response else "continue"}
         if not is_first_response:
             wait_payload["tool_outputs"] = len(ctx._pending_tool_outputs)
         self._emit_event("llm_wait", wait_payload)
+
         if is_first_response:
+            recent_memory_text = (
+                _render_recent_memory(ctx.recent_memory) if ctx.recent_memory else None
+            )
             response: UserProxyLLMResponse = self.llm_client.start_turn(
                 system_prompt=ctx.system_prompt,
                 transcript=ctx.transcript,
                 assistant_reply=ctx.assistant_reply,
                 tools=self.tools,
+                recent_memory_text=recent_memory_text,
             )
         else:
             response = self.llm_client.continue_turn(
@@ -416,8 +547,13 @@ class UserProxyFSM:
 
         if not (response.content or "").strip():
             if ctx.tool_call_count == 0:
-                # Model produced nothing at all — stall immediately
+                # Model produced nothing at all — stall with a fallback message.
                 ctx.stalled = True
+                if not ctx.final_reply:
+                    ctx.final_reply = (
+                        _find_cached_exact_output(ctx.assistant_reply, ctx.recent_memory)
+                        or _FALLBACK_CLARIFICATION
+                    )
                 return UserProxyState.STALLED
             # Had tool calls before but now empty content — treat as REPLY
             return UserProxyState.REPLY
@@ -468,13 +604,38 @@ class UserProxyFSM:
         return UserProxyState.DECIDE
 
     def _state_reply(self, ctx: UserProxyContext) -> UserProxyState:
-        """Extract final content and detect closure."""
-        final_content = ctx.last_assistant_content
-        if not final_content.strip():
+        """Apply always-on review, run host-side checks, emit final reply."""
+        draft = ctx.last_assistant_content
+
+        # Always-on revision pass — skipped when content came from the exact-output cache.
+        reviewed = None if ctx.skip_review else self._try_review(ctx, draft)
+        final = reviewed if (reviewed and reviewed.strip()) else draft
+
+        if not final.strip():
+            # Nothing left to send — stall with a fallback message.
             ctx.stalled = True
+            ctx.final_reply = (
+                _find_cached_exact_output(ctx.assistant_reply, ctx.recent_memory)
+                or _FALLBACK_CLARIFICATION
+            )
             return UserProxyState.STALLED
 
-        ctx.final_reply = final_content
+        # Host-side checks on the reviewed reply.
+        prior_proxy_replies = [c for role, c in ctx.transcript if role == "user"]
+        issues = _check_reply_issues(final, prior_proxy_replies=prior_proxy_replies)
+
+        if not issues:
+            ctx.final_reply = final
+            return UserProxyState.DONE
+
+        # Checks failed — prefer cached exact output as fallback.
+        cached_fallback = _find_cached_exact_output(ctx.assistant_reply, ctx.recent_memory)
+        if cached_fallback:
+            ctx.final_reply = cached_fallback
+            return UserProxyState.DONE
+
+        # Last-resort short clarification — never mark stalled here.
+        ctx.final_reply = _FALLBACK_CLARIFICATION
         return UserProxyState.DONE
 
     def _state_done(self, ctx: UserProxyContext) -> UserProxyState:
@@ -482,7 +643,39 @@ class UserProxyFSM:
 
     def _state_stalled(self, ctx: UserProxyContext) -> UserProxyState:
         ctx.stalled = True
+        # Always provide a fallback so benchmark does not re-send the opener unchanged.
+        if not ctx.final_reply:
+            ctx.final_reply = (
+                _find_cached_exact_output(ctx.assistant_reply, ctx.recent_memory)
+                or _FALLBACK_CLARIFICATION
+            )
         return UserProxyState.STALLED
+
+    # ------------------------------------------------------------------
+    # Review helper
+    # ------------------------------------------------------------------
+
+    def _try_review(self, ctx: UserProxyContext, draft: str) -> str | None:
+        """Call review_reply if the client supports it; return corrected text or None."""
+        if not hasattr(self.llm_client, "review_reply"):
+            return None
+        try:
+            tool_outputs_text = [item.get("output", "") for item in ctx._pending_tool_outputs]
+            tool_outputs_text += [_render_tool_result(r) for r in ctx.tool_results]
+            recent_memory_text = (
+                _render_recent_memory(ctx.recent_memory) if ctx.recent_memory else None
+            )
+            review: UserProxyReplyReview = self.llm_client.review_reply(
+                system_prompt=ctx.system_prompt,
+                transcript=ctx.transcript,
+                subject_reply=ctx.assistant_reply,
+                recent_memory_text=recent_memory_text,
+                tool_outputs_text=tool_outputs_text,
+                draft_reply=draft,
+            )
+            return review.final_reply if review.final_reply.strip() else None
+        except Exception:  # noqa: BLE001
+            return None
 
     # ------------------------------------------------------------------
     # Tool handlers
@@ -496,7 +689,7 @@ class UserProxyFSM:
         command = str(tool_call.arguments.get("command", "")).strip()
         if not command:
             raise ValueError("run_command called with empty command")
-            
+
         interactive_cmds = ("nano", "vim", "vi", "top", "htop", "less", "more")
         parts = command.split()
         prog = parts[1] if parts and parts[0] == "sudo" and len(parts) > 1 else (parts[0] if parts else "")
@@ -609,7 +802,7 @@ class UserProxyFSM:
         path = str(tool_call.arguments.get("path", "")).strip()
         if not path:
             raise ValueError("read_file called with empty path")
-        
+
         session_key = f"{self.evaluation_run_id}-proxy-{self.terminal_id}"
         return read_file(self.controller, session_key, path)
 
@@ -621,12 +814,12 @@ class UserProxyFSM:
         path = str(tool_call.arguments.get("path", "")).strip()
         old_text = str(tool_call.arguments.get("old_text", ""))
         new_text = str(tool_call.arguments.get("new_text", ""))
-        
+
         if not path:
             raise ValueError("apply_text_edit called with empty path")
         if not old_text:
             raise ValueError("apply_text_edit called with empty old_text")
-            
+
         session_key = f"{self.evaluation_run_id}-proxy-{self.terminal_id}"
         return apply_text_edit(self.controller, session_key, path, old_text, new_text)
 

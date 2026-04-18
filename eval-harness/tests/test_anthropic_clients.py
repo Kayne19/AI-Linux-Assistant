@@ -144,6 +144,8 @@ def test_anthropic_user_proxy_uses_native_tool_use(monkeypatch: pytest.MonkeyPat
         )
     )
 
+    # transcript=[("user", "nginx is down")] — leading proxy turn skipped.
+    # Native history = [{"role": "user", "content": "Run ls"}].
     start = client.start_turn(
         system_prompt="You are a confused user.",
         transcript=[("user", "nginx is down")],
@@ -164,6 +166,12 @@ def test_anthropic_user_proxy_uses_native_tool_use(monkeypatch: pytest.MonkeyPat
         UserProxyToolCall(id="toolu-1", name="run_command", arguments={"command": "ls"}),
     )
 
+    fake_client = _FakeAnthropic.instances[-1]
+    # Native history: leading proxy turn skipped → single user message with current reply.
+    assert fake_client.messages.calls[0]["messages"] == [
+        {"role": "user", "content": "Run ls"}
+    ]
+
     finish = client.continue_turn(
         system_prompt="You are a confused user.",
         previous_response_id=start.response_id,
@@ -180,7 +188,6 @@ def test_anthropic_user_proxy_uses_native_tool_use(monkeypatch: pytest.MonkeyPat
     )
 
     assert finish.content == "I ran it."
-    fake_client = _FakeAnthropic.instances[-1]
     assert fake_client.messages.calls[0]["tools"][0]["input_schema"]["properties"]["command"]["type"] == "string"
     assert fake_client.messages.calls[1]["messages"][-1] == {
         "role": "user",
@@ -192,3 +199,40 @@ def test_anthropic_user_proxy_uses_native_tool_use(monkeypatch: pytest.MonkeyPat
             }
         ],
     }
+
+
+def test_anthropic_user_proxy_review_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeAnthropic.instances.clear()
+    _FakeAnthropic.queued_responses = [
+        [
+            SimpleNamespace(
+                id="review-1",
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text="I ran the command and got exit 1.")],
+            )
+        ]
+    ]
+    monkeypatch.setattr("eval_harness.orchestration.user_proxy_llm_anthropic.Anthropic", _FakeAnthropic)
+
+    client = AnthropicUserProxyLLMClient(
+        UserProxyLLMClientConfig(
+            model="claude-sonnet-4-20250514",
+            api_key="test-key",
+            request_timeout_seconds=15.0,
+            max_output_tokens=512,
+        )
+    )
+
+    review = client.review_reply(
+        system_prompt="You are a confused user.",
+        transcript=[],
+        subject_reply="What did the command print?",
+        recent_memory_text="$ ls\nfile.txt\n[exit 0]",
+        tool_outputs_text=["$ ls\nfile.txt\n[exit 0]"],
+        draft_reply="You should run ls and let me know the output.",
+    )
+
+    assert review.final_reply == "I ran the command and got exit 1."
+    fake_client = _FakeAnthropic.instances[-1]
+    call = fake_client.messages.calls[0]
+    assert "review" in call["system"].lower() or "draft" in call["messages"][0]["content"].lower()

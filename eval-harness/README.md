@@ -185,6 +185,24 @@ Benchmark verification is still objective:
 
 Repair success is not decided by the proxy. After each subject turn, the benchmark loop runs the scenario's objective `repair_checks` against the live sandbox. If every check passes, the evaluation completes with `repair_success=True`; otherwise the loop continues until the turn budget is exhausted or the proxy stalls repeatedly.
 
+#### Proxy-relative native history
+
+Each provider client builds a provider-native multi-turn conversation for the proxy, not a flat text blob. In benchmark perspective the proxy is the "user" and the subject is the "assistant"; the proxy's native view flips those roles — subject replies become `user` turns and prior proxy replies become `assistant` turns. The leading proxy turn (the opening user message before any subject reply) is skipped when building native history to avoid starting with an `assistant`-role message, which some provider APIs reject. The current subject reply is appended as the final `user` turn. This means the same subject reply is never passed twice: `benchmark.py` passes `transcript_pairs[:-1]` (excluding the current reply) and passes the reply separately as `assistant_reply`.
+
+#### Cross-turn terminal memory
+
+The benchmark loop maintains a bounded queue (`maxlen=5`) of `ProxyRecentAction` records — one per proxy tool execution — accumulated across all turns of a single subject run. Each record captures the tool name, turn index, command text, result output, exit code, and whether the command is safe to re-run. Before each proxy LLM call, the benchmark serializes these records into a compact text block and passes it to the FSM as `proxy_recent_memory`. The FSM exposes it to the LLM so the proxy can remember what it already ran and avoid re-running state-changing commands.
+
+If the subject asks for the exact output of a command the proxy already ran in a prior turn, the FSM short-circuits the LLM entirely and returns the stored output directly without making an API call.
+
+#### Always-on revision pass
+
+After the proxy LLM generates a reply, the FSM makes a second API call — `review_reply(...)` — using the same model and provider. The reviewer rewrites the draft to fix assistant-voice phrasing (e.g. "paste the output and I'll diagnose it"), ensure the reply stays in first-person confused-user voice, and strip any accidental disclosure of sabotage details or diagnostic intent. The reviewer receives the draft reply, the recent tool outputs, and the full recent terminal memory snapshot. The revised reply replaces the draft before it is returned to the benchmark loop.
+
+#### Stall behavior
+
+When the proxy cannot produce a meaningful reply (empty content, no tool calls, or the reply is an exact repeat of a prior proxy message), the FSM stalls and returns a fixed fallback clarification — `"I'm not sure what you need me to do exactly — can you be more specific?"` — instead of resending the opening message unchanged. The benchmark loop uses this fallback as the next user turn rather than re-sending the opener, which would create an infinite stall loop.
+
 ## Project Layout
 
 ```text

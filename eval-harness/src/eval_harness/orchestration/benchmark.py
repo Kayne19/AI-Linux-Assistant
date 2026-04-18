@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Any
@@ -13,8 +13,16 @@ from ..models import EvaluationRunStatus
 from ..persistence.store import EvalHarnessStore
 from ..scenario import build_verification_snapshot
 from .progress import FsmProgressSink
-from .user_proxy_fsm import USER_PROXY_MODES, UserProxyFSM
+from .user_proxy_fsm import (
+    USER_PROXY_MODES,
+    ProxyRecentAction,
+    ProxyRecentMemorySnapshot,
+    UserProxyFSM,
+    _SAFE_RERUN_COMMANDS,
+)
 from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMClientConfig
+
+_PROXY_MEMORY_MAX_SIZE = 5
 
 _STATE_CHANGING_PROXY_TOOLS = frozenset({"run_command", "apply_text_edit", "interactive_send"})
 _SOFT_CLOSURE_PHRASES = (
@@ -350,6 +358,8 @@ class BenchmarkRunOrchestrator:
             consecutive_stalled_turns = 0
             _PROXY_STALL_LIMIT = 3
             turn_index = 0
+            # Bounded recent-action memory shared across proxy turns.
+            _recent_actions: deque[ProxyRecentAction] = deque(maxlen=_PROXY_MEMORY_MAX_SIZE)
 
             _scenario_name = getattr(scenario, "scenario_name", "")
             _subject_name = subject_row.subject_name
@@ -435,7 +445,12 @@ class BenchmarkRunOrchestrator:
                     _emit("evaluation_completed", {"repair_success": True})
                     return
 
-                # Run the user-proxy FSM to generate the next user message
+                # Run the user-proxy FSM to generate the next user message.
+                # Pass transcript_pairs[:-1] so the current assistant reply is
+                # not duplicated — it is already passed as subject_reply once.
+                _memory_snapshot = ProxyRecentMemorySnapshot(
+                    actions=tuple(_recent_actions)
+                )
                 proxy_fsm = UserProxyFSM(
                     llm_client=llm_client,
                     controller=controller,
@@ -448,11 +463,12 @@ class BenchmarkRunOrchestrator:
                     turn=turn_index,
                 )
                 proxy_result = proxy_fsm.run_turn(
-                    list(transcript_pairs),
+                    list(transcript_pairs[:-1]),
                     turn_result.assistant_message,
+                    proxy_recent_memory=_memory_snapshot,
                 )
 
-                # Record any commands the proxy ran
+                # Record any commands the proxy ran and update cross-turn memory.
                 if proxy_result.tool_results:
                     seq = self._record_command_results(
                         evaluation_run_id=evaluation_run_id,
@@ -460,6 +476,26 @@ class BenchmarkRunOrchestrator:
                         actor_role="user_proxy_exec",
                         command_results=proxy_result.tool_results,
                     )
+                    for _res in proxy_result.tool_results:
+                        _tool_name = _res.metadata.get("user_proxy_tool_name", "run_command")
+                        _cmd = _res.command or ""
+                        _cmd_base = _cmd.split()[0] if _cmd.split() else ""
+                        _rendered = (
+                            f"$ {_cmd}\n{(_res.stdout or '').strip()}"
+                            + (f"\n{(_res.stderr or '').strip()}" if _res.stderr else "")
+                            + f"\n[exit {_res.exit_code}]"
+                        )
+                        _recent_actions.append(
+                            ProxyRecentAction(
+                                tool_name=_tool_name,
+                                turn_index=turn_index,
+                                command=_cmd,
+                                result_text=_rendered,
+                                exit_code=_res.exit_code,
+                                state_changing=_tool_name in _STATE_CHANGING_PROXY_TOOLS,
+                                safe_rerun=_cmd_base in _SAFE_RERUN_COMMANDS,
+                            )
+                        )
                     ran_state_changing_tool = any(
                         result.metadata.get("user_proxy_tool_name") in _STATE_CHANGING_PROXY_TOOLS
                         for result in proxy_result.tool_results
@@ -507,8 +543,9 @@ class BenchmarkRunOrchestrator:
                         )
                         _emit("evaluation_completed", {"repair_success": False, "reason": "proxy_stalled"})
                         return
-                    # Preserve the established opening state for a retry, including any stored
-                    # opener text and appended initial diagnostic output.
+                    # Use the FSM's fallback message (not the opener) for the retry.
+                    if proxy_result.user_message:
+                        user_message = proxy_result.user_message
                     continue
 
                 consecutive_stalled_turns = 0

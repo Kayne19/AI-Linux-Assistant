@@ -10,16 +10,12 @@ except ImportError:  # pragma: no cover - optional dependency in some test/runti
 from .user_proxy_llm import (
     UserProxyLLMClientConfig,
     UserProxyLLMResponse,
+    UserProxyReplyReview,
     UserProxyToolCall,
+    _REVIEW_SYSTEM_PROMPT,
     _parse_tool_arguments,
+    build_proxy_native_history,
 )
-
-
-def _render_turn_text(transcript: list[tuple[str, str]], assistant_reply: str) -> str:
-    rendered = "\n".join(f"{role}: {content}" for role, content in transcript)
-    if rendered:
-        return f"Conversation so far:\n{rendered}\n\nAssistant just said:\n{assistant_reply}"
-    return assistant_reply
 
 
 def _translate_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -125,8 +121,12 @@ class AnthropicUserProxyLLMClient:
         transcript: list[tuple[str, str]],
         assistant_reply: str,
         tools: list[dict[str, Any]] | None = None,
+        recent_memory_text: str | None = None,
     ) -> UserProxyLLMResponse:
-        messages = [{"role": "user", "content": _render_turn_text(transcript, assistant_reply)}]
+        pairs = build_proxy_native_history(
+            transcript, assistant_reply, recent_memory_text=recent_memory_text
+        )
+        messages = [{"role": role, "content": content} for role, content in pairs]
         response = self.client.messages.create(**self._request_kwargs(system_prompt=system_prompt, messages=messages, tools=tools))
         return self._coerce_response(response, prior_messages=messages)
 
@@ -151,3 +151,35 @@ class AnthropicUserProxyLLMClient:
         messages.append({"role": "user", "content": tool_result_blocks})
         response = self.client.messages.create(**self._request_kwargs(system_prompt=system_prompt, messages=messages, tools=tools))
         return self._coerce_response(response, prior_messages=messages)
+
+    def review_reply(
+        self,
+        *,
+        system_prompt: str,
+        transcript: list[tuple[str, str]],
+        subject_reply: str,
+        recent_memory_text: str | None,
+        tool_outputs_text: list[str],
+        draft_reply: str,
+    ) -> UserProxyReplyReview:
+        """Always-on revision pass: ask the model to fix the draft reply."""
+        context_parts = [f"[Assistant message]\n{subject_reply}"]
+        if recent_memory_text:
+            context_parts.append(f"[Recent terminal actions]\n{recent_memory_text}")
+        if tool_outputs_text:
+            combined = "\n\n".join(tool_outputs_text)
+            context_parts.append(f"[Terminal output this turn]\n{combined}")
+        context_parts.append(f"[Draft reply]\n{draft_reply}")
+        review_input = "\n\n".join(context_parts)
+
+        try:
+            response = self.client.messages.create(
+                model=self.config.model,
+                system=_REVIEW_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": review_input}],
+                max_tokens=self.config.max_output_tokens or 512,
+            )
+            final = _text_from_response(response).strip()
+        except Exception:  # noqa: BLE001
+            final = draft_reply
+        return UserProxyReplyReview(final_reply=final or draft_reply, issues=())

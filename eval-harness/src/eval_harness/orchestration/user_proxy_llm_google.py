@@ -11,16 +11,12 @@ except ImportError:  # pragma: no cover - optional dependency in some test/runti
 from .user_proxy_llm import (
     UserProxyLLMClientConfig,
     UserProxyLLMResponse,
+    UserProxyReplyReview,
     UserProxyToolCall,
+    _REVIEW_SYSTEM_PROMPT,
     _parse_tool_arguments,
+    build_proxy_native_history,
 )
-
-
-def _render_turn_text(transcript: list[tuple[str, str]], assistant_reply: str) -> str:
-    rendered = "\n".join(f"{role}: {content}" for role, content in transcript)
-    if rendered:
-        return f"Conversation so far:\n{rendered}\n\nAssistant just said:\n{assistant_reply}"
-    return assistant_reply
 
 
 def _translate_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -131,11 +127,21 @@ class GoogleGenAIUserProxyLLMClient:
         transcript: list[tuple[str, str]],
         assistant_reply: str,
         tools: list[dict[str, Any]] | None = None,
+        recent_memory_text: str | None = None,
     ) -> UserProxyLLMResponse:
-        turn_text = _render_turn_text(transcript, assistant_reply)
-        response = self.client.models.generate_content(**self._request_kwargs(system_prompt=system_prompt, contents=turn_text, tools=tools))
-        prior_contents = [{"role": "user", "parts": [{"text": turn_text}]}]
-        return self._coerce_response(response, prior_contents=prior_contents)
+        pairs = build_proxy_native_history(
+            transcript, assistant_reply, recent_memory_text=recent_memory_text
+        )
+        # Google uses "model" for assistant role in contents.
+        contents = [
+            {
+                "role": "model" if role == "assistant" else "user",
+                "parts": [{"text": content}],
+            }
+            for role, content in pairs
+        ]
+        response = self.client.models.generate_content(**self._request_kwargs(system_prompt=system_prompt, contents=contents, tools=tools))
+        return self._coerce_response(response, prior_contents=contents)
 
     def continue_turn(
         self,
@@ -149,7 +155,7 @@ class GoogleGenAIUserProxyLLMClient:
         for item in tool_outputs:
             contents.append(
                 {
-                    "role": "tool",
+                    "role": "user",
                     "parts": [
                         {
                             "function_response": {
@@ -163,3 +169,37 @@ class GoogleGenAIUserProxyLLMClient:
             )
         response = self.client.models.generate_content(**self._request_kwargs(system_prompt=system_prompt, contents=contents, tools=tools))
         return self._coerce_response(response, prior_contents=contents)
+
+    def review_reply(
+        self,
+        *,
+        system_prompt: str,
+        transcript: list[tuple[str, str]],
+        subject_reply: str,
+        recent_memory_text: str | None,
+        tool_outputs_text: list[str],
+        draft_reply: str,
+    ) -> UserProxyReplyReview:
+        """Always-on revision pass: ask the model to fix the draft reply."""
+        context_parts = [f"[Assistant message]\n{subject_reply}"]
+        if recent_memory_text:
+            context_parts.append(f"[Recent terminal actions]\n{recent_memory_text}")
+        if tool_outputs_text:
+            combined = "\n\n".join(tool_outputs_text)
+            context_parts.append(f"[Terminal output this turn]\n{combined}")
+        context_parts.append(f"[Draft reply]\n{draft_reply}")
+        review_input = "\n\n".join(context_parts)
+
+        review_config: dict[str, Any] = {"system_instruction": _REVIEW_SYSTEM_PROMPT}
+        if self.config.max_output_tokens is not None:
+            review_config["max_output_tokens"] = self.config.max_output_tokens
+        try:
+            response = self.client.models.generate_content(
+                model=self.config.model,
+                contents=review_input,
+                config=review_config,
+            )
+            final = str(getattr(response, "text", "") or "").strip()
+        except Exception:  # noqa: BLE001
+            final = draft_reply
+        return UserProxyReplyReview(final_reply=final or draft_reply, issues=())

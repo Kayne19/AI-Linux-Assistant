@@ -9,12 +9,24 @@ import pytest
 from eval_harness.controllers.base import InteractiveSession, SandboxController
 from eval_harness.models import CommandExecutionResult
 from eval_harness.orchestration import user_proxy_llm as user_proxy_llm_module
-from eval_harness.orchestration.user_proxy_fsm import DEFAULT_TOOLS, UserProxyFSM
+from eval_harness.orchestration.user_proxy_fsm import (
+    DEFAULT_TOOLS,
+    _FALLBACK_CLARIFICATION,
+    _SAFE_RERUN_COMMANDS,
+    ProxyRecentAction,
+    ProxyRecentMemorySnapshot,
+    UserProxyFSM,
+    _check_reply_issues,
+    _find_cached_exact_output,
+    _render_recent_memory,
+)
 from eval_harness.orchestration.user_proxy_llm import (
     UserProxyLLMClient,
     UserProxyLLMClientConfig,
     UserProxyLLMResponse,
+    UserProxyReplyReview,
     UserProxyToolCall,
+    build_proxy_native_history,
 )
 
 @dataclass
@@ -28,7 +40,7 @@ class FakeUserProxyLLM:
         self.responses = list(responses)
         self.calls = []
 
-    def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+    def start_turn(self, *, system_prompt, transcript, assistant_reply, tools, recent_memory_text=None):
         self.calls.append(
             {
                 "phase": "start",
@@ -36,6 +48,7 @@ class FakeUserProxyLLM:
                 "transcript": list(transcript),
                 "assistant_reply": assistant_reply,
                 "tools": tools,
+                "recent_memory_text": recent_memory_text,
             }
         )
         if self.responses:
@@ -55,6 +68,37 @@ class FakeUserProxyLLM:
         if self.responses:
             return self.responses.pop(0)
         return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-default")
+
+
+@dataclass
+class FakeUserProxyLLMWithReview(FakeUserProxyLLM):
+    """FakeUserProxyLLM that also supports review_reply."""
+
+    review_responses: list[UserProxyReplyReview] = field(default_factory=list)
+    review_calls: list[dict] = field(default_factory=list)
+
+    def __init__(
+        self,
+        responses: list[UserProxyLLMResponse],
+        review_responses: list[UserProxyReplyReview] | None = None,
+    ) -> None:
+        super().__init__(responses)
+        self.review_responses = list(review_responses or [])
+        self.review_calls = []
+
+    def review_reply(self, *, system_prompt, transcript, subject_reply, recent_memory_text, tool_outputs_text, draft_reply):
+        self.review_calls.append({
+            "system_prompt": system_prompt,
+            "transcript": list(transcript),
+            "subject_reply": subject_reply,
+            "recent_memory_text": recent_memory_text,
+            "tool_outputs_text": list(tool_outputs_text),
+            "draft_reply": draft_reply,
+        })
+        if self.review_responses:
+            return self.review_responses.pop(0)
+        return UserProxyReplyReview(final_reply=draft_reply, issues=())
+
 
 class FakeInteractiveSession(InteractiveSession):
     def __init__(self) -> None:
@@ -273,6 +317,8 @@ def test_tool_call_cap_with_no_reply_stalls() -> None:
     result = fsm.run_turn([], "Do something")
 
     assert result.stalled
+    # Even on stall the FSM provides a fallback message (not empty).
+    assert result.user_message
 
 
 def test_stalled_empty_content_no_tool_calls() -> None:
@@ -285,6 +331,8 @@ def test_stalled_empty_content_no_tool_calls() -> None:
     result = fsm.run_turn([], "What should I do?")
 
     assert result.stalled is True
+    # Stall now provides the fallback clarification, not empty string.
+    assert result.user_message == _FALLBACK_CLARIFICATION
 
 
 def test_tool_handler_exception_continues() -> None:
@@ -396,7 +444,8 @@ def test_session_key_contains_eval_run_id() -> None:
     assert any("term-0" in key for key in controller.session_keys)
 
 
-def test_user_proxy_llm_client_start_turn_uses_responses_api_shape(monkeypatch) -> None:
+def test_user_proxy_llm_client_start_turn_uses_native_history(monkeypatch) -> None:
+    """start_turn builds provider-native multi-turn history from the transcript."""
     fake_api = FakeResponsesAPI(
         [
             _fake_response(
@@ -424,6 +473,8 @@ def test_user_proxy_llm_client_start_turn_uses_responses_api_shape(monkeypatch) 
         )
     )
 
+    # transcript has a prior proxy reply ("user") which is SKIPPED (leading user)
+    # then the current subject reply comes in as the single "user" turn.
     response = client.start_turn(
         system_prompt="You are a confused user.",
         transcript=[("user", "nginx is down")],
@@ -449,12 +500,103 @@ def test_user_proxy_llm_client_start_turn_uses_responses_api_shape(monkeypatch) 
     assert call["reasoning"] == {"effort": "medium"}
     assert call["parallel_tool_calls"] is True
     assert call["tools"][0]["parameters"]["additionalProperties"] is False
-    assert call["input"] == [
-        {
-            "role": "user",
-            "content": "Conversation so far:\nuser: nginx is down\n\nAssistant just said:\nRun ls",
-        }
+    # Native history: leading "user" entry skipped → only current reply.
+    assert call["input"] == [{"role": "user", "content": "Run ls"}]
+
+
+def test_user_proxy_llm_client_start_turn_multi_turn_native_history(monkeypatch) -> None:
+    """start_turn builds multi-turn history when transcript has prior exchanges."""
+    fake_api = FakeResponsesAPI([_fake_response(response_id="resp-1", output_text="ok")])
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = fake_api
+
+    monkeypatch.setattr(user_proxy_llm_module, "OpenAI", FakeOpenAI, raising=False)
+    client = UserProxyLLMClient(
+        UserProxyLLMClientConfig(model="gpt-m", api_key="k", request_timeout_seconds=10.0)
+    )
+
+    # Transcript: opening (user/proxy) → subject reply 0 (assistant) → proxy reply 0 (user)
+    # The current subject reply is "subject reply 1" passed separately.
+    transcript = [
+        ("user", "my nginx is broken"),    # opening proxy message → SKIP (leading)
+        ("assistant", "subject reply 0"),  # subject's first reply → proxy "user"
+        ("user", "proxy reply 0"),         # proxy's first reply → proxy "assistant"
     ]
+    client.start_turn(
+        system_prompt="sys",
+        transcript=transcript,
+        assistant_reply="subject reply 1",
+        tools=None,
+    )
+    call = fake_api.calls[0]
+    assert call["input"] == [
+        {"role": "user", "content": "subject reply 0"},
+        {"role": "assistant", "content": "proxy reply 0"},
+        {"role": "user", "content": "subject reply 1"},
+    ]
+
+
+def test_user_proxy_llm_client_start_turn_no_duplicate_subject_reply(monkeypatch) -> None:
+    """Current subject reply appears exactly once in the input."""
+    fake_api = FakeResponsesAPI([_fake_response(response_id="resp-1", output_text="ok")])
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = fake_api
+
+    monkeypatch.setattr(user_proxy_llm_module, "OpenAI", FakeOpenAI, raising=False)
+    client = UserProxyLLMClient(
+        UserProxyLLMClientConfig(model="gpt-m", api_key="k", request_timeout_seconds=10.0)
+    )
+
+    transcript = [
+        ("user", "opening"),
+        ("assistant", "subject reply 0"),
+        ("user", "proxy reply 0"),
+        # The CURRENT subject reply would be "subject reply 1" — it must NOT also be
+        # in the transcript; the caller (benchmark.py) passes transcript[:-1].
+    ]
+    client.start_turn(
+        system_prompt="sys",
+        transcript=transcript,
+        assistant_reply="subject reply 1",
+        tools=None,
+    )
+    call = fake_api.calls[0]
+    # Count occurrences of "subject reply 1"
+    subject_reply_count = sum(
+        1 for msg in call["input"] if "subject reply 1" in str(msg.get("content", ""))
+    )
+    assert subject_reply_count == 1
+
+
+def test_user_proxy_llm_client_start_turn_recent_memory_appended(monkeypatch) -> None:
+    """recent_memory_text is appended to the final user turn."""
+    fake_api = FakeResponsesAPI([_fake_response(response_id="resp-1", output_text="ok")])
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = fake_api
+
+    monkeypatch.setattr(user_proxy_llm_module, "OpenAI", FakeOpenAI, raising=False)
+    client = UserProxyLLMClient(
+        UserProxyLLMClientConfig(model="gpt-m", api_key="k", request_timeout_seconds=10.0)
+    )
+
+    client.start_turn(
+        system_prompt="sys",
+        transcript=[],
+        assistant_reply="what happened?",
+        tools=None,
+        recent_memory_text="$ ls\nfile.txt\n[exit 0]",
+    )
+    call = fake_api.calls[0]
+    last_msg = call["input"][-1]
+    assert last_msg["role"] == "user"
+    assert "[Recent terminal actions]" in last_msg["content"]
+    assert "file.txt" in last_msg["content"]
 
 
 def test_default_run_command_tool_is_strict_object_schema() -> None:
@@ -583,7 +725,7 @@ def test_interactive_command_interception_success() -> None:
         transcript=[("user", "my issue")],
         subject_reply="open nano",
     )
-    
+
     assert controller.interactive_sessions_opened == 1
     assert controller.current_interactive_session is not None
     assert controller.current_interactive_session.inputs == [
@@ -592,7 +734,7 @@ def test_interactive_command_interception_success() -> None:
             "control_keys": (),
         }
     ]
-    
+
     assert len(result.tool_results) == 1
     res = result.tool_results[0]
     assert res.command == "nano /etc/hosts"
@@ -622,7 +764,7 @@ def test_interactive_command_interception_fallback() -> None:
         transcript=[],
         subject_reply="open nano",
     )
-    
+
     assert controller.interactive_sessions_opened == 0
     assert len(result.tool_results) == 1
     res = result.tool_results[0]
@@ -664,3 +806,309 @@ def test_interactive_follow_up_reuses_same_session_and_supports_control_keys() -
             "control_keys": ("ENTER", "CTRL_X"),
         },
     ]
+
+
+# ---------------------------------------------------------------------------
+# New tests for proxy-relative history, review pass, memory, stall
+# ---------------------------------------------------------------------------
+
+def test_build_proxy_native_history_skips_leading_proxy_turns() -> None:
+    """Leading "user" (proxy) entries are skipped; native history starts with subject turn."""
+    pairs = build_proxy_native_history(
+        transcript=[("user", "opening msg"), ("assistant", "subject reply 0"), ("user", "proxy reply 0")],
+        subject_reply="subject reply 1",
+    )
+    assert pairs == [
+        ("user", "subject reply 0"),
+        ("assistant", "proxy reply 0"),
+        ("user", "subject reply 1"),
+    ]
+
+
+def test_build_proxy_native_history_empty_transcript() -> None:
+    """Empty transcript yields a single user turn with the current subject reply."""
+    pairs = build_proxy_native_history(transcript=[], subject_reply="what do I do?")
+    assert pairs == [("user", "what do I do?")]
+
+
+def test_build_proxy_native_history_memory_appended() -> None:
+    """recent_memory_text is appended to the last user turn."""
+    pairs = build_proxy_native_history(
+        transcript=[],
+        subject_reply="check this",
+        recent_memory_text="$ ls\nfile.txt\n[exit 0]",
+    )
+    assert len(pairs) == 1
+    assert pairs[0][0] == "user"
+    assert "[Recent terminal actions]" in pairs[0][1]
+    assert "file.txt" in pairs[0][1]
+
+
+def test_fsm_passes_transcript_without_duplication() -> None:
+    """FSM start_turn receives transcript as-is and subject_reply separately."""
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="ok", tool_calls=(), finish_reason="stop", response_id="r1"),
+        ]
+    )
+    fsm = _make_fsm(llm)
+    fsm.run_turn(
+        transcript=[("user", "opening"), ("assistant", "reply0"), ("user", "proxy0")],
+        subject_reply="reply1",
+    )
+    call = llm.calls[0]
+    assert call["transcript"] == [("user", "opening"), ("assistant", "reply0"), ("user", "proxy0")]
+    assert call["assistant_reply"] == "reply1"
+
+
+def test_fsm_passes_recent_memory_text_to_start_turn() -> None:
+    """recent_memory_text rendered from snapshot is forwarded to start_turn."""
+    action = ProxyRecentAction(
+        tool_name="run_command",
+        turn_index=0,
+        command="ls /",
+        result_text="$ ls /\nbin usr\n[exit 0]",
+        exit_code=0,
+        state_changing=False,
+        safe_rerun=True,
+    )
+    memory = ProxyRecentMemorySnapshot(actions=(action,))
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="looks good", tool_calls=(), finish_reason="stop", response_id="r1"),
+        ]
+    )
+    fsm = _make_fsm(llm)
+    fsm.run_turn([], "what do you see?", proxy_recent_memory=memory)
+
+    assert llm.calls[0]["recent_memory_text"] is not None
+    assert "ls /" in llm.calls[0]["recent_memory_text"]
+
+
+def test_review_pass_rewrites_draft() -> None:
+    """When review_reply is available, its final_reply replaces the draft."""
+    llm = FakeUserProxyLLMWithReview(
+        responses=[
+            UserProxyLLMResponse(content="You should run systemctl restart nginx.", tool_calls=(), finish_reason="stop", response_id="r1"),
+        ],
+        review_responses=[
+            UserProxyReplyReview(final_reply="I tried to restart nginx like you said.", issues=()),
+        ],
+    )
+    fsm = _make_fsm(llm)
+    result = fsm.run_turn([], "Restart nginx for me")
+
+    assert result.user_message == "I tried to restart nginx like you said."
+    assert len(llm.review_calls) == 1
+    assert llm.review_calls[0]["draft_reply"] == "You should run systemctl restart nginx."
+
+
+def test_review_call_includes_tool_outputs() -> None:
+    """review_reply receives tool outputs from this turn."""
+    tc = UserProxyToolCall(id="c1", name="run_command", arguments={"command": "echo hi"})
+    llm = FakeUserProxyLLMWithReview(
+        responses=[
+            UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls", response_id="r1"),
+            UserProxyLLMResponse(content="I ran echo hi.", tool_calls=(), finish_reason="stop", response_id="r2"),
+        ],
+        review_responses=[
+            UserProxyReplyReview(final_reply="I ran echo hi.", issues=()),
+        ],
+    )
+    controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="echo hi", stdout="hi", stderr="", exit_code=0),),
+        ]
+    )
+    fsm = _make_fsm(llm, controller)
+    fsm.run_turn([], "say hello")
+
+    assert len(llm.review_calls) == 1
+    # tool output text should reference the command result
+    combined = " ".join(llm.review_calls[0]["tool_outputs_text"])
+    assert "echo hi" in combined or "hi" in combined
+
+
+def test_review_pass_skipped_when_client_lacks_method() -> None:
+    """If llm_client has no review_reply, the draft is used as-is."""
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="I ran the command.", tool_calls=(), finish_reason="stop", response_id="r1"),
+        ]
+    )
+    assert not hasattr(llm, "review_reply")
+    fsm = _make_fsm(llm)
+    result = fsm.run_turn([], "run ls")
+    assert result.user_message == "I ran the command."
+
+
+def test_repeated_opener_detected_and_fallback_used() -> None:
+    """When conversation has advanced and proxy repeats opener, fallback is used."""
+    opener = "my nginx is broken"
+    llm = FakeUserProxyLLM(
+        responses=[
+            # Reply identical to opener after multiple turns → should fail check
+            UserProxyLLMResponse(content=opener, tool_calls=(), finish_reason="stop", response_id="r1"),
+        ]
+    )
+    fsm = _make_fsm(llm)
+    # transcript has more than one prior proxy entry (conversation advanced)
+    result = fsm.run_turn(
+        transcript=[
+            ("user", opener),                  # opening
+            ("assistant", "try restarting"),   # subject turn 1
+            ("user", "I tried, still broken"),  # proxy turn 1
+            ("assistant", "can you show me the logs?"),  # subject turn 2
+        ],
+        subject_reply="what exactly is the problem?",
+    )
+    # LLM returned the opener → check fails → fallback clarification used
+    assert result.user_message == _FALLBACK_CLARIFICATION
+    assert not result.stalled
+
+
+def test_repeated_prior_reply_falls_back() -> None:
+    """Reply identical to the most-recent prior proxy reply triggers fallback."""
+    prior_reply = "I already ran that and got exit code 1"
+    llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content=prior_reply, tool_calls=(), finish_reason="stop", response_id="r1"),
+        ]
+    )
+    fsm = _make_fsm(llm)
+    result = fsm.run_turn(
+        transcript=[
+            ("user", "nginx is down"),
+            ("assistant", "run systemctl status"),
+            ("user", prior_reply),   # ← prior proxy reply
+        ],
+        subject_reply="what did you see?",
+    )
+    assert result.user_message == _FALLBACK_CLARIFICATION
+
+
+def test_exact_output_cache_hit_short_circuits_llm() -> None:
+    """When subject asks for exact output and we have it cached, skip LLM call."""
+    cached_result = "$ systemctl status nginx\nActive: failed\n[exit 3]"
+    action = ProxyRecentAction(
+        tool_name="run_command",
+        turn_index=0,
+        command="systemctl status nginx",
+        result_text=cached_result,
+        exit_code=3,
+        state_changing=False,
+        safe_rerun=True,
+    )
+    memory = ProxyRecentMemorySnapshot(actions=(action,))
+    llm = FakeUserProxyLLM(responses=[])  # no canned responses — LLM must not be called
+    fsm = _make_fsm(llm)
+    result = fsm.run_turn(
+        [],
+        "Can you paste the exact output of systemctl status nginx?",
+        proxy_recent_memory=memory,
+    )
+    # LLM should NOT have been called (cache hit short-circuits)
+    assert len(llm.calls) == 0
+    assert cached_result in result.user_message
+
+
+def test_safe_rerun_flag_set_for_read_only_commands() -> None:
+    """Commands whose base name is in _SAFE_RERUN_COMMANDS get safe_rerun=True."""
+    assert "cat" in _SAFE_RERUN_COMMANDS
+    assert "ls" in _SAFE_RERUN_COMMANDS
+    assert "systemctl" in _SAFE_RERUN_COMMANDS
+    # State-changing commands are NOT safe to rerun.
+    assert "apt-get" not in _SAFE_RERUN_COMMANDS
+    assert "rm" not in _SAFE_RERUN_COMMANDS
+
+
+def test_stall_provides_fallback_message_not_empty() -> None:
+    """On stall the result has a non-empty user_message so benchmark has a fallback."""
+    llm = FakeUserProxyLLM(responses=[
+        UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="r1"),
+    ])
+    fsm = _make_fsm(llm)
+    result = fsm.run_turn([], "What should I do?")
+    assert result.stalled
+    assert result.user_message  # must not be empty
+
+
+def test_stall_uses_cached_output_as_fallback_when_available() -> None:
+    """On stall the FSM prefers cached exact output over the generic clarification."""
+    cached = "$ df -h\n/dev 90% full\n[exit 0]"
+    action = ProxyRecentAction(
+        tool_name="run_command",
+        turn_index=0,
+        command="df -h",
+        result_text=cached,
+        exit_code=0,
+        state_changing=False,
+        safe_rerun=True,
+    )
+    memory = ProxyRecentMemorySnapshot(actions=(action,))
+    llm = FakeUserProxyLLM(responses=[
+        UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="r1"),
+    ])
+    fsm = _make_fsm(llm)
+    result = fsm.run_turn(
+        [],
+        "can you show me the exact output of df -h?",
+        proxy_recent_memory=memory,
+    )
+    # Stall triggered in DECIDE (empty content, no tools) — but since the subject
+    # asked for exact output and we have cache, the pre-LLM shortcut fires BEFORE
+    # the stall path.  So actually the result should be non-stalled with the cache.
+    assert cached in result.user_message
+
+
+def test_render_recent_memory() -> None:
+    a1 = ProxyRecentAction("run_command", 0, "ls /", "$ ls /\nbin\n[exit 0]", 0, False, True)
+    a2 = ProxyRecentAction("run_command", 1, "cat /etc/hosts", "$ cat /etc/hosts\n127.0.0.1\n[exit 0]", 0, False, True)
+    snap = ProxyRecentMemorySnapshot(actions=(a1, a2))
+    text = _render_recent_memory(snap)
+    assert "ls /" in text
+    assert "cat /etc/hosts" in text
+
+
+def test_find_cached_exact_output_matches_command_keyword() -> None:
+    action = ProxyRecentAction(
+        tool_name="run_command",
+        turn_index=0,
+        command="journalctl -u nginx",
+        result_text="$ journalctl -u nginx\nMar 01 error...\n[exit 0]",
+        exit_code=0,
+        state_changing=False,
+        safe_rerun=True,
+    )
+    memory = ProxyRecentMemorySnapshot(actions=(action,))
+    result = _find_cached_exact_output(
+        "Can you paste the exact output of journalctl?",
+        memory,
+    )
+    assert result is not None
+    assert "journalctl" in result
+
+
+def test_find_cached_exact_output_returns_none_when_no_keywords() -> None:
+    action = ProxyRecentAction("run_command", 0, "ls /", "out", 0, False, True)
+    memory = ProxyRecentMemorySnapshot(actions=(action,))
+    result = _find_cached_exact_output("What should I do next?", memory)
+    assert result is None
+
+
+def test_check_reply_issues_repeated_opener() -> None:
+    prior = ["opener message", "a different reply"]
+    issues = _check_reply_issues("opener message", prior_proxy_replies=prior)
+    assert "repeated_opener" in issues
+
+
+def test_check_reply_issues_repeated_last_reply() -> None:
+    prior = ["opener", "I ran it already"]
+    issues = _check_reply_issues("I ran it already", prior_proxy_replies=prior)
+    assert "repeated_prior_reply" in issues
+
+
+def test_check_reply_issues_clean_reply() -> None:
+    prior = ["opener", "I ran the command and got exit 1."]
+    issues = _check_reply_issues("Now it shows a different error.", prior_proxy_replies=prior)
+    assert issues == []

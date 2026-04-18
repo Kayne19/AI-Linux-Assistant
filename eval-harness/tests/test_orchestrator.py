@@ -377,7 +377,7 @@ class FakeUserProxyLLM:
             response_id=f"resp-{len(self.calls) + 1}",
         )
 
-    def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+    def start_turn(self, *, system_prompt, transcript, assistant_reply, tools, recent_memory_text=None):
         self.calls.append(
             {
                 "phase": "start",
@@ -1520,7 +1520,10 @@ def test_proxy_transcript_retains_stored_initial_user_message_on_later_turns() -
     assert start_calls[1]["transcript"][0] == ("user", opener)
 
 
-def test_benchmark_stalled_proxy_preserves_established_opening_message() -> None:
+def test_benchmark_stalled_proxy_sends_fallback_not_opener() -> None:
+    """On stall, the benchmark sends the FSM's fallback clarification, not the opener."""
+    from eval_harness.orchestration.user_proxy_fsm import _FALLBACK_CLARIFICATION
+
     opener = "My website is down. I tried restarting nginx and it still failed."
     store, revision, setup = _build_benchmark_store_and_revision(
         observable_problem_statement="website is down",
@@ -1557,7 +1560,7 @@ def test_benchmark_stalled_proxy_preserves_established_opening_message() -> None
     )
 
     class AlwaysStallProxyLLM(FakeUserProxyLLM):
-        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools, recent_memory_text=None):
             return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-start")
 
         def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
@@ -1565,7 +1568,9 @@ def test_benchmark_stalled_proxy_preserves_established_opening_message() -> None
 
     _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=AlwaysStallProxyLLM())
 
-    assert session.submitted_messages == [opener, opener]
+    # First message is the opener; second is the stall fallback (not the opener again).
+    assert session.submitted_messages[0] == opener
+    assert session.submitted_messages[1] == _FALLBACK_CLARIFICATION
 
 
 def test_benchmark_preserves_stored_opener_with_initial_diagnostics_on_stall(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1613,7 +1618,7 @@ def test_benchmark_preserves_stored_opener_with_initial_diagnostics_on_stall(mon
     )
 
     class AlwaysStallProxyLLM(FakeUserProxyLLM):
-        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools, recent_memory_text=None):
             return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-start")
 
         def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
@@ -1660,7 +1665,10 @@ def test_benchmark_preserves_stored_opener_with_initial_diagnostics_on_stall(mon
         + "\n\n$ systemctl status nginx --no-pager"
         + "\nnginx.service - failed"
     )
-    assert session.submitted_messages == [expected_message, expected_message]
+    from eval_harness.orchestration.user_proxy_fsm import _FALLBACK_CLARIFICATION
+
+    assert session.submitted_messages[0] == expected_message
+    assert session.submitted_messages[1] == _FALLBACK_CLARIFICATION
 
 
 # ---------------------------------------------------------------------------
@@ -1716,7 +1724,7 @@ def test_benchmark_proxy_sends_system_prompt_on_each_turn() -> None:
     received_system_prompts: list[str] = []
 
     class TrackingProxyLLM(FakeUserProxyLLM):
-        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools, recent_memory_text=None):
             received_system_prompts.append(system_prompt)
             return super().start_turn(
                 system_prompt=system_prompt,
@@ -1879,7 +1887,7 @@ def test_benchmark_proxy_stall_increments_counter_and_continues() -> None:
     proxy_llm = FakeUserProxyLLM(responses=[])  # default fallback returns non-empty, so override
 
     class AlwaysStallProxyLLM(FakeUserProxyLLM):
-        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools, recent_memory_text=None):
             return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-start")
 
         def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
@@ -1974,7 +1982,7 @@ def test_benchmark_proxy_stall_detection_marks_failed() -> None:
 
     # Proxy LLM always returns empty content → FSM stalls every turn
     class AlwaysStallProxyLLM(FakeUserProxyLLM):
-        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools, recent_memory_text=None):
             return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-start")
 
         def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
@@ -2207,7 +2215,7 @@ def test_benchmark_stall_detection_marks_benchmark_completed_with_failures() -> 
     store, revision, setup = _build_benchmark_store_and_revision(turn_budget=5, subject_max_turns=5)
 
     class AlwaysStallProxyLLM(FakeUserProxyLLM):
-        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools, recent_memory_text=None):
             return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-start")
 
         def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
