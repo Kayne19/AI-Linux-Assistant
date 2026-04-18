@@ -299,6 +299,59 @@ def test_request_json_raises_on_incomplete_response(monkeypatch: pytest.MonkeyPa
         )
 
 
+def test_request_json_rejects_openai_strict_schema_without_closed_nested_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeOpenAI.instances.clear()
+    _FakeOpenAI.queued_responses = [[_response(output_text='{"ok": true}')]]
+    monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
+    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+
+    with pytest.raises(ValueError, match="additionalProperties=false"):
+        client.request_json(
+            instructions="Return JSON.",
+            user_input="hello",
+            schema_name="judge_result",
+            schema={
+                "type": "object",
+                "properties": {
+                    "scores": {
+                        "type": "object",
+                        "properties": {"diagnosis": {"type": "integer"}},
+                        "required": ["diagnosis"],
+                    }
+                },
+                "required": ["scores"],
+                "additionalProperties": False,
+            },
+        )
+
+
+def test_request_json_rejects_openai_strict_schema_when_required_fields_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeOpenAI.instances.clear()
+    _FakeOpenAI.queued_responses = [[_response(output_text='{"ok": true}')]]
+    monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
+    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+
+    with pytest.raises(ValueError, match="must declare every property as required"):
+        client.request_json(
+            instructions="Return JSON.",
+            user_input="hello",
+            schema_name="judge_result",
+            schema={
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"},
+                    "scores": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["summary"],
+                "additionalProperties": False,
+            },
+        )
+
+
 def test_extract_function_calls_parses_stringified_arguments() -> None:
     response = _response(
         output=[
