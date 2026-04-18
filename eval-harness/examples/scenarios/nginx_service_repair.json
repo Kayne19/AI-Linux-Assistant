@@ -10,7 +10,9 @@
   "target_image": "debian-12-ssm-golden",
   "observable_problem_statement": "The website is down and nginx will not start after a configuration change.",
   "sabotage_procedure": [
-    "Install nginx, write a broken systemd override for the nginx service, reload systemd, and leave nginx stopped."
+    "mkdir -p /etc/systemd/system/nginx.service.d",
+    "printf '[Service]\\nExecStart=\\n' > /etc/systemd/system/nginx.service.d/override.conf",
+    "systemctl daemon-reload && systemctl stop nginx"
   ],
   "verification_probes": [
     {

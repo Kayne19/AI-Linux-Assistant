@@ -28,6 +28,7 @@ def scenario_spec_from_records(scenario: ScenarioRecord, revision: ScenarioRevis
         what_it_tests=_as_string_items(revision.what_it_tests_json),
         target_image=revision.target_image,
         observable_problem_statement=revision.observable_problem_statement,
+        initial_user_message=revision.initial_user_message,
         sabotage_procedure=_as_string_items(revision.sabotage_plan_json, key="steps"),
         verification_probes=tuple(
             VerificationCheck.from_dict(item)

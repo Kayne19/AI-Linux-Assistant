@@ -11,7 +11,10 @@ def _base_scenario():
         summary="Example scenario",
         what_it_tests=("service recovery",),
         target_image="debian-12-ssm-golden",
-        sabotage_procedure=("apt-get install -y nginx", "break nginx override"),
+        sabotage_procedure=(
+            "apt-get install -y nginx",
+            "mkdir -p /etc/systemd/system/nginx.service.d && printf '[Service]\\nExecStart=\\n' > /etc/systemd/system/nginx.service.d/override.conf",
+        ),
         verification_probes=(
             VerificationCheck(
                 name="nginx-broken",
@@ -34,6 +37,27 @@ def _base_scenario():
 
 def test_validate_scenario_accepts_runnable_spec():
     validate_scenario(_base_scenario())
+
+
+def test_validate_scenario_accepts_install_with_mode_and_paths() -> None:
+    spec = _base_scenario()
+    spec = ScenarioSpec(
+        scenario_name=spec.scenario_name,
+        title=spec.title,
+        summary=spec.summary,
+        what_it_tests=spec.what_it_tests,
+        target_image=spec.target_image,
+        sabotage_procedure=(
+            "install -m 0644 /tmp/bad.conf /etc/nginx/conf.d/bad.conf",
+        ),
+        verification_probes=spec.verification_probes,
+        repair_checks=spec.repair_checks,
+        observable_problem_statement=spec.observable_problem_statement,
+        judge_rubric=spec.judge_rubric,
+        turn_budget=spec.turn_budget,
+    )
+
+    validate_scenario(spec)
 
 
 def test_validate_scenario_requires_verification_and_repair_checks():
@@ -111,6 +135,52 @@ def test_validate_scenario_accepts_regex_and_negative_expectations() -> None:
     )
 
     validate_scenario(spec)
+
+
+@pytest.mark.parametrize(
+    "sabotage_step, expected_error",
+    [
+        ("Ensure nginx is installed: apt-get install -y nginx", "narrative"),
+        ("Install nginx and write a broken override for the service.", "prose"),
+        ("Delete the nginx override", "prose"),
+        ("```bash\nsystemctl stop nginx\n```", "code fences"),
+        ("echo `systemctl is-active nginx`", "backticks"),
+    ],
+)
+def test_validate_scenario_rejects_prose_and_markup_in_sabotage_steps(
+    sabotage_step: str,
+    expected_error: str,
+) -> None:
+    spec = ScenarioSpec(
+        scenario_name="bad-sabotage-step",
+        title="bad sabotage",
+        summary="Example scenario",
+        what_it_tests=("service recovery",),
+        target_image="debian-12-ssm-golden",
+        sabotage_procedure=(sabotage_step,),
+        verification_probes=(
+            VerificationCheck(
+                name="nginx-broken",
+                command="systemctl is-active nginx",
+                expected_substrings=("inactive", "failed"),
+            ),
+        ),
+        repair_checks=(
+            VerificationCheck(
+                name="nginx-fixed",
+                command="systemctl is-active nginx",
+                expected_substrings=("active",),
+            ),
+        ),
+        observable_problem_statement="nginx will not start",
+        judge_rubric=("diagnosis", "repair quality"),
+        turn_budget=6,
+    )
+
+    with pytest.raises(ScenarioValidationError) as exc_info:
+        validate_scenario(spec)
+
+    assert expected_error in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

@@ -23,12 +23,15 @@ Golden images are now target-image driven:
 V1 benchmark flow:
 - planner LLM produces the troubleshooting scenario
 - planner must define both sabotage and objective verification procedures, including any prerequisite installation or provisioning needed to create the failure
+- sabotage steps are stored as raw executable shell commands or shell snippets in `sabotage_procedure`; prose labels, markdown fences, and backticks are rejected during validation
+- planner rectification commands use the same sabotage-step validation before execution, so prose-like corrections fail setup before anything reaches the shell
 - the ScenarioBuilderFSM applies sabotage on staging via SSM shell commands and runs the planner’s probes
 - the setup agent is explicitly told it is operating inside a disposable benchmark sandbox and must not refuse bounded sabotage on generic safety grounds
 - the verifier runs the exact probe commands and returns structured results; both verifier and setup-agent command execution are exercised before setup continues
 - planner reviews raw probe output and either approves or issues a correction
 - if the planner has to correct sabotage twice, the setup run fails
 - only planner-approved broken environments are cloned
+- each evaluation clone must still satisfy the scenario's `verification_probes` before the first subject turn; drifted clones fail immediately with `scenario_fidelity_failed`
 - the UserProxyFSM drives the user proxy persona and does not receive sabotage details
 - benchmark orchestration suppresses approval-loop leakage from subjects and treats all benchmark commands as pre-approved, but that policy is kept out of the API request content sent to the subject backend
 - repair success is defined entirely by scenario-declared machine-checkable repair checks; the benchmark loop does not hard-code service-specific success rules
@@ -84,8 +87,9 @@ Runnable scenarios must include:
 - title and summary
 - `what_it_tests`
 - target image/runtime
-- observable problem statement for the user proxy
-- sabotage procedure
+- observable problem statement for planner/setup context
+- canonical opening user message for benchmark turn 1, or enough information to generate and persist one during scenario design
+- sabotage procedure as raw executable shell commands or shell snippets
 - verification probes with objective expectations
 - repair checks with objective expectations
 - judge rubric
@@ -133,9 +137,11 @@ python -m eval_harness verify-scenario --config examples/aws_ai_linux_assistant_
 
 ### User Proxy Contract
 
-The user proxy plays a human user at a Linux terminal who does not know why the machine is broken. It receives only the `observable_problem_statement` from the scenario; it never sees the sabotage procedure or repair checks.
+The user proxy plays a human user at a Linux terminal who does not know why the machine is broken. During scenario design, the planner may use hidden scenario details to draft and self-review a realistic opening user message; that final `initial_user_message` is then persisted on the scenario revision and reused for every benchmark subject. During benchmark execution, the proxy sees only the stored opening message plus the live transcript. It never receives the sabotage procedure or repair checks during normal turns.
 
-The proxy itself is driven by a provider-backed tool loop. OpenAI uses the Responses API, Anthropic uses Messages tool use, and Google uses Gemini function calling. When the AI subject asks the user to run a command, the proxy model can call the `run_command` function tool, the harness executes that command on the sandbox clone, and the real command output is returned to the proxy using the provider's native tool-result format. This keeps the subject grounded in real environment state rather than the proxy's inference.
+`observable_problem_statement` remains part of the scenario contract for planning/setup and as a fallback if first-turn generation fails, but benchmark turn 1 prefers the stored `initial_user_message` when present. If planner review updates the observable problem statement during setup, the harness keeps the stored opener in sync so later benchmark loads do not use stale text.
+
+The proxy itself is driven by a provider-backed tool loop. OpenAI uses the Responses API, Anthropic uses Messages tool use, and Google uses Gemini function calling. When the AI subject asks the user to run a command, the proxy model can call the `run_command` function tool, the harness executes that command on the sandbox clone, and the real command output is returned to the proxy using the provider's native tool-result format. The proxy system prompt is seeded from the same visible opening user message that the subject sees, not from a more revealing hidden problem statement, which keeps the proxy context from leaking extra scenario detail.
 
 For Phase 1 file editing, the proxy may also use bounded file tools:
 - `read_file(path)` to inspect a regular UTF-8 text file

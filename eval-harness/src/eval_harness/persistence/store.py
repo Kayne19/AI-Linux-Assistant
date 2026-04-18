@@ -86,6 +86,7 @@ class EvalHarnessStore:
         summary: str,
         what_it_tests: dict,
         observable_problem_statement: str,
+        initial_user_message: str = "",
         sabotage_plan: dict,
         verification_plan: dict,
         judge_rubric: dict,
@@ -107,6 +108,7 @@ class EvalHarnessStore:
                 summary=summary,
                 what_it_tests_json=dict(what_it_tests),
                 observable_problem_statement=observable_problem_statement,
+                initial_user_message=initial_user_message,
                 sabotage_plan_json=dict(sabotage_plan),
                 verification_plan_json=dict(verification_plan),
                 judge_rubric_json=dict(judge_rubric),
@@ -177,6 +179,20 @@ class EvalHarnessStore:
             if row is None:
                 raise ValueError(f"Unknown revision_id: {revision_id}")
             row.observable_problem_statement = observable_problem_statement
+            session.add(row)
+            session.commit()
+
+    def update_scenario_revision_opening_message(
+        self,
+        *,
+        revision_id: str,
+        initial_user_message: str,
+    ) -> None:
+        with self._session_factory() as session:
+            row = session.get(ScenarioRevisionRecord, revision_id)
+            if row is None:
+                raise ValueError(f"Unknown revision_id: {revision_id}")
+            row.initial_user_message = initial_user_message
             session.add(row)
             session.commit()
 

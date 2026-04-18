@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -59,12 +59,24 @@ def create_all_tables(engine: Engine) -> None:
     from . import postgres_models  # noqa: F401
 
     Base.metadata.create_all(engine)
+    _apply_eval_harness_migrations(engine)
 
 
 def drop_all_tables(engine: Engine) -> None:
     from . import postgres_models  # noqa: F401
 
     Base.metadata.drop_all(engine)
+
+
+def _apply_eval_harness_migrations(engine: Engine) -> None:
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("scenario_revisions")}
+    if "initial_user_message" in columns:
+        return
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE scenario_revisions ADD COLUMN initial_user_message TEXT NOT NULL DEFAULT ''"
+        )
 
 
 @contextmanager

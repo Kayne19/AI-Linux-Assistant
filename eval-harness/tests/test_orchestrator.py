@@ -16,6 +16,8 @@ from eval_harness.models import (
     BlindJudgeRequest,
     BlindJudgeResult,
     CommandExecutionResult,
+    InitialUserMessageDraft,
+    InitialUserMessageReview,
     PlannerReviewDecision,
     PlannerReviewOutcome,
     PlannerScenarioRequest,
@@ -87,6 +89,24 @@ class FakePlanner(ScenarioPlanner):
     def generate_scenario(self, request: PlannerScenarioRequest) -> ScenarioSpec:
         del request
         return self.generated_scenario
+
+    def generate_initial_user_message(
+        self,
+        *,
+        scenario: ScenarioSpec,
+        hidden_context: dict,
+    ) -> InitialUserMessageDraft:
+        del hidden_context
+        return InitialUserMessageDraft(message=scenario.observable_problem_statement)
+
+    def review_initial_user_message(
+        self,
+        *,
+        scenario: ScenarioSpec,
+        draft_message: str,
+    ) -> InitialUserMessageReview:
+        del scenario
+        return InitialUserMessageReview(outcome="approve", notes="ok", final_message=draft_message)
 
     def review_sabotage(
         self,
@@ -576,7 +596,16 @@ def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair()
         what_it_tests={"items": ["systemd recovery"]},
         observable_problem_statement="The website is down and nginx will not start.",
         sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
-        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        verification_plan={
+            "probes": [
+                {
+                    "name": "broken",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["failed"],
+                    "expected_exit_code": 3,
+                }
+            ]
+        },
         judge_rubric={"items": ["diagnosis", "actionability"]},
         planner_metadata={
             "repair_checks": [
@@ -605,6 +634,9 @@ def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair()
 
     clone_controller = FakeController(
         execute_batches=[
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),
+            ),
             (
                 CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),
             ),
@@ -650,7 +682,16 @@ def test_benchmark_orchestrator_proxy_fsm_drives_turns_and_records_repair() -> N
         what_it_tests={"items": ["systemd recovery"]},
         observable_problem_statement="The website is down and nginx will not start.",
         sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
-        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        verification_plan={
+            "probes": [
+                {
+                    "name": "broken",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["failed"],
+                    "expected_exit_code": 3,
+                }
+            ]
+        },
         judge_rubric={"items": ["diagnosis", "actionability"]},
         planner_metadata={
             "repair_checks": [
@@ -679,6 +720,8 @@ def test_benchmark_orchestrator_proxy_fsm_drives_turns_and_records_repair() -> N
 
     clone_controller = FakeController(
         execute_batches=[
+            # Preflight verification: clone is still broken
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             # Turn 1 repair check: not fixed
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             # Turn 2 repair check: fixed
@@ -738,7 +781,16 @@ def test_benchmark_orchestrator_marks_run_failed_when_clone_launch_raises() -> N
         what_it_tests={"items": ["systemd recovery"]},
         observable_problem_statement="The website is down and nginx will not start.",
         sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
-        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        verification_plan={
+            "probes": [
+                {
+                    "name": "broken",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["failed"],
+                    "expected_exit_code": 3,
+                }
+            ]
+        },
         judge_rubric={"items": ["diagnosis"]},
         planner_metadata={
             "repair_checks": [
@@ -808,7 +860,16 @@ def test_benchmark_orchestrator_marks_interrupting_runs_failed_and_aborts_sessio
         what_it_tests={"items": ["systemd recovery"]},
         observable_problem_statement="The website is down and nginx will not start.",
         sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
-        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        verification_plan={
+            "probes": [
+                {
+                    "name": "broken",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["failed"],
+                    "expected_exit_code": 3,
+                }
+            ]
+        },
         judge_rubric={"items": ["diagnosis"]},
         planner_metadata={
             "repair_checks": [
@@ -845,7 +906,15 @@ def test_benchmark_orchestrator_marks_interrupting_runs_failed_and_aborts_sessio
     adapter = FakeSubjectAdapter(session=interrupting_session)
     orchestrator = BenchmarkRunOrchestrator(
         backend=FakeBackend(),
-        controller_factory=FakeControllerFactory([FakeController()]),
+        controller_factory=FakeControllerFactory(
+            [
+                FakeController(
+                    execute_batches=[
+                        (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+                    ],
+                )
+            ]
+        ),
         subject_adapters={"fake_adapter": adapter},
         store=store,
         user_proxy_llm=FakeUserProxyLLM(),
@@ -1043,7 +1112,9 @@ def test_judge_job_blinds_subject_identity() -> None:
 def _build_benchmark_store_and_revision(
     *,
     observable_problem_statement: str = "The website is down and nginx will not start.",
+    initial_user_message: str = "",
     turn_budget: int = 3,
+    verification_checks: list[dict] | None = None,
     repair_check_command: str = "systemctl is-active nginx",
     repair_check_expected: list[str] | None = None,
     subject_max_turns: int | None = 3,
@@ -1060,6 +1131,15 @@ def _build_benchmark_store_and_revision(
                 "expected_substrings": repair_check_expected,
             }
         ]
+    if verification_checks is None:
+        verification_checks = [
+            {
+                "name": "broken",
+                "command": "systemctl is-active nginx",
+                "expected_substrings": ["failed"],
+                "expected_exit_code": 3,
+            }
+        ]
     store = _build_store()
     scenario = store.create_scenario(title="Test scenario", scenario_name_hint="test-scenario")
     revision = store.create_scenario_revision(
@@ -1068,8 +1148,9 @@ def _build_benchmark_store_and_revision(
         summary="Test",
         what_it_tests={"items": ["recovery"]},
         observable_problem_statement=observable_problem_statement,
+        initial_user_message=initial_user_message,
         sabotage_plan={"steps": ["Break it."]},
-        verification_plan={"probes": [{"name": "broken", "command": "true", "expected_exit_code": 0}]},
+        verification_plan={"probes": verification_checks},
         judge_rubric={"items": ["diagnosis"]},
         planner_metadata={
             "repair_checks": repair_checks,
@@ -1134,6 +1215,418 @@ def _run_benchmark(
         user_proxy_agent_id="user_proxy_agent",
         verification_agent_id="verification_executor",
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 4: benchmark opener comes from stored initial_user_message
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_uses_initial_user_message_as_first_turn() -> None:
+    opener = "My website is down. I tried restarting nginx and it still failed."
+    store, revision, setup = _build_benchmark_store_and_revision(
+        observable_problem_statement="website is down",
+        initial_user_message=opener,
+        turn_budget=1,
+        subject_max_turns=1,
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+
+    _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=_make_proxy_llm(["Still broken."]))
+
+    assert session.submitted_messages[0] == opener
+
+
+def test_benchmark_proxy_prompt_uses_stored_opener_not_more_revealing_problem_statement() -> None:
+    opener = "My website is down."
+    revealed_problem = "The nginx override file contains a missing semicolon."
+    store, revision, setup = _build_benchmark_store_and_revision(
+        observable_problem_statement=revealed_problem,
+        initial_user_message=opener,
+        turn_budget=1,
+        subject_max_turns=1,
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+    proxy_llm = FakeUserProxyLLM(
+        responses=[
+            UserProxyLLMResponse(content="I only know it is still broken.", tool_calls=(), finish_reason="stop", response_id="resp-1"),
+        ]
+    )
+
+    _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
+
+    start_call = next(call for call in proxy_llm.calls if call["phase"] == "start")
+    assert opener in start_call["system_prompt"]
+    assert revealed_problem not in start_call["system_prompt"]
+    assert session.submitted_messages[0] == opener
+
+
+def test_benchmark_preflight_verification_probes_allow_first_subject_turn() -> None:
+    opener = "My website is down. I tried restarting nginx and it still failed."
+    store, revision, setup = _build_benchmark_store_and_revision(
+        observable_problem_statement="website is down",
+        initial_user_message=opener,
+        turn_budget=1,
+        subject_max_turns=1,
+        verification_checks=[
+            {
+                "name": "nginx-still-broken",
+                "command": "systemctl is-active nginx",
+                "expected_substrings": ["failed"],
+                "expected_exit_code": 3,
+            }
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),
+            ),
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
+            ),
+        ],
+    )
+
+    result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=_make_proxy_llm(["Still broken."]))
+
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+    assert session.submitted_messages[0] == opener
+
+
+def test_benchmark_preflight_verification_failure_stops_before_subject_turn() -> None:
+    store, revision, setup = _build_benchmark_store_and_revision(
+        turn_budget=1,
+        subject_max_turns=1,
+        verification_checks=[
+            {
+                "name": "nginx-still-broken",
+                "command": "systemctl is-active nginx",
+                "expected_substrings": ["failed"],
+                "expected_exit_code": 3,
+            },
+            {
+                "name": "journal-shows-crash",
+                "command": "journalctl -u nginx -n 1 --no-pager",
+                "expected_substrings": ["failed"],
+            },
+        ],
+    )
+
+    class FailIfSubmittedSession(FakeSubjectSession):
+        def submit_user_message(self, message: str) -> AdapterTurnResult:
+            raise AssertionError(f"subject turn should not start, got: {message!r}")
+
+    session = FailIfSubmittedSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
+                CommandExecutionResult(command="journalctl -u nginx -n 1 --no-pager", stdout="nginx started", stderr="", exit_code=0),
+            ),
+        ],
+    )
+
+    result = _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=_make_proxy_llm(["Still broken."]))
+
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+    eval_run = evaluation_runs[0]
+    assert eval_run.status == "failed"
+    assert eval_run.repair_success is False
+    resolution = eval_run.resolution_result_json
+    assert resolution.get("reason") == "scenario_fidelity_failed"
+    assert resolution.get("failed_verification_probe_names") == ["nginx-still-broken", "journal-shows-crash"]
+    assert len(resolution.get("verification_probe_results", [])) == 2
+    assert all(result_entry["passed"] is False for result_entry in resolution["verification_probe_results"])
+
+    events = store.list_evaluation_events(eval_run.id)
+    command_events = [event for event in events if event.actor_role == "controller" and event.event_kind == "command_result"]
+    assert len(command_events) == 2
+    assert command_events[0].payload_json["command"] == "systemctl is-active nginx"
+    assert command_events[1].payload_json["command"] == "journalctl -u nginx -n 1 --no-pager"
+    assert all(event.actor_role != "user_proxy" for event in events)
+
+
+def test_benchmark_falls_back_to_observable_problem_statement_when_initial_message_blank() -> None:
+    problem = "The website is down and nginx will not start."
+    store, revision, setup = _build_benchmark_store_and_revision(
+        observable_problem_statement=problem,
+        initial_user_message="   ",
+        turn_budget=1,
+        subject_max_turns=1,
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+
+    _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=_make_proxy_llm(["Still broken."]))
+
+    assert session.submitted_messages[0] == problem
+
+
+def test_proxy_transcript_retains_stored_initial_user_message_on_later_turns() -> None:
+    opener = "My website is down. I tried restarting nginx and it still failed."
+    store, revision, setup = _build_benchmark_store_and_revision(
+        observable_problem_statement="website is down",
+        initial_user_message=opener,
+        turn_budget=2,
+        subject_max_turns=2,
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Check the error log too.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+    proxy_llm = _make_proxy_llm([
+        "I already tried restarting it. What does systemctl status show?",
+        "I still need the error logs.",
+    ])
+
+    _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=proxy_llm)
+
+    start_calls = [call for call in proxy_llm.calls if call["phase"] == "start"]
+    assert len(start_calls) == 2
+    assert start_calls[1]["transcript"][0] == ("user", opener)
+
+
+def test_benchmark_stalled_proxy_preserves_established_opening_message() -> None:
+    opener = "My website is down. I tried restarting nginx and it still failed."
+    store, revision, setup = _build_benchmark_store_and_revision(
+        observable_problem_statement="website is down",
+        initial_user_message=opener,
+        turn_budget=2,
+        subject_max_turns=2,
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Check the error log too.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+
+    class AlwaysStallProxyLLM(FakeUserProxyLLM):
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-start")
+
+        def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
+            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-continue")
+
+    _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=AlwaysStallProxyLLM())
+
+    assert session.submitted_messages == [opener, opener]
+
+
+def test_benchmark_preserves_stored_opener_with_initial_diagnostics_on_stall(monkeypatch: pytest.MonkeyPatch) -> None:
+    opener = "My website is down. I tried restarting nginx and it still failed."
+    store, revision, setup = _build_benchmark_store_and_revision(
+        observable_problem_statement="website is down",
+        initial_user_message=opener,
+        turn_budget=2,
+        subject_max_turns=2,
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Run systemctl status nginx.",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Check the error log too.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (
+                CommandExecutionResult(
+                    command="systemctl status nginx --no-pager",
+                    stdout="nginx.service - failed",
+                    stderr="",
+                    exit_code=3,
+                ),
+            ),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+
+    class AlwaysStallProxyLLM(FakeUserProxyLLM):
+        def start_turn(self, *, system_prompt, transcript, assistant_reply, tools):
+            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-start")
+
+        def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
+            return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-stall-continue")
+
+    custom_scenario = ScenarioSpec(
+        scenario_name="nginx-recovery",
+        title="Nginx recovery",
+        summary="Recover a broken nginx service",
+        what_it_tests=("systemd recovery", "log inspection"),
+        target_image="ami-golden",
+        observable_problem_statement="website is down",
+        initial_user_message=opener,
+        sabotage_procedure=("Break nginx with a bad unit override.",),
+        verification_probes=(
+            VerificationCheck(
+                name="nginx-broken",
+                command="systemctl is-active nginx",
+                expected_substrings=("failed",),
+            ),
+        ),
+        repair_checks=(
+            VerificationCheck(
+                name="nginx-fixed",
+                command="systemctl is-active nginx",
+                expected_substrings=("active",),
+            ),
+        ),
+        judge_rubric=("diagnosis", "actionability"),
+        context_seed=(TurnSeed(role="system", content="Use concise shell reasoning."),),
+        initial_diagnostic_commands=("systemctl status nginx --no-pager",),
+        turn_budget=2,
+    )
+
+    import eval_harness.orchestration.benchmark as benchmark_module
+
+    monkeypatch.setattr(benchmark_module, "scenario_spec_from_records", lambda scenario_row, revision_row: custom_scenario)
+
+    _run_benchmark(store, revision, setup, clone_controller, session, proxy_llm=AlwaysStallProxyLLM())
+
+    expected_message = (
+        opener
+        + "\n\nHere's what I'm seeing on the machine:"
+        + "\n\n$ systemctl status nginx --no-pager"
+        + "\nnginx.service - failed"
+    )
+    assert session.submitted_messages == [expected_message, expected_message]
 
 
 # ---------------------------------------------------------------------------
@@ -1280,6 +1773,7 @@ def test_benchmark_tool_call_commands_executed_and_recorded() -> None:
 
     clone_controller = TrackingController(
         execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             # Repair check after first subject turn: not fixed
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             # proxy run_command tool execution
@@ -1411,6 +1905,7 @@ def test_benchmark_proxy_runs_only_explicit_tool_calls() -> None:
 
     clone_controller = TrackingController(
         execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active exampled", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active exampled", stdout="failed", stderr="", exit_code=3),),
         ],
     )
@@ -1762,6 +2257,7 @@ def test_benchmark_completed_with_failures_when_subjects_do_not_repair() -> None
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
         ],
     )
     session = FakeSubjectSession(
@@ -1809,6 +2305,7 @@ def test_benchmark_immediate_post_action_verification_completes_without_extra_su
 
     clone_controller = FakeController(
         execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (
                 CommandExecutionResult(
@@ -1874,6 +2371,7 @@ def test_benchmark_failure_payload_records_partial_repair_snapshot() -> None:
     )
     clone_controller = FakeController(
         execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (
                 CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),
                 CommandExecutionResult(command="curl -sS --max-time 5 http://127.0.0.1/", stdout="", stderr="", exit_code=0),

@@ -5,7 +5,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 SRC_EVAL_HARNESS = Path(__file__).resolve().parents[1] / "src" / "eval_harness"
 if "eval_harness" not in sys.modules:
@@ -71,6 +71,74 @@ def test_scenario_name_allocation_and_revision_increment() -> None:
         assert row is not None
         assert row.current_verified_revision_id == rev2.id
         assert row.verification_status == "verified"
+
+
+def test_scenario_revision_round_trips_initial_user_message() -> None:
+    store, session_factory = _build_store()
+    scenario = store.create_scenario(title="Nginx Repair", scenario_name_hint="nginx repair")
+
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-1",
+        summary="summary",
+        what_it_tests={"items": ["service-recovery"]},
+        observable_problem_statement="website is down",
+        initial_user_message="My site is down. I tried restarting nginx and it still failed.",
+        sabotage_plan={"steps": ["break nginx"]},
+        verification_plan={"probes": [{"command": "true"}]},
+        judge_rubric={"items": ["diagnosis"]},
+        planner_metadata={"turn_budget": 8, "repair_checks": []},
+    )
+
+    with session_factory() as session:
+        stored = session.get(ScenarioRevisionRecord, revision.id)
+        assert stored is not None
+        assert stored.initial_user_message == "My site is down. I tried restarting nginx and it still failed."
+
+
+def test_create_all_tables_migrates_initial_user_message_column() -> None:
+    engine = build_engine("sqlite+pysqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE scenarios (
+                id VARCHAR(36) PRIMARY KEY,
+                scenario_name VARCHAR(120) NOT NULL UNIQUE,
+                title VARCHAR(240) NOT NULL,
+                lifecycle_status VARCHAR(32) NOT NULL DEFAULT 'draft',
+                current_verified_revision_id VARCHAR(36),
+                verification_status VARCHAR(32) NOT NULL DEFAULT 'unverified',
+                last_verified_at DATETIME,
+                benchmark_run_count INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE scenario_revisions (
+                id VARCHAR(36) PRIMARY KEY,
+                scenario_id VARCHAR(36) NOT NULL,
+                revision_number INTEGER NOT NULL,
+                target_image VARCHAR(255) NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                what_it_tests_json JSON NOT NULL,
+                observable_problem_statement TEXT NOT NULL DEFAULT '',
+                sabotage_plan_json JSON NOT NULL,
+                verification_plan_json JSON NOT NULL,
+                judge_rubric_json JSON NOT NULL,
+                planner_metadata_json JSON NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    create_all_tables(engine)
+
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("scenario_revisions")}
+    assert "initial_user_message" in columns
 
 
 def test_setup_benchmark_evaluation_and_judge_records() -> None:

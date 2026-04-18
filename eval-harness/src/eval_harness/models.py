@@ -32,6 +32,18 @@ def to_primitive(value: Any) -> Any:
     return value
 
 
+def _require_non_empty_string(payload: dict[str, Any], key: str) -> str:
+    if key not in payload:
+        raise ValueError(f"structured output missing required field: {key}")
+    raw_value = payload[key]
+    if not isinstance(raw_value, str):
+        raise ValueError(f"structured output field '{key}' must be a string")
+    value = raw_value.strip()
+    if not value:
+        raise ValueError(f"structured output field '{key}' must be non-empty")
+    return value
+
+
 class VerificationMatchMode(str, Enum):
     ALL = "all"
     ANY = "any"
@@ -317,6 +329,7 @@ class ScenarioSpec:
     verification_probes: tuple[VerificationCheck, ...]
     repair_checks: tuple[VerificationCheck, ...]
     judge_rubric: tuple[str, ...]
+    initial_user_message: str = ""
     turn_budget: int = 8
     context_seed: tuple[TurnSeed, ...] = ()
     initial_diagnostic_commands: tuple[str, ...] = ()
@@ -329,6 +342,7 @@ class ScenarioSpec:
         repair_payload = payload.get("repair_checks") or payload.get("resolution_checks") or []
         what_it_tests = payload.get("what_it_tests", []) or []
         judge_rubric = payload.get("judge_rubric", []) or (payload.get("grader_hints", {}) or {}).get("rubric", []) or []
+        opening_user_message = str(payload.get("opening_user_message", "")).strip()
         return cls(
             scenario_name=str(payload.get("scenario_name") or payload.get("scenario_id") or payload.get("id") or "").strip(),
             title=str(payload.get("title", "")).strip(),
@@ -336,8 +350,9 @@ class ScenarioSpec:
             what_it_tests=tuple(str(item).strip() for item in what_it_tests if str(item).strip()),
             target_image=str(payload.get("target_image", "")).strip(),
             observable_problem_statement=str(
-                payload.get("observable_problem_statement") or payload.get("opening_user_message") or ""
+                payload.get("observable_problem_statement") or opening_user_message or ""
             ).strip(),
+            initial_user_message=str(payload.get("initial_user_message") or opening_user_message or "").strip(),
             sabotage_procedure=tuple(
                 str(step).strip()
                 for step in payload.get("sabotage_procedure", []) or payload.get("setup_steps", []) or []
@@ -415,6 +430,40 @@ class PlannerReviewDecision:
             ),
             updated_observable_problem_statement=str(payload.get("updated_observable_problem_statement", "")).strip(),
             metadata=dict(payload.get("metadata", {}) or {}),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return to_primitive(self)
+
+
+@dataclass(frozen=True)
+class InitialUserMessageDraft:
+    message: str
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "InitialUserMessageDraft":
+        return cls(message=_require_non_empty_string(payload, "message"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return to_primitive(self)
+
+
+@dataclass(frozen=True)
+class InitialUserMessageReview:
+    outcome: Literal["approve", "rewrite"]
+    notes: str
+    final_message: str
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "InitialUserMessageReview":
+        outcome = _require_non_empty_string(payload, "outcome").lower()
+        if outcome not in {"approve", "rewrite"}:
+            raise ValueError(f"structured output field 'outcome' must be one of: approve, rewrite")
+        normalized_outcome: Literal["approve", "rewrite"] = "approve" if outcome == "approve" else "rewrite"
+        return cls(
+            outcome=normalized_outcome,
+            notes=_require_non_empty_string(payload, "notes"),
+            final_message=_require_non_empty_string(payload, "final_message"),
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -107,6 +107,36 @@ class BenchmarkRunOrchestrator:
             "failed_check_names": failed_check_names,
         }
 
+    def _verification_snapshot(self, scenario, command_results) -> dict:
+        checks: list[dict[str, Any]] = []
+        failed_probe_names: list[str] = []
+        paired_count = min(len(scenario.verification_probes), len(command_results))
+        for check, result in zip(scenario.verification_probes[:paired_count], command_results[:paired_count]):
+            passed = check.is_satisfied_by(result)
+            checks.append(
+                {
+                    "check": check.to_dict(),
+                    "result": result.to_dict(),
+                    "passed": passed,
+                }
+            )
+            if not passed:
+                failed_probe_names.append(check.name or result.command)
+        if len(command_results) != len(scenario.verification_probes):
+            for check in scenario.verification_probes[paired_count:]:
+                failed_probe_names.append(check.name or check.command)
+        passed_probe_count = sum(1 for item in checks if item["passed"])
+        return {
+            "verification_probe_results": checks,
+            "passed_verification_probe_count": passed_probe_count,
+            "failed_verification_probe_names": failed_probe_names,
+            "verification_probe_count": len(scenario.verification_probes),
+            "verification_command_result_count": len(command_results),
+            "verification_passed": len(command_results) == len(scenario.verification_probes) and passed_probe_count == len(
+                scenario.verification_probes
+            ),
+        }
+
     def _exception_reason(self, exc: BaseException) -> str:
         message = str(exc).strip()
         if message:
@@ -210,6 +240,28 @@ class BenchmarkRunOrchestrator:
         )
         return repair_results, seq
 
+    def _execute_verification_probes(
+        self,
+        *,
+        controller: SandboxController,
+        scenario,
+        evaluation_run_id: str,
+        seq: int,
+        verification_agent_id: str,
+    ) -> tuple[tuple, int]:
+        verification_results = controller.execute_commands(
+            tuple(item.command for item in scenario.verification_probes),
+            agent_id=verification_agent_id,
+            session_key=f"{evaluation_run_id}-verification",
+        )
+        seq = self._record_command_results(
+            evaluation_run_id=evaluation_run_id,
+            seq=seq,
+            actor_role="controller",
+            command_results=verification_results,
+        )
+        return verification_results, seq
+
     def _benchmark_status_and_summary(self, benchmark_run_id: str, *, interrupted: bool = False) -> tuple[str, dict]:
         evaluation_runs = self.store.list_evaluation_runs(benchmark_run_id)
         status_counts = Counter(run.status for run in evaluation_runs)
@@ -251,6 +303,31 @@ class BenchmarkRunOrchestrator:
             self.backend.wait_until_ready(clone_handle)
             self.backend.configure_controller_runtime(clone_handle)
             controller = self.controller_factory.open(clone_handle, purpose=f"evaluation-{evaluation_run_id}")
+
+            if scenario.verification_probes:
+                verification_results, seq = self._execute_verification_probes(
+                    controller=controller,
+                    scenario=scenario,
+                    evaluation_run_id=evaluation_run_id,
+                    seq=seq,
+                    verification_agent_id=verification_agent_id,
+                )
+                verification_snapshot = self._verification_snapshot(scenario, verification_results)
+                if not verification_snapshot["verification_passed"]:
+                    self.store.update_evaluation_run_status(
+                        evaluation_run_id=evaluation_run_id,
+                        status=EvaluationRunStatus.FAILED.value,
+                        repair_success=False,
+                        resolution_result=self._failure_resolution_payload(
+                            reason="scenario_fidelity_failed",
+                            last_repair_snapshot=None,
+                            last_subject_message_summary="",
+                            extra=verification_snapshot,
+                        ),
+                        finished=True,
+                    )
+                    return
+
             subject_spec = subject_spec_from_record(subject_row)
             session = adapter.create_session(benchmark_run_id, subject_spec)
             session.seed_context(scenario.context_seed)
@@ -258,7 +335,12 @@ class BenchmarkRunOrchestrator:
             # Build the LLM client for the user proxy FSM
             llm_client = self._get_user_proxy_llm()
 
-            user_message = scenario.observable_problem_statement
+            opening_user_message = (
+                scenario.initial_user_message.strip()
+                if scenario.initial_user_message.strip()
+                else scenario.observable_problem_statement
+            )
+            user_message = opening_user_message
             if scenario.initial_diagnostic_commands:
                 diag_results = controller.execute_commands(
                     scenario.initial_diagnostic_commands,
@@ -384,7 +466,7 @@ class BenchmarkRunOrchestrator:
                     llm_client=llm_client,
                     controller=controller,
                     evaluation_run_id=evaluation_run_id,
-                    observable_problem_statement=scenario.observable_problem_statement,
+                    observable_problem_statement=opening_user_message,
                     scenario_name=_scenario_name,
                     subject_name=_subject_name,
                     user_proxy_mode=self.user_proxy_mode,
@@ -451,8 +533,8 @@ class BenchmarkRunOrchestrator:
                         )
                         _emit("evaluation_completed", {"repair_success": False, "reason": "proxy_stalled"})
                         return
-                    # Use the problem statement as the fallback message and continue
-                    user_message = scenario.observable_problem_statement
+                    # Preserve the established opening state for a retry, including any stored
+                    # opener text and appended initial diagnostic output.
                     continue
 
                 consecutive_stalled_turns = 0

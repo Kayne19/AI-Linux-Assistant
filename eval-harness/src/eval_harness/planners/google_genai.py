@@ -8,6 +8,8 @@ from .base import ScenarioPlanner
 from ..google_genai_llm import GoogleGenAIStructuredOutputClient, GoogleGenAIStructuredOutputClientConfig
 from ..models import (
     CommandExecutionResult,
+    InitialUserMessageDraft,
+    InitialUserMessageReview,
     PlannerReviewDecision,
     PlannerScenarioRequest,
     ScenarioSpec,
@@ -118,6 +120,30 @@ def _planner_rectification_schema() -> dict[str, Any]:
     }
 
 
+def _initial_user_message_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string"},
+        },
+        "required": ["message"],
+        "additionalProperties": False,
+    }
+
+
+def _initial_user_message_review_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "outcome": {"type": "string", "enum": ["approve", "rewrite"]},
+            "notes": {"type": "string"},
+            "final_message": {"type": "string"},
+        },
+        "required": ["outcome", "notes", "final_message"],
+        "additionalProperties": False,
+    }
+
+
 @dataclass(frozen=True)
 class GoogleGenAIScenarioPlannerConfig:
     model: str
@@ -168,6 +194,7 @@ class GoogleGenAIScenarioPlanner(ScenarioPlanner):
             "Required top-level keys: "
             "scenario_name, title, summary, what_it_tests, target_image, observable_problem_statement, "
             "sabotage_procedure, verification_probes, repair_checks, judge_rubric, turn_budget. "
+            "sabotage_procedure must contain raw executable shell commands or shell snippets only, with no prose, no markdown, and no backticks. "
             "what_it_tests, sabotage_procedure, judge_rubric must be non-empty arrays of strings. "
             "verification_probes and repair_checks must be non-empty arrays of objects with: "
             "name, command, and intent (explaining the explicit verification intent). "
@@ -189,7 +216,26 @@ class GoogleGenAIScenarioPlanner(ScenarioPlanner):
             "You previously returned invalid structured scenario data. "
             "Return corrected structured data only. "
             "Preserve the user's target_image and produce a fully runnable scenario object that passes validation. "
+            "Keep sabotage_procedure as raw executable shell commands or shell snippets only, with no prose, no markdown, and no backticks. "
             "Remember: repair_checks must collectively cover end-to-end functional restoration of the user's stated problem. If the observable problem is a user-visible action (e.g. 'I cannot SSH in,' 'curl to my service times out,' 'my cron job never runs'), at least one repair_check must actually attempt that action and verify it succeeds — not merely assert that a related daemon is loaded or active. State-level checks (systemctl is-active, ss -tlnp, file existence) are allowed in addition to a functional check, but never as the sole evidence of repair."
+        )
+
+    def _initial_user_message_prompt(self) -> str:
+        return (
+            "You are writing the canonical first user turn for a Linux troubleshooting benchmark. "
+            "Return a structured object with a single key 'message'. "
+            "Write as the end user who is experiencing the issue, in natural first-person language. "
+            "Describe visible symptoms and what the user plausibly tried. "
+            "Use only information a real user could have observed. "
+            "Do not reveal hidden scenario setup, sabotage steps, exact fixes, or internal benchmark design details."
+        )
+
+    def _initial_user_message_review_prompt(self) -> str:
+        return (
+            "You are reviewing a benchmark's candidate opening user message for realism and information leakage. "
+            "Return a structured object with outcome=approve or outcome=rewrite, notes, and final_message. "
+            "Approve only if the draft sounds like a real frustrated user and does not reveal hidden causes, sabotage details, or fix instructions. "
+            "Rewrite when needed so the final_message stays natural while preserving only user-observable evidence."
         )
 
     def _validated_scenario_from_payload(
@@ -237,6 +283,48 @@ class GoogleGenAIScenarioPlanner(ScenarioPlanner):
             schema_description="Runnable troubleshooting benchmark scenario.",
         )
         return self._validated_scenario_from_payload(payload, request=request, allow_repair=True)
+
+    def generate_initial_user_message(
+        self,
+        *,
+        scenario: ScenarioSpec,
+        hidden_context: dict[str, Any],
+    ) -> InitialUserMessageDraft:
+        payload = self._request_json_schema(
+            instructions=self._initial_user_message_prompt(),
+            user_input=json.dumps(
+                {
+                    "scenario": scenario.to_dict(),
+                    "hidden_context": hidden_context,
+                },
+                indent=2,
+            ),
+            schema_name="planner_initial_user_message",
+            schema=_initial_user_message_schema(),
+            schema_description="Canonical first-turn benchmark user message.",
+        )
+        return InitialUserMessageDraft.from_dict(payload)
+
+    def review_initial_user_message(
+        self,
+        *,
+        scenario: ScenarioSpec,
+        draft_message: str,
+    ) -> InitialUserMessageReview:
+        payload = self._request_json_schema(
+            instructions=self._initial_user_message_review_prompt(),
+            user_input=json.dumps(
+                {
+                    "scenario": scenario.to_dict(),
+                    "draft_message": draft_message,
+                },
+                indent=2,
+            ),
+            schema_name="planner_initial_user_message_review",
+            schema=_initial_user_message_review_schema(),
+            schema_description="Self-review for a canonical first-turn benchmark user message.",
+        )
+        return InitialUserMessageReview.from_dict(payload)
 
     def review_sabotage(
         self,

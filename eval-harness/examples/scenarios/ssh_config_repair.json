@@ -10,7 +10,9 @@
   "target_image": "debian-12-ssm-golden",
   "observable_problem_statement": "SSH access to this machine has stopped working after a recent config change. Restore SSH so the daemon starts successfully.",
   "sabotage_procedure": [
-    "Install openssh-server, append an invalid directive (e.g. 'InvalidDirective yes') to /etc/ssh/sshd_config, reload systemd, then stop sshd."
+    "apt-get update && apt-get install -y openssh-server",
+    "printf '\\nInvalidDirective yes\\n' >> /etc/ssh/sshd_config",
+    "systemctl daemon-reload && systemctl stop sshd || systemctl stop ssh"
   ],
   "verification_probes": [
     {

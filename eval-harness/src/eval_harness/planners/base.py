@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from ..models import (
     CommandExecutionResult,
+    InitialUserMessageDraft,
+    InitialUserMessageReview,
     PlannerReviewDecision,
     PlannerScenarioRequest,
     ScenarioSpec,
@@ -17,6 +20,24 @@ class ScenarioPlanner(ABC):
 
     @abstractmethod
     def generate_scenario(self, request: PlannerScenarioRequest) -> ScenarioSpec:
+        raise NotImplementedError
+
+    @abstractmethod
+    def generate_initial_user_message(
+        self,
+        *,
+        scenario: ScenarioSpec,
+        hidden_context: dict[str, Any],
+    ) -> InitialUserMessageDraft:
+        raise NotImplementedError
+
+    @abstractmethod
+    def review_initial_user_message(
+        self,
+        *,
+        scenario: ScenarioSpec,
+        draft_message: str,
+    ) -> InitialUserMessageReview:
         raise NotImplementedError
 
     @abstractmethod

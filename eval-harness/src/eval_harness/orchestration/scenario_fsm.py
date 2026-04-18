@@ -22,7 +22,7 @@ from ..models import (
 )
 from ..persistence.store import EvalHarnessStore
 from ..planners.base import ScenarioPlanner
-from ..scenario import validate_scenario
+from ..scenario import validate_sabotage_step, validate_scenario
 
 
 # ---------------------------------------------------------------------------
@@ -303,13 +303,57 @@ class ScenarioBuilderFSM:
             },
         )
 
+    def _generate_initial_user_message(self, draft: ScenarioSpec) -> tuple[str, dict[str, Any]]:
+        hidden_context = {
+            "sabotage_procedure": list(draft.sabotage_procedure),
+            "verification_probes": [item.to_dict() for item in draft.verification_probes],
+            "repair_checks": [item.to_dict() for item in draft.repair_checks],
+        }
+        draft_message = ""
+        try:
+            draft_message = self.planner.generate_initial_user_message(
+                scenario=draft,
+                hidden_context=hidden_context,
+            ).message
+            review = self.planner.review_initial_user_message(
+                scenario=draft,
+                draft_message=draft_message,
+            )
+            return review.final_message, {
+                "draft": draft_message,
+                "review_outcome": review.outcome,
+                "review_notes": review.notes,
+                "final_message": review.final_message,
+                "used_fallback": False,
+            }
+        except Exception as exc:
+            fallback = draft.observable_problem_statement
+            return fallback, {
+                "draft": draft_message,
+                "review_outcome": "fallback",
+                "review_notes": f"{type(exc).__name__}: {exc}",
+                "final_message": fallback,
+                "used_fallback": True,
+            }
+
     # ------------------------------------------------------------------
     # State handlers
     # ------------------------------------------------------------------
 
     def _handle_design(self, ctx: ScenarioBuilderContext) -> ScenarioBuilderState:
+        from dataclasses import replace
+
         draft = self.planner.generate_scenario(ctx.request)
         validate_scenario(draft)
+        initial_user_message, generation_metadata = self._generate_initial_user_message(draft)
+        draft = replace(
+            draft,
+            initial_user_message=initial_user_message,
+            planner_metadata={
+                **draft.planner_metadata,
+                "initial_user_message_generation": generation_metadata,
+            },
+        )
 
         scenario_row = self.store.create_scenario(
             title=draft.title,
@@ -321,6 +365,7 @@ class ScenarioBuilderFSM:
             summary=draft.summary,
             what_it_tests={"items": list(draft.what_it_tests)},
             observable_problem_statement=draft.observable_problem_statement,
+            initial_user_message=draft.initial_user_message,
             sabotage_plan={"steps": list(draft.sabotage_procedure)},
             verification_plan={"probes": [item.to_dict() for item in draft.verification_probes]},
             judge_rubric={"items": list(draft.judge_rubric)},
@@ -410,13 +455,32 @@ class ScenarioBuilderFSM:
         ctx.last_review_decision = decision
 
         if decision.updated_observable_problem_statement:
+            updated_problem_statement = decision.updated_observable_problem_statement
             self.store.update_scenario_revision_observable_problem_statement(
                 revision_id=ctx.revision_row.id,
-                observable_problem_statement=decision.updated_observable_problem_statement,
+                observable_problem_statement=updated_problem_statement,
             )
+            opener_message = ctx.scenario.initial_user_message
+            reviewed_opening_message = opener_message
+            try:
+                reviewed_opening_message = self.planner.review_initial_user_message(
+                    scenario=replace(
+                        ctx.scenario,
+                        observable_problem_statement=updated_problem_statement,
+                    ),
+                    draft_message=updated_problem_statement,
+                ).final_message
+            except Exception:
+                reviewed_opening_message = opener_message
+            else:
+                self.store.update_scenario_revision_opening_message(
+                    revision_id=ctx.revision_row.id,
+                    initial_user_message=reviewed_opening_message,
+                )
             ctx.scenario = replace(
                 ctx.scenario,
-                observable_problem_statement=decision.updated_observable_problem_statement,
+                observable_problem_statement=updated_problem_statement,
+                initial_user_message=reviewed_opening_message,
             )
 
         self.store.append_setup_event(
@@ -449,6 +513,21 @@ class ScenarioBuilderFSM:
         if not fix_commands:
             ctx.failure_reason = "planner_returned_empty_rectification"
             ctx.failure_metadata = {}
+            return ScenarioBuilderState.FAILED
+
+        validation_errors: list[str] = []
+        for index, command in enumerate(fix_commands, start=1):
+            validation_error = validate_sabotage_step(command, index, field_name="rectification_commands")
+            if validation_error is not None:
+                validation_errors.append(validation_error)
+
+        if validation_errors:
+            ctx.failure_reason = "invalid_rectification_commands"
+            ctx.failure_metadata = {
+                "invalid_rectification_commands": list(fix_commands),
+                "validation_errors": validation_errors,
+                "round_index": ctx.round_index,
+            }
             return ScenarioBuilderState.FAILED
 
         ctx.fix_commands = fix_commands

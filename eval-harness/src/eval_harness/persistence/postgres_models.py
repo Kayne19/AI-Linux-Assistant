@@ -45,6 +45,7 @@ class ScenarioRevisionRecord(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     what_it_tests_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     observable_problem_statement: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    initial_user_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     sabotage_plan_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     verification_plan_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     judge_rubric_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

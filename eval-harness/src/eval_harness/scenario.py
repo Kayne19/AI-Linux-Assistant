@@ -2,11 +2,73 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from .models import CommandExecutionResult, ScenarioSpec, VerificationCheck
 
 logger = logging.getLogger(__name__)
+
+_SABOTAGE_PROSE_PREFIXES = frozenset(
+    {
+        "add",
+        "check",
+        "confirm",
+        "delete",
+        "create",
+        "disable",
+        "enable",
+        "ensure",
+        "fix",
+        "kill",
+        "install",
+        "make",
+        "remove",
+        "restart",
+        "restore",
+        "set",
+        "start",
+        "stop",
+        "update",
+        "write",
+    }
+)
+_SABOTAGE_PROSE_CONTEXT_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "be",
+        "before",
+        "because",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "please",
+        "so",
+        "than",
+        "that",
+        "the",
+        "then",
+        "these",
+        "those",
+        "to",
+        "using",
+        "was",
+        "were",
+        "with",
+        "would",
+    }
+)
 
 
 class ScenarioValidationError(ValueError):
@@ -15,6 +77,40 @@ class ScenarioValidationError(ValueError):
 
 def evaluate_verification(check: VerificationCheck, result: CommandExecutionResult) -> bool:
     return check.is_satisfied_by(result)
+
+
+def validate_sabotage_step(step: str, index: int, *, field_name: str = "sabotage_procedure") -> str | None:
+    stripped = step.strip()
+    if not stripped:
+        return f"{field_name}[{index}] must not be empty"
+    if "```" in stripped:
+        return f"{field_name}[{index}] must not contain markdown code fences"
+    if "`" in stripped:
+        return f"{field_name}[{index}] must not contain backticks"
+    if stripped.endswith(":"):
+        return f"{field_name}[{index}] must be a raw shell command or shell snippet, not a narrative label"
+
+    if ":" in stripped:
+        prefix, suffix = stripped.split(":", 1)
+        prefix = prefix.strip()
+        if prefix and suffix.strip() and " " in prefix and not re.search(r"[`'\"$><|&;(){}]", prefix):
+            first_word = prefix.split()[0].strip(",.").lower()
+            if prefix[0].isupper() or first_word in _SABOTAGE_PROSE_PREFIXES:
+                return (
+                    f"{field_name}[{index}] must be a raw shell command or shell snippet, not a narrative label"
+                )
+
+    words = stripped.split()
+    if words:
+        first_word = words[0].strip(",.").lower()
+        shell_like = bool(re.search(r"[`'\"$><|&;(){}=]", stripped))
+        shell_like = shell_like or any(word.startswith("-") for word in words[1:])
+        shell_like = shell_like or any(word.startswith("./") or word.startswith("~/") or "/" in word for word in words)
+        has_prose_context = any(word.lower().strip(",.;:!?") in _SABOTAGE_PROSE_CONTEXT_WORDS for word in words[1:])
+        if first_word in _SABOTAGE_PROSE_PREFIXES and not shell_like and (words[0][0].isupper() or has_prose_context):
+            return f"{field_name}[{index}] must be a raw shell command or shell snippet, not prose"
+
+    return None
 
 
 def validate_scenario(spec: ScenarioSpec) -> None:
@@ -43,8 +139,9 @@ def validate_scenario(spec: ScenarioSpec) -> None:
         errors.append("turn_budget must be greater than 0")
 
     for index, step in enumerate(spec.sabotage_procedure, start=1):
-        if not step.strip():
-            errors.append(f"sabotage_procedure[{index}] must not be empty")
+        sabotage_error = validate_sabotage_step(step, index)
+        if sabotage_error is not None:
+            errors.append(sabotage_error)
 
     for label, checks in (("verification_probes", spec.verification_probes), ("repair_checks", spec.repair_checks)):
         for index, check in enumerate(checks, start=1):
