@@ -19,10 +19,13 @@ def test_aws_ai_linux_assistant_example_config_is_valid_json():
     assert planner["provider"] == "openai"
     assert judge["provider"] == "openai"
     assert user_proxy_llm["provider"] == "openai"
+    assert user_proxy_llm["model"] == "gpt-4.1-mini"
     assert user_proxy_llm["mode"] == "pragmatic_human"
     assert "base_url" not in planner
     assert "base_url" not in judge
     assert "base_url" not in user_proxy_llm
+    assert "reasoning_effort" not in user_proxy_llm
+    assert "request_timeout_seconds" not in user_proxy_llm
     assert backend["default_target_image"] == "debian-12-ssm-golden"
     assert "golden_ami_id" not in backend
     assert backend["target_images"]["debian-12-ssm-golden"]["distro_vars_file"] == "infra/aws/packer/distros/debian-12.pkrvars.hcl"
@@ -52,4 +55,7 @@ def test_aws_ai_linux_assistant_vs_chatgpt_example_config_is_valid_json():
     assert "max_output_tokens" not in adapters["openai_chatgpt"]
     assert "request_timeout_seconds" not in adapters["openai_chatgpt"]
     assert "web_search_allowed_domains" not in adapters["openai_chatgpt"]
+    assert payload["user_proxy_llm"]["model"] == "gpt-4.1-mini"
+    assert "reasoning_effort" not in payload["user_proxy_llm"]
+    assert "request_timeout_seconds" not in payload["user_proxy_llm"]
     assert {subject["adapter_type"] for subject in subjects} == {"ai_linux_assistant_http", "openai_chatgpt"}

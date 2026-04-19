@@ -40,7 +40,7 @@ class UserProxyLLMResponse:
 class UserProxyReplyReview:
     """Structured result of the always-on revision pass for a proxy draft reply."""
 
-    verdict: Literal["accept", "retry_with_tools", "ask_clarification"]
+    verdict: Literal["accept", "rewrite_text", "retry_with_tools"]
     final_reply: str
     reason: str
     issues: tuple[str, ...] = ()
@@ -49,10 +49,10 @@ class UserProxyReplyReview:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "UserProxyReplyReview":
         verdict = str(payload.get("verdict", "")).strip().lower()
-        if verdict not in {"accept", "retry_with_tools", "ask_clarification"}:
+        if verdict not in {"accept", "rewrite_text", "retry_with_tools"}:
             raise ValueError(
                 "structured output field 'verdict' must be one of: "
-                "accept, retry_with_tools, ask_clarification"
+                "accept, rewrite_text, retry_with_tools"
             )
         final_reply = str(payload.get("final_reply", "") or "").strip()
         if not final_reply:
@@ -222,13 +222,14 @@ _REVIEW_SYSTEM_PROMPT = (
     "You are reviewing a draft reply from someone simulating a confused Linux user. "
     "The user is at a terminal and an assistant is trying to help them fix a problem. "
     "The assistant is text-only: it cannot run commands, inspect files, or edit the machine itself. "
-    "The proxy is the human user with terminal access. Judge both character authenticity, wording, and action adequacy. "
-    "A draft is acceptable only if it either "
-    "(1) actually ran the requested command(s), (2) performed the bounded file read/edit implied "
-    "by the instruction, (3) accurately answers using already-observed evidence from the recent "
-    "terminal actions or this turn's tool output without needing more tools, or (4) asks a short clarification because the instruction is genuinely "
-    "underspecified. A draft is not acceptable if it merely repeats the diagnosis or restates the "
-    "assistant's instruction without acting. Breaking character is a reason to reject or rewrite the draft.\n\n"
+    "The proxy is the human user with terminal access. Your job is not to choose strategy. "
+    "The draft generator already decided whether to use tools or ask a question. "
+    "Your job is only to enforce two things: "
+    "(1) the reply must stay in human user voice rather than assistant/helpdesk voice, and "
+    "(2) the proxy must have used tools properly for the assistant's request. "
+    "A draft is acceptable only if it either actually acted appropriately, accurately answers from already-observed evidence, or asked a human-sounding question that fits the assistant's request. "
+    "A draft is not acceptable if it merely repeats the diagnosis, restates the assistant's instruction without acting, or uses tools incorrectly. "
+    "Breaking character is a reason to rewrite or retry.\n\n"
     "Fix any wording issues: remove assistant-like directives (do not say 'you should', "
     "'please run', 'let me know', or similar), ensure the reply accurately reports terminal "
     "output rather than fabricating it, and write in first-person confused-user voice. "
@@ -251,8 +252,12 @@ _REVIEW_SYSTEM_PROMPT = (
     "Good example:\n"
     "Assistant: Check /etc/nginx/nginx.conf and remove the duplicate include line.\n"
     "Draft: I removed that duplicate include line from /etc/nginx/nginx.conf.\n\n"
+    "Verdict rules:\n"
+    "- accept: the draft already sounds like a human user and tool use was appropriate.\n"
+    "- rewrite_text: the underlying action/question is fine, but the wording sounds assistant-like or unnatural. Rewrite the text only; do not change the action.\n"
+    "- retry_with_tools: the proxy used tools incorrectly, failed to use tools when it should have, or otherwise needs a fresh retry.\n\n"
     "Return ONLY valid JSON with this shape: "
-    "{\"final_reply\": string, \"verdict\": \"accept\"|\"retry_with_tools\"|\"ask_clarification\", "
+    "{\"final_reply\": string, \"verdict\": \"accept\"|\"rewrite_text\"|\"retry_with_tools\", "
     "\"reason\": string, "
     "\"issues\": string[], "
     "\"audit_json\": {"
@@ -269,7 +274,7 @@ _REVIEW_SYSTEM_PROMPT = (
     "}}."
 )
 
-_VALID_REVIEW_VERDICTS = frozenset({"accept", "retry_with_tools", "ask_clarification"})
+_VALID_REVIEW_VERDICTS = frozenset({"accept", "rewrite_text", "retry_with_tools"})
 
 
 def _default_review_audit() -> dict[str, Any]:

@@ -1038,7 +1038,7 @@ def test_review_pass_rewrites_draft() -> None:
         review_responses=[
             _review(
                 final_reply="I tried to restart nginx like you said.",
-                verdict="accept",
+                verdict="rewrite_text",
                 reason="rewritten into user voice",
                 audit_json={"review_stage": "initial"},
             ),
@@ -1051,7 +1051,7 @@ def test_review_pass_rewrites_draft() -> None:
     assert len(llm.review_calls) == 1
     assert llm.review_calls[0]["draft_reply"] == "You should run systemctl restart nginx."
     assert len(result.review_events) == 1
-    assert result.review_events[0]["verdict"] == "accept"
+    assert result.review_events[0]["verdict"] == "rewrite_text"
     assert result.review_events[0]["audit_json"]["review_stage"] == "initial"
 
 
@@ -1232,7 +1232,7 @@ def test_retry_turn_receives_same_turn_tool_outputs() -> None:
         ],
         review_responses=[
             _review(final_reply="Use the tools now.", verdict="retry_with_tools", reason="Do not summarize the diagnosis."),
-            _review(final_reply="Which line should I remove?", verdict="ask_clarification", reason="Need the exact line."),
+            _review(final_reply="Which line should I remove?", verdict="accept", reason="Human question is acceptable."),
         ],
     )
     controller = FakeController(
@@ -1249,7 +1249,7 @@ def test_retry_turn_receives_same_turn_tool_outputs() -> None:
     assert any("invalid-directive on" in item for item in llm.calls[2]["tool_outputs_text"])
 
 
-def test_review_ask_clarification_returns_reviewed_reply() -> None:
+def test_generator_question_can_be_accepted_by_reviewer() -> None:
     llm = FakeUserProxyLLMWithReview(
         responses=[
             UserProxyLLMResponse(
@@ -1262,8 +1262,8 @@ def test_review_ask_clarification_returns_reviewed_reply() -> None:
         review_responses=[
             _review(
                 final_reply="Which file do you want me to edit?",
-                verdict="ask_clarification",
-                reason="Instruction is too vague for a safe edit.",
+                verdict="accept",
+                reason="Human question is acceptable.",
                 audit_json={"review_stage": "initial"},
             ),
         ],
@@ -1274,6 +1274,18 @@ def test_review_ask_clarification_returns_reviewed_reply() -> None:
 
     assert not result.stalled
     assert result.user_message == "Which file do you want me to edit?"
+    assert result.review_events[0]["verdict"] == "accept"
+
+
+def test_review_verdict_rewrite_text_is_parsed() -> None:
+    review = UserProxyReplyReview.from_dict(
+        {
+            "verdict": "rewrite_text",
+            "final_reply": "I ran that and it still failed.",
+            "reason": "Rewritten into human voice.",
+        }
+    )
+    assert review.verdict == "rewrite_text"
 
 
 def test_review_prompt_demands_evidence_only_for_log_requests() -> None:
@@ -1338,6 +1350,7 @@ def test_character_violation_forces_retry_even_if_reviewer_says_accept() -> None
                 reason="Needs outputs first.",
                 audit_json={
                     "character_ok": False,
+                    "acceptable_tool_use": False,
                     "character_issue": "assistant_voice",
                     "voice_issue_examples": ["Run these and paste the output."],
                 },

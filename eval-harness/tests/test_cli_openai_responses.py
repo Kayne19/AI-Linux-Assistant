@@ -74,7 +74,7 @@ def test_role_provider_selection_supports_openai_anthropic_and_google() -> None:
     )
 
     assert isinstance(
-        _user_proxy_llm_from_config({"provider": "openai", "model": "gpt-5.4-mini", "api_key": "proxy-key"}),
+        _user_proxy_llm_from_config({"provider": "openai", "model": "gpt-4.1-mini", "api_key": "proxy-key"}),
         UserProxyLLMClient,
     )
     assert isinstance(

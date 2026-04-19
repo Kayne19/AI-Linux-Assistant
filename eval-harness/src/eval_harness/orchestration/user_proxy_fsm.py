@@ -382,23 +382,37 @@ def _check_reply_issues(
 
 def _normalize_review(review: UserProxyReplyReview) -> UserProxyReplyReview:
     """Enforce consistency between reviewer verdicts and audit metadata."""
-    if bool(review.audit_json.get("character_ok", True)):
-        return review
-    if review.verdict != "accept":
+    audit_json = dict(review.audit_json)
+    character_ok = bool(audit_json.get("character_ok", True))
+    acceptable_tool_use = bool(audit_json.get("acceptable_tool_use", True))
+
+    if not acceptable_tool_use and review.verdict != "retry_with_tools":
+        audit_json["acceptable_tool_use"] = False
+        audit_json["why_retry_or_clarify"] = (
+            str(audit_json.get("why_retry_or_clarify", "") or "")
+            or "tool_use_violation"
+        )
+        reason = review.reason
+        if "tool" not in reason.lower():
+            reason = f"{reason} Tool use requires retry.".strip()
+        issues = tuple(review.issues) + ("tool_use_violation",)
+        return UserProxyReplyReview(
+            verdict="retry_with_tools",
+            final_reply=review.final_reply,
+            reason=reason,
+            issues=issues,
+            audit_json=audit_json,
+        )
+
+    if character_ok or review.verdict != "accept":
         return review
 
-    audit_json = dict(review.audit_json)
-    audit_json["acceptable_tool_use"] = False
-    audit_json["why_retry_or_clarify"] = (
-        str(audit_json.get("why_retry_or_clarify", "") or "")
-        or "character_violation"
-    )
     reason = review.reason
-    if "character" not in reason.lower():
-        reason = f"{reason} Character violation requires retry.".strip()
+    if "voice" not in reason.lower() and "character" not in reason.lower():
+        reason = f"{reason} Character violation requires rewrite.".strip()
     issues = tuple(review.issues) + ("character_violation",)
     return UserProxyReplyReview(
-        verdict="retry_with_tools",
+        verdict="rewrite_text",
         final_reply=review.final_reply,
         reason=reason,
         issues=issues,
@@ -674,9 +688,6 @@ class UserProxyFSM:
                     final = _FALLBACK_CLARIFICATION
             else:
                 final = _FALLBACK_CLARIFICATION
-
-        if review is not None and review.verdict == "ask_clarification":
-            final = review.final_reply if review.final_reply.strip() else _FALLBACK_CLARIFICATION
 
         if not final.strip():
             # Nothing left to send — stall with a fallback message.

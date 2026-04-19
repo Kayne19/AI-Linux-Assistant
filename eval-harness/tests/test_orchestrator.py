@@ -1438,6 +1438,7 @@ def test_benchmark_uses_initial_user_message_as_first_turn() -> None:
         execute_batches=[
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
         ],
     )
 
@@ -1469,6 +1470,7 @@ def test_benchmark_proxy_prompt_uses_stored_opener_not_more_revealing_problem_st
     )
     clone_controller = FakeController(
         execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
         ],
@@ -1622,6 +1624,7 @@ def test_benchmark_falls_back_to_observable_problem_statement_when_initial_messa
         execute_batches=[
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
         ],
     )
 
@@ -1660,7 +1663,6 @@ def test_proxy_transcript_retains_stored_initial_user_message_on_later_turns() -
     )
     clone_controller = FakeController(
         execute_batches=[
-            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
             (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
@@ -2051,9 +2053,9 @@ def test_benchmark_records_hidden_proxy_review_events() -> None:
         ],
         review_responses=[
             UserProxyReplyReview(
-                verdict="ask_clarification",
+                verdict="accept",
                 final_reply="Which file do you want me to edit?",
-                reason="Instruction is too vague for a safe edit.",
+                reason="Human question is acceptable.",
                 audit_json={"edited_reply": True, "reasoning": "Need file path before editing."},
             ),
         ],
@@ -2066,12 +2068,65 @@ def test_benchmark_records_hidden_proxy_review_events() -> None:
     review_events = [e for e in events if e.actor_role == "user_proxy_review" and e.event_kind == "proxy_review"]
     assert len(review_events) == 1
     payload = review_events[0].payload_json
-    assert payload["verdict"] == "ask_clarification"
+    assert payload["verdict"] == "accept"
     assert payload["final_reply"] == "Which file do you want me to edit?"
     assert payload["audit_json"]["reasoning"] == "Need file path before editing."
 
     visible_messages = [e.payload_json["content"] for e in events if e.event_kind == "message"]
     assert "Which file do you want me to edit?" not in visible_messages
+
+
+def test_benchmark_uses_rewritten_proxy_text_on_followup_turn() -> None:
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=2, subject_max_turns=2)
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="active", stderr="", exit_code=0),),
+        ],
+    )
+    session = FakeSubjectSession(
+        turn_results=[
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Which exact file is failing?",
+                run_id="run-1",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+            AdapterTurnResult(
+                user_message="",
+                assistant_message="Thanks.",
+                run_id="run-2",
+                status="completed",
+                terminal_event_type="done",
+                events=(RunEvent(seq=1, event_type=RunEventType.DONE, code="done", payload={}),),
+            ),
+        ]
+    )
+    proxy_llm = FakeUserProxyLLMWithReview(
+        responses=[
+            UserProxyLLMResponse(
+                content="You should tell me which file you want me to edit.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="resp-1",
+            ),
+        ],
+        review_responses=[
+            UserProxyReplyReview(
+                verdict="rewrite_text",
+                final_reply="Which file do you want me to edit?",
+                reason="Rewrite into human voice.",
+                audit_json={"edited_reply": True, "reasoning": "Kept the same question, fixed the voice."},
+            ),
+        ],
+    )
+
+    _run_benchmark(store, revision, setup, clone_controller, session=session, proxy_llm=proxy_llm)
+
+    assert session.submitted_messages[1] == "Which file do you want me to edit?"
 
 
 # ---------------------------------------------------------------------------
