@@ -273,6 +273,8 @@ class UserProxyContext:
     stalled: bool = False
     skip_review: bool = False
     recent_memory: ProxyRecentMemorySnapshot | None = None
+    review_events: list[dict[str, Any]] = field(default_factory=list)
+    corrective_retry_count: int = 0
     # Pending tool calls from last assistant message (set in DECIDE, consumed in TOOL_EXEC)
     _pending_tool_calls: list[UserProxyToolCall] = field(default_factory=list)
     _pending_tool_outputs: list[dict[str, Any]] = field(default_factory=list)
@@ -288,6 +290,7 @@ class UserProxyTurnResult:
     user_message: str
     tool_results: tuple[CommandExecutionResult, ...]
     stalled: bool
+    review_events: tuple[dict[str, Any], ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +479,7 @@ class UserProxyFSM:
             user_message=ctx.final_reply,
             tool_results=tuple(ctx.tool_results),
             stalled=ctx.stalled,
+            review_events=tuple(ctx.review_events),
         )
 
     # ------------------------------------------------------------------
@@ -610,8 +614,29 @@ class UserProxyFSM:
         draft = ctx.last_assistant_content
 
         # Always-on revision pass — skipped when content came from the exact-output cache.
-        reviewed = None if ctx.skip_review else self._try_review(ctx, draft)
-        final = reviewed if (reviewed and reviewed.strip()) else draft
+        review = None if ctx.skip_review else self._try_review(ctx, draft)
+        final = draft
+        if review is not None and review.final_reply.strip():
+            final = review.final_reply
+
+        if review is not None and review.verdict == "retry_with_tools":
+            if ctx.corrective_retry_count >= 1:
+                ctx.final_reply = _FALLBACK_CLARIFICATION
+                return UserProxyState.DONE
+            retry_review = self._run_corrective_retry(ctx, review)
+            if retry_review is not None:
+                review = retry_review
+                if retry_review.verdict == "retry_with_tools":
+                    final = _FALLBACK_CLARIFICATION
+                elif retry_review.final_reply.strip():
+                    final = retry_review.final_reply
+                else:
+                    final = _FALLBACK_CLARIFICATION
+            else:
+                final = _FALLBACK_CLARIFICATION
+
+        if review is not None and review.verdict == "ask_clarification":
+            final = review.final_reply if review.final_reply.strip() else _FALLBACK_CLARIFICATION
 
         if not final.strip():
             # Nothing left to send — stall with a fallback message.
@@ -657,13 +682,17 @@ class UserProxyFSM:
     # Review helper
     # ------------------------------------------------------------------
 
-    def _try_review(self, ctx: UserProxyContext, draft: str) -> str | None:
-        """Call review_reply if the client supports it; return corrected text or None."""
+    def _try_review(self, ctx: UserProxyContext, draft: str) -> UserProxyReplyReview | None:
+        """Call review_reply if the client supports it; return structured review or None."""
         if not hasattr(self.llm_client, "review_reply"):
             return None
         try:
             tool_outputs_text = [item.get("output", "") for item in ctx._pending_tool_outputs]
             tool_outputs_text += [_render_tool_result(r) for r in ctx.tool_results]
+            tool_names_used_this_turn = [
+                str(result.metadata.get("user_proxy_tool_name", "run_command"))
+                for result in ctx.tool_results
+            ]
             recent_memory_text = (
                 _render_recent_memory(ctx.recent_memory) if ctx.recent_memory else None
             )
@@ -673,11 +702,113 @@ class UserProxyFSM:
                 subject_reply=ctx.assistant_reply,
                 recent_memory_text=recent_memory_text,
                 tool_outputs_text=tool_outputs_text,
+                tool_names_used_this_turn=tool_names_used_this_turn,
                 draft_reply=draft,
             )
-            return review.final_reply if review.final_reply.strip() else None
+            ctx.review_events.append(
+                {
+                    "stage": "initial" if ctx.corrective_retry_count == 0 else "corrective_retry",
+                    "draft_reply": draft,
+                    "final_reply": review.final_reply,
+                    "verdict": review.verdict,
+                    "reason": review.reason,
+                    "tool_names_used_this_turn": list(tool_names_used_this_turn),
+                    "tool_count_this_turn": len(tool_names_used_this_turn),
+                    "audit_json": dict(review.audit_json),
+                }
+            )
+            return review
         except Exception:  # noqa: BLE001
             return None
+
+    def _run_corrective_retry(
+        self,
+        ctx: UserProxyContext,
+        review: UserProxyReplyReview,
+    ) -> UserProxyReplyReview | None:
+        ctx.corrective_retry_count += 1
+        previous_draft = ctx.last_assistant_content
+        ctx.review_events.append(
+            {
+                "event_kind": "proxy_review_retry_decision",
+                "draft_reply": previous_draft,
+                "verdict": review.verdict,
+                "reason": review.reason,
+                "retry_count": ctx.corrective_retry_count,
+                "audit_json": dict(review.audit_json),
+            }
+        )
+        ctx.last_response_id = None
+        ctx.last_assistant_content = ""
+        ctx._pending_tool_calls = []
+        ctx._pending_tool_outputs = []
+        recent_memory_text = _render_recent_memory(ctx.recent_memory) if ctx.recent_memory else None
+        tool_names_used_this_turn = [
+            str(result.metadata.get("user_proxy_tool_name", "run_command"))
+            for result in ctx.tool_results
+        ]
+        tool_outputs_text = [_render_tool_result(result) for result in ctx.tool_results]
+        if hasattr(self.llm_client, "retry_turn"):
+            response = self.llm_client.retry_turn(
+                system_prompt=ctx.system_prompt,
+                transcript=ctx.transcript,
+                assistant_reply=ctx.assistant_reply,
+                tools=self.tools,
+                recent_memory_text=recent_memory_text,
+                draft_reply=previous_draft,
+                review_verdict=review.verdict,
+                review_reason=review.reason,
+                tool_names_used_this_turn=tool_names_used_this_turn,
+                tool_outputs_text=tool_outputs_text,
+            )
+        else:
+            retry_instruction = (
+                "\n\n[Host corrective retry]\n"
+                "Your previous draft was not acceptable because it repeated or summarized the diagnosis "
+                "instead of acting. Do not restate the diagnosis. Either use the appropriate tools now "
+                "or ask one short clarification if the instruction is still genuinely ambiguous. "
+                "If the assistant already identified a file and the requested change is specific enough, "
+                "prefer read_file and apply_text_edit. After acting, report only what you actually did and saw."
+            )
+            if review.reason:
+                retry_instruction += f"\nReview note: {review.reason}"
+            response = self.llm_client.start_turn(
+                system_prompt=f"{ctx.system_prompt}\n\n{retry_instruction}",
+                transcript=ctx.transcript,
+                assistant_reply=ctx.assistant_reply,
+                tools=self.tools,
+                recent_memory_text=recent_memory_text,
+            )
+        ctx.last_response_id = response.response_id or ctx.last_response_id
+        ctx.last_assistant_content = response.content or ""
+
+        while True:
+            if response.tool_calls:
+                ctx._pending_tool_calls = list(response.tool_calls)
+                if ctx.tool_call_count >= self.max_tool_calls_per_turn:
+                    break
+                self._state_tool_exec(ctx)
+                response = self.llm_client.continue_turn(
+                    system_prompt=ctx.system_prompt,
+                    previous_response_id=ctx.last_response_id or "",
+                    tool_outputs=ctx._pending_tool_outputs,
+                    tools=self.tools,
+                )
+                ctx.last_response_id = response.response_id or ctx.last_response_id
+                ctx.last_assistant_content = response.content or ""
+                ctx._pending_tool_outputs = []
+                continue
+            break
+
+        retry_review = self._try_review(ctx, ctx.last_assistant_content)
+        if retry_review is not None:
+            return retry_review
+        return UserProxyReplyReview(
+            verdict="accept",
+            final_reply=ctx.last_assistant_content or _FALLBACK_CLARIFICATION,
+            reason="retry_fallback",
+            audit_json={"edited_reply": False},
+        )
 
     # ------------------------------------------------------------------
     # Tool handlers

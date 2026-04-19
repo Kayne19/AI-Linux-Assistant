@@ -185,7 +185,12 @@ def test_google_user_proxy_uses_native_function_calling(monkeypatch: pytest.Monk
 def test_google_user_proxy_review_reply(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeGoogleClient.instances.clear()
     _FakeGoogleClient.queued_responses = [
-        [SimpleNamespace(text="I ran the command and it failed.", function_calls=[])]
+        [
+            SimpleNamespace(
+                text='{"final_reply":"I ran the command and it failed.","verdict":"accept","reason":"Kept it user-like.","audit_json":{"reasoning":"Kept it user-like.","edited_reply":true}}',
+                function_calls=[],
+            )
+        ]
     ]
     monkeypatch.setattr("eval_harness.orchestration.user_proxy_llm_google.genai", SimpleNamespace(Client=_FakeGoogleClient))
 
@@ -203,11 +208,51 @@ def test_google_user_proxy_review_reply(monkeypatch: pytest.MonkeyPatch) -> None
         subject_reply="What did the command print?",
         recent_memory_text="$ ls\nfile.txt\n[exit 0]",
         tool_outputs_text=["$ ls\nfile.txt\n[exit 0]"],
+        tool_names_used_this_turn=["run_command"],
         draft_reply="You should run ls to see the output.",
     )
 
     assert review.final_reply == "I ran the command and it failed."
+    assert review.verdict == "accept"
+    assert review.reason == "Kept it user-like."
+    assert review.audit_json["reasoning"] == "Kept it user-like."
     fake_client = _FakeGoogleClient.instances[-1]
     call = fake_client.models.calls[0]
     assert "[Draft reply]" in call["contents"]
     assert "You should run ls" in call["contents"]
+    assert "tool names used this turn" in call["contents"].lower()
+
+
+def test_google_user_proxy_retry_turn_includes_tool_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeGoogleClient.instances.clear()
+    _FakeGoogleClient.queued_responses = [
+        [SimpleNamespace(text="I removed it and nginx -t is clean now.", function_calls=[])]
+    ]
+    monkeypatch.setattr("eval_harness.orchestration.user_proxy_llm_google.genai", SimpleNamespace(Client=_FakeGoogleClient))
+
+    client = GoogleGenAIUserProxyLLMClient(
+        UserProxyLLMClientConfig(
+            model="gemini-2.5-flash",
+            api_key="test-key",
+            request_timeout_seconds=17.0,
+        )
+    )
+
+    response = client.retry_turn(
+        system_prompt="You are a confused user.",
+        transcript=[],
+        assistant_reply="Remove that line and run nginx -t again.",
+        tools=None,
+        recent_memory_text="$ cat /etc/nginx/conf.d/zz-benchmark-bad.conf\ninvalid-directive on\n[exit 0]",
+        draft_reply="It still looks broken.",
+        review_verdict="retry_with_tools",
+        review_reason="Use the tools now.",
+        tool_names_used_this_turn=["read_file"],
+        tool_outputs_text=["$ cat /etc/nginx/conf.d/zz-benchmark-bad.conf\ninvalid-directive on\n[exit 0]"],
+    )
+
+    assert response.content == "I removed it and nginx -t is clean now."
+    fake_client = _FakeGoogleClient.instances[-1]
+    retry_message = fake_client.models.calls[0]["contents"][-1]["parts"][0]["text"]
+    assert "[Terminal output this turn]" in retry_message
+    assert "invalid-directive on" in retry_message

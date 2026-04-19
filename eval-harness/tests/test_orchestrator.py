@@ -10,6 +10,7 @@ from sqlalchemy import select
 from eval_harness.adapters.base import SubjectAdapter, SubjectSession
 from eval_harness.backends.base import SandboxBackend, SandboxHandle
 from eval_harness.controllers.base import SandboxController, SandboxControllerFactory
+from eval_harness.mapping import turn_record_from_evaluation_event
 from eval_harness.judges.base import BlindJudge
 from eval_harness.models import (
     AdapterTurnResult,
@@ -35,7 +36,7 @@ from eval_harness.orchestration import (
     ScenarioSetupFailedError,
     ScenarioSetupOrchestrator,
 )
-from eval_harness.orchestration.user_proxy_llm import UserProxyLLMResponse, UserProxyToolCall
+from eval_harness.orchestration.user_proxy_llm import UserProxyLLMResponse, UserProxyReplyReview, UserProxyToolCall
 from eval_harness.persistence.database import build_engine, build_session_factory, create_all_tables
 from eval_harness.persistence.postgres_models import ScenarioSetupRunRecord
 from eval_harness.persistence.store import EvalHarnessStore
@@ -308,6 +309,38 @@ class FakeSubjectSession(SubjectSession):
     def abort(self) -> dict[str, str]:
         self.abort_called = True
         return {"closed": "true", "aborted": "true"}
+
+
+@dataclass
+class FakeUserProxyLLMWithReview:
+    responses: list[UserProxyLLMResponse]
+    review_responses: list[UserProxyReplyReview]
+
+    def __init__(self, responses: list[UserProxyLLMResponse], review_responses: list[UserProxyReplyReview]) -> None:
+        self.responses = list(responses)
+        self.review_responses = list(review_responses)
+
+    def start_turn(self, *, system_prompt, transcript, assistant_reply, tools, recent_memory_text=None):
+        del system_prompt, transcript, assistant_reply, tools, recent_memory_text
+        return self.responses.pop(0)
+
+    def continue_turn(self, *, system_prompt, previous_response_id, tool_outputs, tools):
+        del system_prompt, previous_response_id, tool_outputs, tools
+        return self.responses.pop(0)
+
+    def review_reply(
+        self,
+        *,
+        system_prompt,
+        transcript,
+        subject_reply,
+        recent_memory_text,
+        tool_outputs_text,
+        tool_names_used_this_turn,
+        draft_reply,
+    ) -> UserProxyReplyReview:
+        del system_prompt, transcript, subject_reply, recent_memory_text, tool_outputs_text, tool_names_used_this_turn, draft_reply
+        return self.review_responses.pop(0)
 
 
 @dataclass
@@ -703,6 +736,131 @@ def test_benchmark_orchestrator_keeps_proxy_blind_and_records_objective_repair()
     assert evaluation_runs[0].repair_success is True
     assert evaluation_runs[0].status == "completed"
     assert backend.configured_runtime_handles == ["clone-system-a"]
+
+
+def test_benchmark_orchestrator_persists_proxy_review_events_without_transcript_rendering() -> None:
+    store = _build_store()
+    scenario = store.create_scenario(title="Nginx recovery", scenario_name_hint="nginx-recovery")
+    revision = store.create_scenario_revision(
+        scenario_id=scenario.id,
+        target_image="ami-golden",
+        summary="Recover nginx",
+        what_it_tests={"items": ["systemd recovery"]},
+        observable_problem_statement="The website is down and nginx will not start.",
+        sabotage_plan={"steps": ["Break nginx with a bad unit override."]},
+        verification_plan={
+            "probes": [
+                {
+                    "name": "broken",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["failed"],
+                    "expected_exit_code": 3,
+                }
+            ]
+        },
+        judge_rubric={"items": ["diagnosis", "actionability"]},
+        planner_metadata={
+            "repair_checks": [
+                {
+                    "name": "nginx-fixed",
+                    "command": "systemctl is-active nginx",
+                    "expected_substrings": ["active"],
+                }
+            ],
+            "turn_budget": 3,
+        },
+    )
+    setup = store.create_setup_run(scenario_revision_id=revision.id, status="running")
+    store.update_setup_run_status(
+        setup_run_id=setup.id,
+        status="verified",
+        broken_image_id="ami-broken",
+        planner_approved=True,
+    )
+    store.upsert_subject(
+        subject_name="system-a",
+        adapter_type="fake_adapter",
+        display_name="System A",
+        adapter_config={"max_turns": 3},
+    )
+
+    clone_controller = FakeController(
+        execute_batches=[
+            (
+                CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),
+            ),
+        ] * 8,
+    )
+    backend = FakeBackend()
+    adapter = FakeSubjectAdapter()
+
+    class ReviewingProxyLLM(FakeUserProxyLLM):
+        def __init__(self, responses: list[UserProxyLLMResponse]) -> None:
+            super().__init__(responses)
+            self.review_calls: list[dict] = []
+
+        def review_reply(
+            self,
+            *,
+            system_prompt,
+            transcript,
+            subject_reply,
+            recent_memory_text,
+            tool_outputs_text,
+            tool_names_used_this_turn,
+            draft_reply,
+        ):
+            self.review_calls.append(
+                {
+                    "system_prompt": system_prompt,
+                    "transcript": list(transcript),
+                    "subject_reply": subject_reply,
+                    "recent_memory_text": recent_memory_text,
+                    "tool_outputs_text": list(tool_outputs_text),
+                    "tool_names_used_this_turn": list(tool_names_used_this_turn),
+                    "draft_reply": draft_reply,
+                }
+            )
+            return UserProxyReplyReview(
+                verdict="accept",
+                final_reply=draft_reply,
+                reason="kept it concise",
+                audit_json={"review_stage": "initial"},
+            )
+
+    proxy_llm = ReviewingProxyLLM(
+        responses=[
+            UserProxyLLMResponse(
+                content="I checked and it is still failing.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="resp-1",
+            ),
+        ]
+    )
+    orchestrator = BenchmarkRunOrchestrator(
+        backend=backend,
+        controller_factory=FakeControllerFactory([clone_controller]),
+        subject_adapters={"fake_adapter": adapter},
+        store=store,
+        user_proxy_llm=proxy_llm,
+    )
+
+    result = orchestrator.run(
+        scenario_revision_id=revision.id,
+        verified_setup_run_id=setup.id,
+        user_proxy_agent_id="user_proxy_agent",
+        verification_agent_id="verification_executor",
+    )
+
+    evaluation_runs = store.list_evaluation_runs(result.benchmark_run_id)
+    assert len(evaluation_runs) == 1
+    events = store.list_evaluation_events(evaluation_runs[0].id)
+    review_events = [event for event in events if event.event_kind == "proxy_review"]
+    assert review_events, "expected at least one proxy_review event"
+    assert review_events[0].payload_json["verdict"] == "accept"
+    assert review_events[0].payload_json["audit_json"]["review_stage"] == "initial"
+    assert all(turn_record_from_evaluation_event(event) is None for event in review_events)
 
 
 def test_benchmark_orchestrator_proxy_fsm_drives_turns_and_records_repair() -> None:
@@ -1872,6 +2030,48 @@ def test_benchmark_tool_call_commands_executed_and_recorded() -> None:
     proxy_exec_calls = [entry for entry in execute_batches_used if "proxy" in (entry[0] or "")]
     assert len(proxy_exec_calls) >= 1
     assert proxy_exec_calls[0][1] == ("systemctl status nginx",)
+
+
+def test_benchmark_records_hidden_proxy_review_events() -> None:
+    store, revision, setup = _build_benchmark_store_and_revision(turn_budget=1, subject_max_turns=1)
+    clone_controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+            (CommandExecutionResult(command="systemctl is-active nginx", stdout="failed", stderr="", exit_code=3),),
+        ],
+    )
+    proxy_llm = FakeUserProxyLLMWithReview(
+        responses=[
+            UserProxyLLMResponse(
+                content="It still looks broken because of that file.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="resp-1",
+            ),
+        ],
+        review_responses=[
+            UserProxyReplyReview(
+                verdict="ask_clarification",
+                final_reply="Which file do you want me to edit?",
+                reason="Instruction is too vague for a safe edit.",
+                audit_json={"edited_reply": True, "reasoning": "Need file path before editing."},
+            ),
+        ],
+    )
+
+    result = _run_benchmark(store, revision, setup, clone_controller, proxy_llm=proxy_llm)
+    evaluation_run = store.list_evaluation_runs(result.benchmark_run_id)[0]
+    events = store.list_evaluation_events(evaluation_run.id)
+
+    review_events = [e for e in events if e.actor_role == "user_proxy_review" and e.event_kind == "proxy_review"]
+    assert len(review_events) == 1
+    payload = review_events[0].payload_json
+    assert payload["verdict"] == "ask_clarification"
+    assert payload["final_reply"] == "Which file do you want me to edit?"
+    assert payload["audit_json"]["reasoning"] == "Need file path before editing."
+
+    visible_messages = [e.payload_json["content"] for e in events if e.event_kind == "message"]
+    assert "Which file do you want me to edit?" not in visible_messages
 
 
 # ---------------------------------------------------------------------------

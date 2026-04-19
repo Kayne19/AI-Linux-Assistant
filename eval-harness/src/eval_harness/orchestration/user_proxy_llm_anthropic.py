@@ -14,7 +14,10 @@ from .user_proxy_llm import (
     UserProxyToolCall,
     _REVIEW_SYSTEM_PROMPT,
     _parse_tool_arguments,
+    build_review_input,
     build_proxy_native_history,
+    build_retry_review_input,
+    parse_review_payload,
 )
 
 
@@ -160,17 +163,17 @@ class AnthropicUserProxyLLMClient:
         subject_reply: str,
         recent_memory_text: str | None,
         tool_outputs_text: list[str],
+        tool_names_used_this_turn: list[str],
         draft_reply: str,
     ) -> UserProxyReplyReview:
-        """Always-on revision pass: ask the model to fix the draft reply."""
-        context_parts = [f"[Assistant message]\n{subject_reply}"]
-        if recent_memory_text:
-            context_parts.append(f"[Recent terminal actions]\n{recent_memory_text}")
-        if tool_outputs_text:
-            combined = "\n\n".join(tool_outputs_text)
-            context_parts.append(f"[Terminal output this turn]\n{combined}")
-        context_parts.append(f"[Draft reply]\n{draft_reply}")
-        review_input = "\n\n".join(context_parts)
+        """Always-on revision pass: ask the model to return a structured review."""
+        review_input = build_review_input(
+            subject_reply=subject_reply,
+            recent_memory_text=recent_memory_text,
+            tool_outputs_text=tool_outputs_text,
+            tool_names_used_this_turn=tool_names_used_this_turn,
+            draft_reply=draft_reply,
+        )
 
         try:
             response = self.client.messages.create(
@@ -179,7 +182,43 @@ class AnthropicUserProxyLLMClient:
                 messages=[{"role": "user", "content": review_input}],
                 max_tokens=self.config.max_output_tokens or 512,
             )
-            final = _text_from_response(response).strip()
+            return parse_review_payload(_text_from_response(response).strip(), draft_reply=draft_reply)
         except Exception:  # noqa: BLE001
-            final = draft_reply
-        return UserProxyReplyReview(final_reply=final or draft_reply, issues=())
+            return parse_review_payload("", draft_reply=draft_reply)
+
+    def retry_turn(
+        self,
+        *,
+        system_prompt: str,
+        transcript: list[tuple[str, str]],
+        assistant_reply: str,
+        tools: list[dict[str, Any]] | None = None,
+        recent_memory_text: str | None = None,
+        draft_reply: str,
+        review_verdict: str,
+        review_reason: str,
+        tool_names_used_this_turn: list[str] | None = None,
+        tool_outputs_text: list[str] | None = None,
+    ) -> UserProxyLLMResponse:
+        pairs = build_proxy_native_history(
+            transcript, assistant_reply, recent_memory_text=recent_memory_text
+        )
+        messages = [{"role": role, "content": content} for role, content in pairs]
+        messages.append(
+            {
+                "role": "user",
+                "content": build_retry_review_input(
+                    subject_reply=assistant_reply,
+                    recent_memory_text=recent_memory_text,
+                    tool_outputs_text=tool_outputs_text or [],
+                    tool_names_used_this_turn=tool_names_used_this_turn or [],
+                    draft_reply=draft_reply,
+                    review_verdict=review_verdict,
+                    review_reason=review_reason,
+                ),
+            }
+        )
+        response = self.client.messages.create(
+            **self._request_kwargs(system_prompt=system_prompt, messages=messages, tools=tools)
+        )
+        return self._coerce_response(response, prior_messages=messages)

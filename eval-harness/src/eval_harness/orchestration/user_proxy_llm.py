@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 try:
     from openai import OpenAI
@@ -38,9 +38,49 @@ class UserProxyLLMResponse:
 
 @dataclass(frozen=True)
 class UserProxyReplyReview:
-    """Result of the always-on revision pass for a proxy draft reply."""
+    """Structured result of the always-on revision pass for a proxy draft reply."""
+
+    verdict: Literal["accept", "retry_with_tools", "ask_clarification"]
     final_reply: str
-    issues: tuple[str, ...]
+    reason: str
+    issues: tuple[str, ...] = ()
+    audit_json: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "UserProxyReplyReview":
+        verdict = str(payload.get("verdict", "")).strip().lower()
+        if verdict not in {"accept", "retry_with_tools", "ask_clarification"}:
+            raise ValueError(
+                "structured output field 'verdict' must be one of: "
+                "accept, retry_with_tools, ask_clarification"
+            )
+        final_reply = str(payload.get("final_reply", "") or "").strip()
+        if not final_reply:
+            raise ValueError("structured output field 'final_reply' must be non-empty")
+        reason = str(payload.get("reason", "") or "reviewed").strip() or "reviewed"
+        raw_issues = payload.get("issues", ())
+        if isinstance(raw_issues, (list, tuple)):
+            issues = tuple(str(item) for item in raw_issues if str(item).strip())
+        else:
+            issues = ()
+        raw_audit = payload.get("audit_json", payload.get("audit", {}))
+        audit_json = dict(raw_audit or {}) if isinstance(raw_audit, dict) else {}
+        return cls(
+            verdict=verdict,  # type: ignore[arg-type]
+            final_reply=final_reply,
+            reason=reason,
+            issues=issues,
+            audit_json=audit_json,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "verdict": self.verdict,
+            "final_reply": self.final_reply,
+            "reason": self.reason,
+            "issues": list(self.issues),
+            "audit_json": dict(self.audit_json),
+        }
 
 
 def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
@@ -181,14 +221,134 @@ def build_proxy_native_history(
 _REVIEW_SYSTEM_PROMPT = (
     "You are reviewing a draft reply from someone simulating a confused Linux user. "
     "The user is at a terminal and an assistant is trying to help them fix a problem. "
-    "Fix any issues in the draft: remove assistant-like directives (do not say 'you should', "
+    "Judge both wording and action adequacy. A draft is acceptable only if it either "
+    "(1) actually ran the requested command(s), (2) performed the bounded file read/edit implied "
+    "by the instruction, (3) accurately answers using already-observed evidence from the recent "
+    "terminal actions or this turn's tool output without needing more tools, or (4) asks a short clarification because the instruction is genuinely "
+    "underspecified. A draft is not acceptable if it merely repeats the diagnosis or restates the "
+    "assistant's instruction without acting.\n\n"
+    "Fix any wording issues: remove assistant-like directives (do not say 'you should', "
     "'please run', 'let me know', or similar), ensure the reply accurately reports terminal "
     "output rather than fabricating it, and write in first-person confused-user voice. "
     "If the assistant asked for logs, exact output, or command output, return the evidence only "
     "using the terminal output that was actually observed; do not diagnose the issue, do not say "
-    "'that's why', do not identify a root cause, and do not propose the next fix. "
-    "Return ONLY the corrected reply text with no explanation or preamble."
+    "'that's why', do not identify a root cause, and do not propose the next fix.\n\n"
+    "Return ONLY valid JSON with this shape: "
+    "{\"final_reply\": string, \"verdict\": \"accept\"|\"retry_with_tools\"|\"ask_clarification\", "
+    "\"reason\": string, "
+    "\"issues\": string[], "
+    "\"audit_json\": {"
+    "\"assistant_instruction_type\": string, "
+    "\"tool_use_summary\": string, "
+    "\"acceptable_tool_use\": boolean, "
+    "\"reasoning\": string, "
+    "\"expected_next_action\": string, "
+    "\"why_retry_or_clarify\": string, "
+    "\"edited_reply\": boolean"
+    "}}."
 )
+
+_VALID_REVIEW_VERDICTS = frozenset({"accept", "retry_with_tools", "ask_clarification"})
+
+
+def _default_review_audit() -> dict[str, Any]:
+    return {
+        "assistant_instruction_type": "",
+        "tool_use_summary": "",
+        "acceptable_tool_use": True,
+        "reasoning": "",
+        "expected_next_action": "",
+        "why_retry_or_clarify": "",
+        "edited_reply": False,
+    }
+
+
+def build_review_input(
+    *,
+    subject_reply: str,
+    recent_memory_text: str | None,
+    tool_outputs_text: list[str],
+    tool_names_used_this_turn: list[str],
+    draft_reply: str,
+) -> str:
+    context_parts = [f"[Assistant message]\n{subject_reply}"]
+    if recent_memory_text:
+        context_parts.append(f"[Recent terminal actions]\n{recent_memory_text}")
+    if tool_outputs_text:
+        combined = "\n\n".join(tool_outputs_text)
+        context_parts.append(f"[Terminal output this turn]\n{combined}")
+    context_parts.append(
+        "[Tool names used this turn]\n"
+        + (", ".join(tool_names_used_this_turn) if tool_names_used_this_turn else "(none)")
+    )
+    context_parts.append(f"[Draft reply]\n{draft_reply}")
+    return "\n\n".join(context_parts)
+
+
+def build_retry_review_input(
+    *,
+    subject_reply: str,
+    recent_memory_text: str | None,
+    tool_outputs_text: list[str],
+    tool_names_used_this_turn: list[str],
+    draft_reply: str,
+    review_verdict: str,
+    review_reason: str,
+) -> str:
+    context_parts = [
+        "[Proxy review verdict]\n"
+        f"{review_verdict}\n\n"
+        "[Proxy review reason]\n"
+        f"{review_reason}"
+    ]
+    context_parts.append(build_review_input(
+        subject_reply=subject_reply,
+        recent_memory_text=recent_memory_text,
+        tool_outputs_text=tool_outputs_text,
+        tool_names_used_this_turn=tool_names_used_this_turn,
+        draft_reply=draft_reply,
+    ))
+    context_parts.append(
+        "Try again from the top of this turn. If you need tools, use them now. "
+        "Otherwise return the best proxy reply directly."
+    )
+    return "\n\n".join(context_parts)
+
+
+def parse_review_payload(payload_text: str, *, draft_reply: str) -> UserProxyReplyReview:
+    try:
+        payload = json.loads(payload_text)
+    except Exception:  # noqa: BLE001
+        payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    final_reply = str(payload.get("final_reply", "") or "").strip() or draft_reply
+    verdict = str(payload.get("verdict", "accept") or "accept").strip()
+    if verdict not in _VALID_REVIEW_VERDICTS:
+        verdict = "accept"
+    reason = str(payload.get("reason", "") or "").strip() or "reviewed"
+    raw_issues = payload.get("issues", ())
+    if isinstance(raw_issues, (list, tuple)):
+        issues = tuple(str(item) for item in raw_issues if str(item).strip())
+    else:
+        issues = ()
+
+    audit = _default_review_audit()
+    raw_audit = payload.get("audit_json", payload.get("audit", {}))
+    if isinstance(raw_audit, dict):
+        audit.update({key: value for key, value in raw_audit.items() if key in audit})
+    audit["edited_reply"] = bool(audit.get("edited_reply")) or final_reply.strip() != draft_reply.strip()
+    audit["acceptable_tool_use"] = bool(audit.get("acceptable_tool_use"))
+
+    return UserProxyReplyReview(
+        verdict=verdict,  # type: ignore[arg-type]
+        final_reply=final_reply,
+        reason=reason,
+        issues=issues,
+        audit_json=audit,
+    )
 
 
 class UserProxyLLMClient:
@@ -284,17 +444,18 @@ class UserProxyLLMClient:
         subject_reply: str,
         recent_memory_text: str | None,
         tool_outputs_text: list[str],
+        tool_names_used_this_turn: list[str],
         draft_reply: str,
     ) -> UserProxyReplyReview:
-        """Always-on revision pass: ask the model to fix the draft reply."""
-        context_parts = [f"[Assistant message]\n{subject_reply}"]
-        if recent_memory_text:
-            context_parts.append(f"[Recent terminal actions]\n{recent_memory_text}")
-        if tool_outputs_text:
-            combined = "\n\n".join(tool_outputs_text)
-            context_parts.append(f"[Terminal output this turn]\n{combined}")
-        context_parts.append(f"[Draft reply]\n{draft_reply}")
-        review_input = "\n\n".join(context_parts)
+        """Always-on revision pass: ask the model to return a structured review."""
+        del system_prompt, transcript
+        review_input = build_review_input(
+            subject_reply=subject_reply,
+            recent_memory_text=recent_memory_text,
+            tool_outputs_text=tool_outputs_text,
+            tool_names_used_this_turn=tool_names_used_this_turn,
+            draft_reply=draft_reply,
+        )
 
         kwargs: dict[str, Any] = {
             "model": self.config.model,
@@ -305,7 +466,40 @@ class UserProxyLLMClient:
             kwargs["max_output_tokens"] = self.config.max_output_tokens
         try:
             response = self.client.responses.create(**kwargs)
-            final = str(getattr(response, "output_text", "") or "").strip()
+            payload_text = str(getattr(response, "output_text", "") or "").strip()
+            return parse_review_payload(payload_text, draft_reply=draft_reply)
         except Exception:  # noqa: BLE001
-            final = draft_reply
-        return UserProxyReplyReview(final_reply=final or draft_reply, issues=())
+            return parse_review_payload("", draft_reply=draft_reply)
+
+    def retry_turn(
+        self,
+        *,
+        system_prompt: str,
+        transcript: list[tuple[str, str]],
+        assistant_reply: str,
+        tools: list[dict[str, Any]] | None = None,
+        recent_memory_text: str | None = None,
+        draft_reply: str,
+        review_verdict: str,
+        review_reason: str,
+        tool_names_used_this_turn: list[str] | None = None,
+        tool_outputs_text: list[str] | None = None,
+    ) -> UserProxyLLMResponse:
+        retry_input = build_retry_review_input(
+            subject_reply=assistant_reply,
+            recent_memory_text=recent_memory_text,
+            tool_outputs_text=tool_outputs_text or [],
+            tool_names_used_this_turn=tool_names_used_this_turn or [],
+            draft_reply=draft_reply,
+            review_verdict=review_verdict,
+            review_reason=review_reason,
+        )
+        request_kwargs = self._request_kwargs(system_prompt=system_prompt, tools=tools)
+        request_kwargs["input"] = [{"role": role, "content": content} for role, content in build_proxy_native_history(
+            transcript,
+            assistant_reply,
+            recent_memory_text=recent_memory_text,
+        )]
+        request_kwargs["input"].append({"role": "user", "content": retry_input})
+        response = self.client.responses.create(**request_kwargs)
+        return self._coerce_response(response)

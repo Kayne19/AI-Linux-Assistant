@@ -200,6 +200,20 @@ class BenchmarkRunOrchestrator:
             seq += 1
         return seq
 
+    def _record_proxy_review_events(self, *, evaluation_run_id: str, seq: int, review_events: tuple[dict, ...]) -> int:
+        for item in review_events:
+            event_kind = str(item.get("event_kind", "proxy_review")).strip() or "proxy_review"
+            payload = {key: value for key, value in item.items() if key != "event_kind"}
+            self.store.append_evaluation_event(
+                evaluation_run_id=evaluation_run_id,
+                seq=seq,
+                actor_role="user_proxy_review",
+                event_kind=event_kind,
+                payload=payload,
+            )
+            seq += 1
+        return seq
+
     def _execute_repair_checks(
         self,
         *,
@@ -467,7 +481,6 @@ class BenchmarkRunOrchestrator:
                     turn_result.assistant_message,
                     proxy_recent_memory=_memory_snapshot,
                 )
-
                 # Record any commands the proxy ran and update cross-turn memory.
                 if proxy_result.tool_results:
                     seq = self._record_command_results(
@@ -496,31 +509,39 @@ class BenchmarkRunOrchestrator:
                                 safe_rerun=_cmd_base in _SAFE_RERUN_COMMANDS,
                             )
                         )
-                    ran_state_changing_tool = any(
-                        result.metadata.get("user_proxy_tool_name") in _STATE_CHANGING_PROXY_TOOLS
-                        for result in proxy_result.tool_results
+
+                if proxy_result.review_events:
+                    seq = self._record_proxy_review_events(
+                        evaluation_run_id=evaluation_run_id,
+                        seq=seq,
+                        review_events=proxy_result.review_events,
                     )
-                    if ran_state_changing_tool:
-                        repair_results, seq = self._execute_repair_checks(
-                            controller=controller,
-                            scenario=scenario,
+
+                ran_state_changing_tool = any(
+                    result.metadata.get("user_proxy_tool_name") in _STATE_CHANGING_PROXY_TOOLS
+                    for result in proxy_result.tool_results
+                )
+                if ran_state_changing_tool:
+                    repair_results, seq = self._execute_repair_checks(
+                        controller=controller,
+                        scenario=scenario,
+                        evaluation_run_id=evaluation_run_id,
+                        seq=seq,
+                        verification_agent_id=verification_agent_id,
+                    )
+                    last_repair_snapshot = self._repair_snapshot(scenario, repair_results)
+                    if self._repair_checks_pass(scenario, repair_results):
+                        session_metadata = session.close()
+                        self._complete_success(
                             evaluation_run_id=evaluation_run_id,
-                            seq=seq,
-                            verification_agent_id=verification_agent_id,
+                            session=session,
+                            session_metadata=session_metadata,
+                            scenario=scenario,
+                            repair_results=repair_results,
                         )
-                        last_repair_snapshot = self._repair_snapshot(scenario, repair_results)
-                        if self._repair_checks_pass(scenario, repair_results):
-                            session_metadata = session.close()
-                            self._complete_success(
-                                evaluation_run_id=evaluation_run_id,
-                                session=session,
-                                session_metadata=session_metadata,
-                                scenario=scenario,
-                                repair_results=repair_results,
-                            )
-                            session = None
-                            _emit("evaluation_completed", {"repair_success": True, "source": "post_proxy_action"})
-                            return
+                        session = None
+                        _emit("evaluation_completed", {"repair_success": True, "source": "post_proxy_action"})
+                        return
 
                 turn_index += 1
 

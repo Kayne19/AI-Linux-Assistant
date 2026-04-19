@@ -30,6 +30,21 @@ from eval_harness.orchestration.user_proxy_llm import (
     build_proxy_native_history,
 )
 
+
+def _review(
+    *,
+    final_reply: str,
+    verdict: str = "accept",
+    reason: str = "reviewed",
+    audit_json: dict | None = None,
+) -> UserProxyReplyReview:
+    return UserProxyReplyReview(
+        verdict=verdict,
+        final_reply=final_reply,
+        reason=reason,
+        audit_json=dict(audit_json or {}),
+    )
+
 @dataclass
 class FakeUserProxyLLM:
     """Scripted LLM that returns pre-canned responses in order."""
@@ -70,7 +85,6 @@ class FakeUserProxyLLM:
             return self.responses.pop(0)
         return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-default")
 
-
 @dataclass
 class FakeUserProxyLLMWithReview(FakeUserProxyLLM):
     """FakeUserProxyLLM that also supports review_reply."""
@@ -87,18 +101,62 @@ class FakeUserProxyLLMWithReview(FakeUserProxyLLM):
         self.review_responses = list(review_responses or [])
         self.review_calls = []
 
-    def review_reply(self, *, system_prompt, transcript, subject_reply, recent_memory_text, tool_outputs_text, draft_reply):
+    def review_reply(
+        self,
+        *,
+        system_prompt,
+        transcript,
+        subject_reply,
+        recent_memory_text,
+        tool_outputs_text,
+        tool_names_used_this_turn,
+        draft_reply,
+    ):
         self.review_calls.append({
             "system_prompt": system_prompt,
             "transcript": list(transcript),
             "subject_reply": subject_reply,
             "recent_memory_text": recent_memory_text,
             "tool_outputs_text": list(tool_outputs_text),
+            "tool_names_used_this_turn": list(tool_names_used_this_turn),
             "draft_reply": draft_reply,
         })
         if self.review_responses:
             return self.review_responses.pop(0)
-        return UserProxyReplyReview(final_reply=draft_reply, issues=())
+        return _review(final_reply=draft_reply, reason="reviewed")
+
+    def retry_turn(
+        self,
+        *,
+        system_prompt,
+        transcript,
+        assistant_reply,
+        tools,
+        recent_memory_text=None,
+        draft_reply,
+        review_verdict,
+        review_reason,
+        tool_names_used_this_turn=None,
+        tool_outputs_text=None,
+    ):
+        self.calls.append(
+            {
+                "phase": "retry",
+                "system_prompt": system_prompt,
+                "transcript": list(transcript),
+                "assistant_reply": assistant_reply,
+                "tools": tools,
+                "recent_memory_text": recent_memory_text,
+                "draft_reply": draft_reply,
+                "review_verdict": review_verdict,
+                "review_reason": review_reason,
+                "tool_names_used_this_turn": list(tool_names_used_this_turn or ()),
+                "tool_outputs_text": list(tool_outputs_text or ()),
+            }
+        )
+        if self.responses:
+            return self.responses.pop(0)
+        return UserProxyLLMResponse(content="", tool_calls=(), finish_reason="stop", response_id="resp-default")
 
 
 class FakeInteractiveSession(InteractiveSession):
@@ -680,6 +738,90 @@ def test_user_proxy_llm_client_continue_turn_submits_function_outputs(monkeypatc
     ]
 
 
+def test_user_proxy_llm_client_review_reply_returns_structured_review(monkeypatch) -> None:
+    fake_api = FakeResponsesAPI(
+        [
+            _fake_response(
+                response_id="resp-review",
+                output_text='{"final_reply":"I ran the command and got exit 1.","verdict":"accept","reason":"Terminal evidence only.","audit_json":{"reasoning":"Terminal evidence only.","edited_reply":true}}',
+            ),
+        ]
+    )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = fake_api
+
+    monkeypatch.setattr(user_proxy_llm_module, "OpenAI", FakeOpenAI, raising=False)
+    client = UserProxyLLMClient(
+        UserProxyLLMClientConfig(
+            model="gpt-5.4-mini",
+            api_key="test-key",
+            request_timeout_seconds=30.0,
+        )
+    )
+
+    review = client.review_reply(
+        system_prompt="You are a confused user.",
+        transcript=[],
+        subject_reply="What did the command print?",
+        recent_memory_text="$ ls\nfile.txt\n[exit 0]",
+        tool_outputs_text=["$ ls\nfile.txt\n[exit 0]"],
+        tool_names_used_this_turn=["run_command"],
+        draft_reply="You should run ls and tell me the output.",
+    )
+
+    assert review.final_reply == "I ran the command and got exit 1."
+    assert review.verdict == "accept"
+    assert review.reason == "Terminal evidence only."
+    assert review.audit_json["reasoning"] == "Terminal evidence only."
+    call = fake_api.calls[0]
+    assert call["instructions"] == _REVIEW_SYSTEM_PROMPT
+    assert "Tool names used this turn" in call["input"][0]["content"]
+
+
+def test_user_proxy_llm_client_retry_turn_includes_tool_outputs(monkeypatch) -> None:
+    fake_api = FakeResponsesAPI(
+        [
+            _fake_response(
+                response_id="resp-retry",
+                output_text="I removed the line and nginx -t is clean now.",
+            ),
+        ]
+    )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = fake_api
+
+    monkeypatch.setattr(user_proxy_llm_module, "OpenAI", FakeOpenAI, raising=False)
+    client = UserProxyLLMClient(
+        UserProxyLLMClientConfig(
+            model="gpt-5.4-mini",
+            api_key="test-key",
+            request_timeout_seconds=30.0,
+        )
+    )
+
+    response = client.retry_turn(
+        system_prompt="You are a confused user.",
+        transcript=[],
+        assistant_reply="Remove that line and run nginx -t again.",
+        tools=DEFAULT_TOOLS,
+        recent_memory_text="$ cat /etc/nginx/conf.d/zz-benchmark-bad.conf\ninvalid-directive on\n[exit 0]",
+        draft_reply="It still looks broken.",
+        review_verdict="retry_with_tools",
+        review_reason="Use the tools now.",
+        tool_names_used_this_turn=["read_file"],
+        tool_outputs_text=["$ cat /etc/nginx/conf.d/zz-benchmark-bad.conf\ninvalid-directive on\n[exit 0]"],
+    )
+
+    assert response.content == "I removed the line and nginx -t is clean now."
+    retry_message = fake_api.calls[0]["input"][-1]["content"]
+    assert "[Terminal output this turn]" in retry_message
+    assert "invalid-directive on" in retry_message
+
+
 def test_user_proxy_llm_client_config() -> None:
     cfg = UserProxyLLMClientConfig(
         base_url="http://localhost:11434",
@@ -893,7 +1035,12 @@ def test_review_pass_rewrites_draft() -> None:
             UserProxyLLMResponse(content="You should run systemctl restart nginx.", tool_calls=(), finish_reason="stop", response_id="r1"),
         ],
         review_responses=[
-            UserProxyReplyReview(final_reply="I tried to restart nginx like you said.", issues=()),
+            _review(
+                final_reply="I tried to restart nginx like you said.",
+                verdict="accept",
+                reason="rewritten into user voice",
+                audit_json={"review_stage": "initial"},
+            ),
         ],
     )
     fsm = _make_fsm(llm)
@@ -902,6 +1049,9 @@ def test_review_pass_rewrites_draft() -> None:
     assert result.user_message == "I tried to restart nginx like you said."
     assert len(llm.review_calls) == 1
     assert llm.review_calls[0]["draft_reply"] == "You should run systemctl restart nginx."
+    assert len(result.review_events) == 1
+    assert result.review_events[0]["verdict"] == "accept"
+    assert result.review_events[0]["audit_json"]["review_stage"] == "initial"
 
 
 def test_review_call_includes_tool_outputs() -> None:
@@ -913,7 +1063,7 @@ def test_review_call_includes_tool_outputs() -> None:
             UserProxyLLMResponse(content="I ran echo hi.", tool_calls=(), finish_reason="stop", response_id="r2"),
         ],
         review_responses=[
-            UserProxyReplyReview(final_reply="I ran echo hi.", issues=()),
+            _review(final_reply="I ran echo hi.", verdict="accept", reason="ok"),
         ],
     )
     controller = FakeController(
@@ -922,12 +1072,207 @@ def test_review_call_includes_tool_outputs() -> None:
         ]
     )
     fsm = _make_fsm(llm, controller)
-    fsm.run_turn([], "say hello")
+    result = fsm.run_turn([], "say hello")
 
     assert len(llm.review_calls) == 1
     # tool output text should reference the command result
     combined = " ".join(llm.review_calls[0]["tool_outputs_text"])
     assert "echo hi" in combined or "hi" in combined
+    assert llm.review_calls[0]["tool_names_used_this_turn"] == ["run_command"]
+    assert len(result.review_events) == 1
+    assert result.review_events[0]["verdict"] == "accept"
+
+
+def test_review_retry_with_tools_runs_one_corrective_retry() -> None:
+    llm = FakeUserProxyLLMWithReview(
+        responses=[
+            UserProxyLLMResponse(
+                content="It says nginx still won't start because of that bad conf file.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="r1",
+            ),
+            UserProxyLLMResponse(
+                content="",
+                tool_calls=(
+                    UserProxyToolCall(
+                        id="tc-read",
+                        name="read_file",
+                        arguments={"path": "/etc/nginx/conf.d/zz-benchmark-bad.conf"},
+                    ),
+                ),
+                finish_reason="tool_calls",
+                response_id="r2",
+            ),
+            UserProxyLLMResponse(
+                content="",
+                tool_calls=(
+                    UserProxyToolCall(
+                        id="tc-edit",
+                        name="apply_text_edit",
+                        arguments={
+                            "path": "/etc/nginx/conf.d/zz-benchmark-bad.conf",
+                            "old_text": "invalid-directive on;\n",
+                            "new_text": "",
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+                response_id="r3",
+            ),
+            UserProxyLLMResponse(
+                content="",
+                tool_calls=(
+                    UserProxyToolCall(
+                        id="tc-test",
+                        name="run_command",
+                        arguments={"command": "nginx -t"},
+                    ),
+                ),
+                finish_reason="tool_calls",
+                response_id="r4",
+            ),
+            UserProxyLLMResponse(
+                content="I removed that line and nginx -t is clean now.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="r5",
+            ),
+        ],
+        review_responses=[
+            _review(
+                final_reply="Use the tools now instead of repeating the diagnosis.",
+                verdict="retry_with_tools",
+                reason="Draft just paraphrased the diagnosis without acting.",
+                audit_json={"review_stage": "initial"},
+            ),
+            _review(
+                final_reply="I removed that line and nginx -t is clean now.",
+                verdict="accept",
+                reason="The retry actually performed the repair and retest.",
+                audit_json={"review_stage": "corrective_retry"},
+            ),
+        ],
+    )
+    controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="cat /etc/nginx/conf.d/zz-benchmark-bad.conf", stdout="invalid-directive on\n", stderr="", exit_code=0),),
+            (CommandExecutionResult(command="python3 /tmp/apply_text_edit.py", stdout="Applied edit to /etc/nginx/conf.d/zz-benchmark-bad.conf", stderr="", exit_code=0),),
+            (CommandExecutionResult(command="nginx -t", stdout="syntax is ok", stderr="", exit_code=0),),
+        ]
+    )
+    fsm = _make_fsm(llm, controller)
+
+    result = fsm.run_turn(
+        transcript=[("user", "The site is down."), ("assistant", "Run nginx -t."), ("user", "It failed.")],
+        subject_reply="Remove that line or just remove that file, then run nginx -t again.",
+    )
+
+    assert not result.stalled
+    assert result.user_message == "I removed that line and nginx -t is clean now."
+    assert [r.metadata.get("user_proxy_tool_name") for r in result.tool_results] == [
+        "read_file",
+        "apply_text_edit",
+        "run_command",
+    ]
+    assert len(llm.review_calls) == 2
+    assert llm.calls[1]["phase"] == "retry"
+    assert llm.calls[1]["review_verdict"] == "retry_with_tools"
+    assert len(result.review_events) == 3
+    assert result.review_events[0]["verdict"] == "retry_with_tools"
+    assert result.review_events[1]["event_kind"] == "proxy_review_retry_decision"
+    assert result.review_events[2]["verdict"] == "accept"
+
+
+def test_review_retry_with_tools_falls_back_after_one_failed_retry() -> None:
+    llm = FakeUserProxyLLMWithReview(
+        responses=[
+            UserProxyLLMResponse(
+                content="It still looks broken because of that file.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="r1",
+            ),
+            UserProxyLLMResponse(
+                content="That file still looks broken to me.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="r2",
+            ),
+        ],
+        review_responses=[
+            _review(final_reply="Act instead of summarizing.", verdict="retry_with_tools"),
+            _review(final_reply="Still not acceptable.", verdict="retry_with_tools"),
+        ],
+    )
+    fsm = _make_fsm(llm)
+
+    result = fsm.run_turn(
+        transcript=[],
+        subject_reply="Remove that line or file, then run nginx -t again.",
+    )
+
+    assert not result.stalled
+    assert result.user_message == _FALLBACK_CLARIFICATION
+    assert len(llm.review_calls) == 2
+    assert len(result.review_events) == 3
+    assert result.review_events[0]["verdict"] == "retry_with_tools"
+    assert result.review_events[1]["event_kind"] == "proxy_review_retry_decision"
+    assert result.review_events[2]["verdict"] == "retry_with_tools"
+
+
+def test_retry_turn_receives_same_turn_tool_outputs() -> None:
+    tc = UserProxyToolCall(id="c1", name="read_file", arguments={"path": "/etc/nginx/conf.d/zz-benchmark-bad.conf"})
+    llm = FakeUserProxyLLMWithReview(
+        responses=[
+            UserProxyLLMResponse(content="", tool_calls=(tc,), finish_reason="tool_calls", response_id="r1"),
+            UserProxyLLMResponse(content="It still looks broken because of that file.", tool_calls=(), finish_reason="stop", response_id="r2"),
+            UserProxyLLMResponse(content="Which line should I remove?", tool_calls=(), finish_reason="stop", response_id="r3"),
+        ],
+        review_responses=[
+            _review(final_reply="Use the tools now.", verdict="retry_with_tools", reason="Do not summarize the diagnosis."),
+            _review(final_reply="Which line should I remove?", verdict="ask_clarification", reason="Need the exact line."),
+        ],
+    )
+    controller = FakeController(
+        execute_batches=[
+            (CommandExecutionResult(command="cat /etc/nginx/conf.d/zz-benchmark-bad.conf", stdout="invalid-directive on\n", stderr="", exit_code=0),),
+        ]
+    )
+    fsm = _make_fsm(llm, controller)
+
+    result = fsm.run_turn([], "Remove the bad line and try again.")
+
+    assert result.user_message == "Which line should I remove?"
+    assert llm.calls[2]["phase"] == "retry"
+    assert any("invalid-directive on" in item for item in llm.calls[2]["tool_outputs_text"])
+
+
+def test_review_ask_clarification_returns_reviewed_reply() -> None:
+    llm = FakeUserProxyLLMWithReview(
+        responses=[
+            UserProxyLLMResponse(
+                content="I don't know what file you mean.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="r1",
+            ),
+        ],
+        review_responses=[
+            _review(
+                final_reply="Which file do you want me to edit?",
+                verdict="ask_clarification",
+                reason="Instruction is too vague for a safe edit.",
+                audit_json={"review_stage": "initial"},
+            ),
+        ],
+    )
+    fsm = _make_fsm(llm)
+
+    result = fsm.run_turn([], "Delete the bad line and try again.")
+
+    assert not result.stalled
+    assert result.user_message == "Which file do you want me to edit?"
 
 
 def test_review_prompt_demands_evidence_only_for_log_requests() -> None:
@@ -936,6 +1281,7 @@ def test_review_prompt_demands_evidence_only_for_log_requests() -> None:
     assert "do not diagnose the issue" in _REVIEW_SYSTEM_PROMPT
     assert "do not identify a root cause" in _REVIEW_SYSTEM_PROMPT
     assert "do not propose the next fix" in _REVIEW_SYSTEM_PROMPT
+    assert "already-observed evidence" in _REVIEW_SYSTEM_PROMPT
 
 
 def test_review_pass_skipped_when_client_lacks_method() -> None:

@@ -208,7 +208,12 @@ def test_anthropic_user_proxy_review_reply(monkeypatch: pytest.MonkeyPatch) -> N
             SimpleNamespace(
                 id="review-1",
                 stop_reason="end_turn",
-                content=[SimpleNamespace(type="text", text="I ran the command and got exit 1.")],
+                content=[
+                    SimpleNamespace(
+                        type="text",
+                        text='{"final_reply":"I ran the command and got exit 1.","verdict":"accept","reason":"Terminal evidence only.","audit_json":{"reasoning":"Terminal evidence only.","edited_reply":true}}',
+                    )
+                ],
             )
         ]
     ]
@@ -229,10 +234,56 @@ def test_anthropic_user_proxy_review_reply(monkeypatch: pytest.MonkeyPatch) -> N
         subject_reply="What did the command print?",
         recent_memory_text="$ ls\nfile.txt\n[exit 0]",
         tool_outputs_text=["$ ls\nfile.txt\n[exit 0]"],
+        tool_names_used_this_turn=["run_command"],
         draft_reply="You should run ls and let me know the output.",
     )
 
     assert review.final_reply == "I ran the command and got exit 1."
+    assert review.verdict == "accept"
+    assert review.reason == "Terminal evidence only."
+    assert review.audit_json["reasoning"] == "Terminal evidence only."
     fake_client = _FakeAnthropic.instances[-1]
     call = fake_client.messages.calls[0]
     assert "review" in call["system"].lower() or "draft" in call["messages"][0]["content"].lower()
+    assert "tool names used this turn" in call["messages"][0]["content"].lower()
+
+
+def test_anthropic_user_proxy_retry_turn_includes_tool_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeAnthropic.instances.clear()
+    _FakeAnthropic.queued_responses = [
+        [
+            SimpleNamespace(
+                id="retry-1",
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text="I removed it and nginx -t is clean now.")],
+            )
+        ]
+    ]
+    monkeypatch.setattr("eval_harness.orchestration.user_proxy_llm_anthropic.Anthropic", _FakeAnthropic)
+
+    client = AnthropicUserProxyLLMClient(
+        UserProxyLLMClientConfig(
+            model="claude-sonnet-4-20250514",
+            api_key="test-key",
+            request_timeout_seconds=15.0,
+        )
+    )
+
+    response = client.retry_turn(
+        system_prompt="You are a confused user.",
+        transcript=[],
+        assistant_reply="Remove that line and run nginx -t again.",
+        tools=None,
+        recent_memory_text="$ cat /etc/nginx/conf.d/zz-benchmark-bad.conf\ninvalid-directive on\n[exit 0]",
+        draft_reply="It still looks broken.",
+        review_verdict="retry_with_tools",
+        review_reason="Use the tools now.",
+        tool_names_used_this_turn=["read_file"],
+        tool_outputs_text=["$ cat /etc/nginx/conf.d/zz-benchmark-bad.conf\ninvalid-directive on\n[exit 0]"],
+    )
+
+    assert response.content == "I removed it and nginx -t is clean now."
+    fake_client = _FakeAnthropic.instances[-1]
+    retry_message = fake_client.messages.calls[0]["messages"][-1]["content"]
+    assert "[Terminal output this turn]" in retry_message
+    assert "invalid-directive on" in retry_message
