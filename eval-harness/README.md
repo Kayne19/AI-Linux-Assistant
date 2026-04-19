@@ -235,7 +235,7 @@ Other convenience commands:
 
 ```bash
 python ../run_eval_harness.py init-db
-python ../run_eval_harness.py generate-scenario --output /tmp/nginx_scenario.json
+python ../run_eval_harness.py generate-scenario --output /tmp/linux_scenario.json
 python ../run_eval_harness.py verify-scenario --group-id demo-setup
 ```
 
@@ -264,8 +264,8 @@ Generate a planner draft:
 ```bash
 python -m eval_harness generate-scenario \
   --config examples/aws_ai_linux_assistant_config.json \
-  --request examples/planner_requests/nginx_recovery_request.json \
-  --output /tmp/nginx_scenario.json
+  --request examples/planner_requests/general_linux_troubleshooting_request.json \
+  --output /tmp/linux_scenario.json
 ```
 
 Planner, judge, and `user_proxy_llm` config sections now select their model backend with `provider: "openai" | "anthropic" | "google"` plus provider-specific credentials such as `api_key`.
@@ -286,7 +286,7 @@ Run planner-driven scenario setup and verification:
 ```bash
 python -m eval_harness verify-scenario \
   --config examples/aws_ai_linux_assistant_config.json \
-  --request examples/planner_requests/nginx_recovery_request.json \
+  --request examples/planner_requests/general_linux_troubleshooting_request.json \
   --group-id demo-setup
 ```
 
@@ -358,6 +358,7 @@ For the `openai_chatgpt` subject adapter:
 See:
 - [aws_ai_linux_assistant_config.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/aws_ai_linux_assistant_config.json)
 - [aws_ai_linux_assistant_vs_chatgpt_config.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/aws_ai_linux_assistant_vs_chatgpt_config.json)
+- [general_linux_troubleshooting_request.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/planner_requests/general_linux_troubleshooting_request.json)
 - [nginx_recovery_request.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/planner_requests/nginx_recovery_request.json)
 - [nginx_service_repair.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/scenarios/nginx_service_repair.json)
 

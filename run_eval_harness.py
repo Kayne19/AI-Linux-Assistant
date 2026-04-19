@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent
 HARNESS_DIR = ROOT_DIR / "eval-harness"
 DEFAULT_CONFIG = HARNESS_DIR / "examples" / "aws_ai_linux_assistant_vs_chatgpt_config.json"
-DEFAULT_REQUEST = HARNESS_DIR / "examples" / "planner_requests" / "nginx_recovery_request.json"
+DEFAULT_REQUEST = HARNESS_DIR / "examples" / "planner_requests" / "general_linux_troubleshooting_request.json"
 DEFAULT_CONDA_ENV = "AI-Linux-Assistant"
 
 

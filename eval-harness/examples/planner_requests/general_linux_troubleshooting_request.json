@@ -1,0 +1,16 @@
+{
+  "planning_brief": "Create a Linux troubleshooting benchmark where a realistic system or service problem is broken in a way that can be objectively verified before cloning. The user proxy should only know the visible symptoms and should not be told the sabotage method.",
+  "target_image": "debian-12-ssm-golden",
+  "scenario_name_hint": "linux-troubleshooting",
+  "constraints": [
+    "The planner must define sabotage steps and objective verification probes.",
+    "The observable problem statement must not reveal the sabotage method.",
+    "Repair checks must be machine-checkable.",
+    "Prefer common Linux troubleshooting domains such as services, networking, storage, permissions, or configuration errors."
+  ],
+  "tags": [
+    "linux",
+    "troubleshooting",
+    "general"
+  ]
+}
