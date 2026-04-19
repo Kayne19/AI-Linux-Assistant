@@ -211,7 +211,7 @@ def test_anthropic_user_proxy_review_reply(monkeypatch: pytest.MonkeyPatch) -> N
                 content=[
                     SimpleNamespace(
                         type="text",
-                        text='{"final_reply":"I ran the command and got exit 1.","verdict":"accept","reason":"Terminal evidence only.","audit_json":{"reasoning":"Terminal evidence only.","edited_reply":true}}',
+                        text='{"final_reply":"I ran the command and got exit 1.","verdict":"retry_with_tools","reason":"Terminal evidence only.","audit_json":{"reasoning":"Terminal evidence only.","edited_reply":true,"character_ok":false,"character_issue":"assistant_voice","voice_issue_examples":["Please run ls"],"review_stage":"initial"}}',
                     )
                 ],
             )
@@ -239,9 +239,13 @@ def test_anthropic_user_proxy_review_reply(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
     assert review.final_reply == "I ran the command and got exit 1."
-    assert review.verdict == "accept"
+    assert review.verdict == "retry_with_tools"
     assert review.reason == "Terminal evidence only."
     assert review.audit_json["reasoning"] == "Terminal evidence only."
+    assert review.audit_json["character_ok"] is False
+    assert review.audit_json["character_issue"] == "assistant_voice"
+    assert review.audit_json["voice_issue_examples"] == ["Please run ls"]
+    assert review.audit_json["review_stage"] == "initial"
     fake_client = _FakeAnthropic.instances[-1]
     call = fake_client.messages.calls[0]
     assert "review" in call["system"].lower() or "draft" in call["messages"][0]["content"].lower()

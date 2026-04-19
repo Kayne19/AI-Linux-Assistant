@@ -187,7 +187,7 @@ def test_google_user_proxy_review_reply(monkeypatch: pytest.MonkeyPatch) -> None
     _FakeGoogleClient.queued_responses = [
         [
             SimpleNamespace(
-                text='{"final_reply":"I ran the command and it failed.","verdict":"accept","reason":"Kept it user-like.","audit_json":{"reasoning":"Kept it user-like.","edited_reply":true}}',
+                text='{"final_reply":"I ran the command and it failed.","verdict":"retry_with_tools","reason":"Kept it user-like.","audit_json":{"reasoning":"Kept it user-like.","edited_reply":true,"character_ok":false,"character_issue":"assistant_voice","voice_issue_examples":["You should run ls"],"review_stage":"initial"}}',
                 function_calls=[],
             )
         ]
@@ -213,9 +213,13 @@ def test_google_user_proxy_review_reply(monkeypatch: pytest.MonkeyPatch) -> None
     )
 
     assert review.final_reply == "I ran the command and it failed."
-    assert review.verdict == "accept"
+    assert review.verdict == "retry_with_tools"
     assert review.reason == "Kept it user-like."
     assert review.audit_json["reasoning"] == "Kept it user-like."
+    assert review.audit_json["character_ok"] is False
+    assert review.audit_json["character_issue"] == "assistant_voice"
+    assert review.audit_json["voice_issue_examples"] == ["You should run ls"]
+    assert review.audit_json["review_stage"] == "initial"
     fake_client = _FakeGoogleClient.instances[-1]
     call = fake_client.models.calls[0]
     assert "[Draft reply]" in call["contents"]

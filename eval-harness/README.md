@@ -200,6 +200,15 @@ If the subject asks for the exact output of a command the proxy already ran in a
 
 After the proxy LLM generates a reply, the FSM makes a second API call — `review_reply(...)` — using the same model and provider. The reviewer now returns structured JSON with a `verdict` of `accept`, `retry_with_tools`, or `ask_clarification`, plus the corrected `final_reply`, a short `reason`, and an internal `audit_json` block. The review still strips assistant-voice phrasing, keeps the proxy in first-person confused-user voice, and returns only observed evidence when the subject asked for logs or exact command output. A reply may be accepted either because the proxy acted or because it accurately answers from already-observed evidence without needing more tools. If the reviewer says `retry_with_tools`, the FSM performs one bounded corrective retry before finalizing the turn, carrying the same turn's tool outputs into the retry context. The review payloads are persisted in `evaluation_events` as internal `proxy_review` and `proxy_review_retry_decision` records; they are not rendered as transcript turns.
 
+Character fidelity is a first-class review criterion:
+- the proxy is reminded that it is the human user with terminal access
+- the subject is treated as a text-only assistant that cannot run commands or inspect the machine directly
+- replies that tell the assistant what to run, ask it to paste output, or otherwise switch into helpdesk voice are review failures rather than acceptable clarifications
+
+Review activity is also visible live during benchmark execution:
+- the stderr progress sink renders `proxy_review` and `proxy_review_retry_decision` events with the verdict, short reason, and compact reviewer reasoning
+- the full internal `audit_json`, including reviewer reasoning and character-analysis fields, still lives in `evaluation_events.payload_json` for DB inspection
+
 #### Stall behavior
 
 When the proxy cannot produce a meaningful reply (empty content, no tool calls, or the reply is an exact repeat of a prior proxy message), the FSM stalls and returns a fixed fallback clarification — `"I'm not sure what you need me to do exactly — can you be more specific?"` — instead of resending the opening message unchanged. The benchmark loop uses this fallback as the next user turn rather than re-sending the opener, which would create an infinite stall loop.

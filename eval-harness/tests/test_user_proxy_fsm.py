@@ -19,6 +19,7 @@ from eval_harness.orchestration.user_proxy_fsm import (
     _check_reply_issues,
     _find_cached_exact_output,
     _render_recent_memory,
+    _user_proxy_system_prompt,
 )
 from eval_harness.orchestration.user_proxy_llm import (
     UserProxyLLMClient,
@@ -1282,6 +1283,81 @@ def test_review_prompt_demands_evidence_only_for_log_requests() -> None:
     assert "do not identify a root cause" in _REVIEW_SYSTEM_PROMPT
     assert "do not propose the next fix" in _REVIEW_SYSTEM_PROMPT
     assert "already-observed evidence" in _REVIEW_SYSTEM_PROMPT
+    assert "breaking character" in _REVIEW_SYSTEM_PROMPT.lower()
+    assert "do not tell the assistant what to run" in _REVIEW_SYSTEM_PROMPT.lower()
+    assert "bad example" in _REVIEW_SYSTEM_PROMPT.lower()
+    assert "good example" in _REVIEW_SYSTEM_PROMPT.lower()
+
+
+def test_user_proxy_system_prompt_explicitly_forbids_assistant_voice() -> None:
+    prompt = _user_proxy_system_prompt("nginx is down")
+    assert "do not tell the assistant what to run" in prompt.lower()
+    assert "do not ask the assistant to paste output" in prompt.lower()
+    assert "bad example" in prompt.lower()
+    assert "good example" in prompt.lower()
+
+
+def test_review_audit_tracks_character_fields() -> None:
+    review = UserProxyReplyReview.from_dict(
+        {
+            "verdict": "retry_with_tools",
+            "final_reply": "I need you to run these and paste the results.",
+            "reason": "The reply broke character.",
+            "audit_json": {
+                "character_ok": False,
+                "character_issue": "assistant_voice",
+                "voice_issue_examples": ["I need you to run these"],
+            },
+        }
+    )
+    assert review.audit_json["character_ok"] is False
+    assert review.audit_json["character_issue"] == "assistant_voice"
+    assert review.audit_json["voice_issue_examples"] == ["I need you to run these"]
+
+
+def test_character_violation_forces_retry_even_if_reviewer_says_accept() -> None:
+    llm = FakeUserProxyLLMWithReview(
+        responses=[
+            UserProxyLLMResponse(
+                content="Run these and paste the output.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="resp-1",
+            ),
+            UserProxyLLMResponse(
+                content="I ran it. nginx -t says the duplicate include is in /etc/nginx/nginx.conf:12.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="resp-2",
+            ),
+        ],
+        review_responses=[
+            _review(
+                final_reply="Run these and paste the output.",
+                verdict="accept",
+                reason="Needs outputs first.",
+                audit_json={
+                    "character_ok": False,
+                    "character_issue": "assistant_voice",
+                    "voice_issue_examples": ["Run these and paste the output."],
+                },
+            ),
+            _review(
+                final_reply="I ran it. nginx -t says the duplicate include is in /etc/nginx/nginx.conf:12.",
+                verdict="accept",
+                reason="Now in character.",
+                audit_json={"character_ok": True},
+            ),
+        ],
+    )
+
+    result = _make_fsm(llm).run_turn([], "Run nginx -t and tell me what it says.")
+
+    assert result.user_message == "I ran it. nginx -t says the duplicate include is in /etc/nginx/nginx.conf:12."
+    assert any(call["phase"] == "retry" for call in llm.calls)
+    assert result.review_events[0]["verdict"] == "retry_with_tools"
+    assert result.review_events[0]["audit_json"]["character_ok"] is False
+    assert result.review_events[-1]["verdict"] == "accept"
 
 
 def test_review_pass_skipped_when_client_lacks_method() -> None:

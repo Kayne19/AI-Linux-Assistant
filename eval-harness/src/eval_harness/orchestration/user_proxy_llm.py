@@ -221,18 +221,36 @@ def build_proxy_native_history(
 _REVIEW_SYSTEM_PROMPT = (
     "You are reviewing a draft reply from someone simulating a confused Linux user. "
     "The user is at a terminal and an assistant is trying to help them fix a problem. "
-    "Judge both wording and action adequacy. A draft is acceptable only if it either "
+    "The assistant is text-only: it cannot run commands, inspect files, or edit the machine itself. "
+    "The proxy is the human user with terminal access. Judge both character authenticity, wording, and action adequacy. "
+    "A draft is acceptable only if it either "
     "(1) actually ran the requested command(s), (2) performed the bounded file read/edit implied "
     "by the instruction, (3) accurately answers using already-observed evidence from the recent "
     "terminal actions or this turn's tool output without needing more tools, or (4) asks a short clarification because the instruction is genuinely "
     "underspecified. A draft is not acceptable if it merely repeats the diagnosis or restates the "
-    "assistant's instruction without acting.\n\n"
+    "assistant's instruction without acting. Breaking character is a reason to reject or rewrite the draft.\n\n"
     "Fix any wording issues: remove assistant-like directives (do not say 'you should', "
     "'please run', 'let me know', or similar), ensure the reply accurately reports terminal "
     "output rather than fabricating it, and write in first-person confused-user voice. "
+    "Do not tell the assistant what to run. Do not ask the assistant to paste output. "
+    "Do not sound like a troubleshooter, operator, or helpdesk agent. "
     "If the assistant asked for logs, exact output, or command output, return the evidence only "
     "using the terminal output that was actually observed; do not diagnose the issue, do not say "
     "'that's why', do not identify a root cause, and do not propose the next fix.\n\n"
+    "Bad example:\n"
+    "Assistant: Please show me the output of systemctl status nginx.\n"
+    "Draft: Run systemctl status nginx and paste the output so we can see what's wrong.\n"
+    "Why bad: It breaks character, tells the assistant what to run, and ignores that the proxy has terminal access.\n\n"
+    "Good example:\n"
+    "Assistant: Please show me the output of systemctl status nginx.\n"
+    "Draft: I ran that. It says nginx.service failed to start because the config test failed.\n\n"
+    "Bad example:\n"
+    "Assistant: Check /etc/nginx/nginx.conf and remove the duplicate include line.\n"
+    "Draft: You should remove the duplicate line and then rerun nginx -t.\n"
+    "Why bad: It switches into assistant voice instead of acting or asking for a real clarification.\n\n"
+    "Good example:\n"
+    "Assistant: Check /etc/nginx/nginx.conf and remove the duplicate include line.\n"
+    "Draft: I removed that duplicate include line from /etc/nginx/nginx.conf.\n\n"
     "Return ONLY valid JSON with this shape: "
     "{\"final_reply\": string, \"verdict\": \"accept\"|\"retry_with_tools\"|\"ask_clarification\", "
     "\"reason\": string, "
@@ -241,6 +259,9 @@ _REVIEW_SYSTEM_PROMPT = (
     "\"assistant_instruction_type\": string, "
     "\"tool_use_summary\": string, "
     "\"acceptable_tool_use\": boolean, "
+    "\"character_ok\": boolean, "
+    "\"character_issue\": string, "
+    "\"voice_issue_examples\": string[], "
     "\"reasoning\": string, "
     "\"expected_next_action\": string, "
     "\"why_retry_or_clarify\": string, "
@@ -256,6 +277,9 @@ def _default_review_audit() -> dict[str, Any]:
         "assistant_instruction_type": "",
         "tool_use_summary": "",
         "acceptable_tool_use": True,
+        "character_ok": True,
+        "character_issue": "",
+        "voice_issue_examples": [],
         "reasoning": "",
         "expected_next_action": "",
         "why_retry_or_clarify": "",
@@ -338,7 +362,7 @@ def parse_review_payload(payload_text: str, *, draft_reply: str) -> UserProxyRep
     audit = _default_review_audit()
     raw_audit = payload.get("audit_json", payload.get("audit", {}))
     if isinstance(raw_audit, dict):
-        audit.update({key: value for key, value in raw_audit.items() if key in audit})
+        audit.update(raw_audit)
     audit["edited_reply"] = bool(audit.get("edited_reply")) or final_reply.strip() != draft_reply.strip()
     audit["acceptable_tool_use"] = bool(audit.get("acceptable_tool_use"))
 

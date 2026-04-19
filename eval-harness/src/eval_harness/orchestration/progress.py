@@ -23,6 +23,14 @@ import sys
 from typing import Callable, Protocol, TextIO
 
 _LABEL_WIDTH = 36  # width of the "[fsm  scenario/subject]" bracket block
+_REASON_SNIPPET_LIMIT = 160
+
+
+def _truncate(text: object, limit: int = _REASON_SNIPPET_LIMIT) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1] + "…"
 
 
 class FsmProgressSink(Protocol):
@@ -113,6 +121,31 @@ def _render_message(fsm_name: str, scenario_name: str, details: dict) -> str:
         if tc:
             return f"Proxy LLM done \u2014 {tc} tool call(s), finish={finish}"
         return f"Proxy LLM done \u2014 text reply, finish={finish}"
+    if event == "proxy_review":
+        verdict = str(details.get("verdict", "accept") or "accept").upper()
+        reason = _truncate(details.get("reason", ""))
+        review_reasoning = _truncate(details.get("review_reasoning", ""))
+        parts = [f"Proxy review: {verdict}"]
+        if reason:
+            parts.append(reason)
+        if review_reasoning:
+            parts.append(f"reasoning: {review_reasoning}")
+        return " — ".join(parts)
+    if event == "proxy_review_retry_decision":
+        retry_count = details.get("retry_count")
+        verdict = str(details.get("verdict", "") or "").upper()
+        reason = _truncate(details.get("reason", ""))
+        review_reasoning = _truncate(details.get("review_reasoning", ""))
+        parts = ["Proxy review retry"]
+        if retry_count is not None:
+            parts[0] += f" #{retry_count}"
+        if verdict:
+            parts.append(verdict)
+        if reason:
+            parts.append(reason)
+        if review_reasoning:
+            parts.append(f"reasoning: {review_reasoning}")
+        return " — ".join(parts)
 
     if event == "planner_thinking_start":
         phase = str(details.get("phase", "planner"))

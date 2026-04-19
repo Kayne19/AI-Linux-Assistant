@@ -216,6 +216,7 @@ def _user_proxy_system_prompt(observable_problem_statement: str, *, mode: str = 
         f"Your situation: {observable_problem_statement}\n\n"
         "Rules:\n"
         "- Stay in character as a non-expert user who has shell access but limited Linux knowledge.\n"
+        "- You are talking to a text-only assistant. The assistant cannot run commands, inspect files, or edit the machine for you. You are the one with terminal access.\n"
         "- When the assistant asks you to run a command, use the run_command tool to run it and relay the output.\n"
         "- When the assistant asks you to edit or inspect a file (e.g. 'edit /etc/nginx/nginx.conf', 'use nano and remove that line'), use the read_file and apply_text_edit tools instead of stalling.\n"
         "- Only run commands the assistant explicitly asked you to run. Do not invent diagnostics.\n"
@@ -225,7 +226,20 @@ def _user_proxy_system_prompt(observable_problem_statement: str, *, mode: str = 
         "- Do not modify file contents beyond what the assistant explicitly requested.\n"
         "- If the assistant did not give an exact command or exact edit instruction, ask for clarification instead of guessing.\n"
         "- Never fabricate command output or file content.\n"
-        "- Do not write like an AI assistant. Do not say things like 'paste the output and I'll diagnose it' or 'I still need the actual error text.' Write like a confused user."
+        "- Do not write like an AI assistant. Do not say things like 'paste the output and I'll diagnose it' or 'I still need the actual error text.' Write like a confused user.\n"
+        "- Do not tell the assistant what to run. Do not ask the assistant to paste output. If the assistant wants command output or file contents and the request is concrete, get it yourself with tools.\n\n"
+        "Bad example:\n"
+        "Assistant: Show me the output of systemctl status nginx.\n"
+        "Bad reply: Run systemctl status nginx and paste the output.\n"
+        "Good example:\n"
+        "Assistant: Show me the output of systemctl status nginx.\n"
+        "Good reply: I ran it. It says nginx.service failed because the config test failed.\n\n"
+        "Bad example:\n"
+        "Assistant: Open /etc/nginx/nginx.conf and remove the duplicate include line.\n"
+        "Bad reply: You should remove the duplicate line and then rerun nginx -t.\n"
+        "Good example:\n"
+        "Assistant: Open /etc/nginx/nginx.conf and remove the duplicate include line.\n"
+        "Good reply: I removed that duplicate include line from /etc/nginx/nginx.conf."
     )
     if normalized_mode == "pragmatic_human":
         prompt += (
@@ -364,6 +378,32 @@ def _check_reply_issues(
             issues.append("repeated_prior_reply")
 
     return issues
+
+
+def _normalize_review(review: UserProxyReplyReview) -> UserProxyReplyReview:
+    """Enforce consistency between reviewer verdicts and audit metadata."""
+    if bool(review.audit_json.get("character_ok", True)):
+        return review
+    if review.verdict != "accept":
+        return review
+
+    audit_json = dict(review.audit_json)
+    audit_json["acceptable_tool_use"] = False
+    audit_json["why_retry_or_clarify"] = (
+        str(audit_json.get("why_retry_or_clarify", "") or "")
+        or "character_violation"
+    )
+    reason = review.reason
+    if "character" not in reason.lower():
+        reason = f"{reason} Character violation requires retry.".strip()
+    issues = tuple(review.issues) + ("character_violation",)
+    return UserProxyReplyReview(
+        verdict="retry_with_tools",
+        final_reply=review.final_reply,
+        reason=reason,
+        issues=issues,
+        audit_json=audit_json,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -705,9 +745,11 @@ class UserProxyFSM:
                 tool_names_used_this_turn=tool_names_used_this_turn,
                 draft_reply=draft,
             )
+            review = _normalize_review(review)
             ctx.review_events.append(
                 {
                     "stage": "initial" if ctx.corrective_retry_count == 0 else "corrective_retry",
+                    "event_kind": "proxy_review",
                     "draft_reply": draft,
                     "final_reply": review.final_reply,
                     "verdict": review.verdict,
@@ -716,6 +758,16 @@ class UserProxyFSM:
                     "tool_count_this_turn": len(tool_names_used_this_turn),
                     "audit_json": dict(review.audit_json),
                 }
+            )
+            self._emit_event(
+                "proxy_review",
+                {
+                    "stage": "initial" if ctx.corrective_retry_count == 0 else "corrective_retry",
+                    "verdict": review.verdict,
+                    "reason": review.reason,
+                    "review_reasoning": str(review.audit_json.get("reasoning", "") or ""),
+                    "character_issue": str(review.audit_json.get("character_issue", "") or ""),
+                },
             )
             return review
         except Exception:  # noqa: BLE001
@@ -737,6 +789,16 @@ class UserProxyFSM:
                 "retry_count": ctx.corrective_retry_count,
                 "audit_json": dict(review.audit_json),
             }
+        )
+        self._emit_event(
+            "proxy_review_retry_decision",
+            {
+                "verdict": review.verdict,
+                "reason": review.reason,
+                "review_reasoning": str(review.audit_json.get("reasoning", "") or ""),
+                "character_issue": str(review.audit_json.get("character_issue", "") or ""),
+                "retry_count": ctx.corrective_retry_count,
+            },
         )
         ctx.last_response_id = None
         ctx.last_assistant_content = ""
@@ -765,7 +827,9 @@ class UserProxyFSM:
             retry_instruction = (
                 "\n\n[Host corrective retry]\n"
                 "Your previous draft was not acceptable because it repeated or summarized the diagnosis "
-                "instead of acting. Do not restate the diagnosis. Either use the appropriate tools now "
+                "instead of acting, or because it broke character. Do not restate the diagnosis. "
+                "Remember: you are the human user with terminal access, and the assistant is text-only. "
+                "Do not tell the assistant what to run. Either use the appropriate tools now "
                 "or ask one short clarification if the instruction is still genuinely ambiguous. "
                 "If the assistant already identified a file and the requested change is specific enough, "
                 "prefer read_file and apply_text_edit. After acting, report only what you actually did and saw."

@@ -212,3 +212,37 @@ def test_stderr_sink_benchmark_event_line() -> None:
     )
     output = buf.getvalue()
     assert "Evaluation PASSED" in output
+
+
+def test_format_line_proxy_review_event() -> None:
+    line = _format_line(
+        "user-proxy",
+        "nginx_service_repair",
+        {
+            "event": "proxy_review",
+            "turn": 2,
+            "verdict": "retry_with_tools",
+            "reason": "The reply broke character and told the assistant what to run.",
+            "review_reasoning": "This is assistant voice, not a human user voice.",
+        },
+    )
+    assert "Proxy review: RETRY_WITH_TOOLS" in line
+    assert "broke character" in line
+    assert "assistant voice" in line.lower()
+
+
+def test_format_line_proxy_review_retry_decision_event() -> None:
+    line = _format_line(
+        "user-proxy",
+        "nginx_service_repair",
+        {
+            "event": "proxy_review_retry_decision",
+            "turn": 2,
+            "verdict": "retry_with_tools",
+            "reason": "The reply broke character.",
+            "review_reasoning": "Retry with tools and stay in character.",
+        },
+    )
+    assert "Proxy review retry" in line
+    assert "RETRY_WITH_TOOLS" in line
+    assert "stay in character" in line
