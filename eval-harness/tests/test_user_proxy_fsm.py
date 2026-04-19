@@ -17,7 +17,6 @@ from eval_harness.orchestration.user_proxy_fsm import (
     ProxyRecentMemorySnapshot,
     UserProxyFSM,
     _check_reply_issues,
-    _find_cached_exact_output,
     _render_recent_memory,
     _user_proxy_system_prompt,
 )
@@ -1431,29 +1430,47 @@ def test_repeated_prior_reply_falls_back() -> None:
     assert result.user_message == _FALLBACK_CLARIFICATION
 
 
-def test_exact_output_cache_hit_short_circuits_llm() -> None:
-    """When subject asks for exact output and we have it cached, skip LLM call."""
-    cached_result = "$ systemctl status nginx\nActive: failed\n[exit 3]"
+def test_exact_output_requests_no_longer_short_circuit_generation() -> None:
+    """Exact-output requests still go through normal generation using recent memory as context."""
     action = ProxyRecentAction(
         tool_name="run_command",
         turn_index=0,
         command="systemctl status nginx",
-        result_text=cached_result,
+        result_text="$ systemctl status nginx\nActive: failed\n[exit 3]",
         exit_code=3,
         state_changing=False,
         safe_rerun=True,
     )
     memory = ProxyRecentMemorySnapshot(actions=(action,))
-    llm = FakeUserProxyLLM(responses=[])  # no canned responses — LLM must not be called
+    llm = FakeUserProxyLLMWithReview(
+        responses=[
+            UserProxyLLMResponse(
+                content="I ran systemctl status nginx again and got Active: failed.",
+                tool_calls=(),
+                finish_reason="stop",
+                response_id="r1",
+            ),
+        ],
+        review_responses=[
+            _review(
+                final_reply="I ran systemctl status nginx again and got Active: failed.",
+                verdict="accept",
+                reason="normal generation path",
+                audit_json={"review_stage": "initial"},
+            ),
+        ],
+    )
     fsm = _make_fsm(llm)
     result = fsm.run_turn(
         [],
         "Can you paste the exact output of systemctl status nginx?",
         proxy_recent_memory=memory,
     )
-    # LLM should NOT have been called (cache hit short-circuits)
-    assert len(llm.calls) == 0
-    assert cached_result in result.user_message
+    assert len(llm.calls) == 1
+    assert len(llm.review_calls) == 1
+    assert "systemctl status nginx" in (llm.calls[0]["recent_memory_text"] or "")
+    assert result.review_events[0]["verdict"] == "accept"
+    assert "Active: failed" in result.user_message
 
 
 def test_safe_rerun_flag_set_for_read_only_commands() -> None:
@@ -1477,14 +1494,13 @@ def test_stall_provides_fallback_message_not_empty() -> None:
     assert result.user_message  # must not be empty
 
 
-def test_stall_uses_cached_output_as_fallback_when_available() -> None:
-    """On stall the FSM prefers cached exact output over the generic clarification."""
-    cached = "$ df -h\n/dev 90% full\n[exit 0]"
+def test_stall_uses_generic_fallback_even_when_memory_exists() -> None:
+    """On stall the FSM now always uses the generic clarification fallback."""
     action = ProxyRecentAction(
         tool_name="run_command",
         turn_index=0,
         command="df -h",
-        result_text=cached,
+        result_text="$ df -h\n/dev 90% full\n[exit 0]",
         exit_code=0,
         state_changing=False,
         safe_rerun=True,
@@ -1499,10 +1515,7 @@ def test_stall_uses_cached_output_as_fallback_when_available() -> None:
         "can you show me the exact output of df -h?",
         proxy_recent_memory=memory,
     )
-    # Stall triggered in DECIDE (empty content, no tools) — but since the subject
-    # asked for exact output and we have cache, the pre-LLM shortcut fires BEFORE
-    # the stall path.  So actually the result should be non-stalled with the cache.
-    assert cached in result.user_message
+    assert result.user_message == _FALLBACK_CLARIFICATION
 
 
 def test_render_recent_memory() -> None:
@@ -1512,34 +1525,6 @@ def test_render_recent_memory() -> None:
     text = _render_recent_memory(snap)
     assert "ls /" in text
     assert "cat /etc/hosts" in text
-
-
-def test_find_cached_exact_output_matches_command_keyword() -> None:
-    action = ProxyRecentAction(
-        tool_name="run_command",
-        turn_index=0,
-        command="journalctl -u nginx",
-        result_text="$ journalctl -u nginx\nMar 01 error...\n[exit 0]",
-        exit_code=0,
-        state_changing=False,
-        safe_rerun=True,
-    )
-    memory = ProxyRecentMemorySnapshot(actions=(action,))
-    result = _find_cached_exact_output(
-        "Can you paste the exact output of journalctl?",
-        memory,
-    )
-    assert result is not None
-    assert "journalctl" in result
-
-
-def test_find_cached_exact_output_returns_none_when_no_keywords() -> None:
-    action = ProxyRecentAction("run_command", 0, "ls /", "out", 0, False, True)
-    memory = ProxyRecentMemorySnapshot(actions=(action,))
-    result = _find_cached_exact_output("What should I do next?", memory)
-    assert result is None
-
-
 def test_check_reply_issues_repeated_opener() -> None:
     prior = ["opener message", "a different reply"]
     issues = _check_reply_issues("opener message", prior_proxy_replies=prior)

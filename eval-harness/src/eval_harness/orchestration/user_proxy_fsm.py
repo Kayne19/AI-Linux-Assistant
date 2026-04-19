@@ -8,8 +8,6 @@ All commands go through SandboxController.execute_commands() (SSM or fake
 in tests).  No controller.send() is used.
 """
 from __future__ import annotations
-
-import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable
@@ -34,21 +32,6 @@ _SAFE_RERUN_COMMANDS = frozenset({
     "systemctl", "journalctl", "ip", "ifconfig", "netstat", "ss",
     "dmesg", "lscpu", "lsblk", "lsof",
 })
-
-_EXACT_OUTPUT_KEYWORDS = (
-    "exact output",
-    "exactly what",
-    "paste the output",
-    "show me the output",
-    "what did it print",
-    "what does it say",
-    "copy the output",
-    "what was the output",
-    "show the exact",
-    "exact error",
-    "exact text",
-    "what exactly",
-)
 
 _FALLBACK_CLARIFICATION = "I'm not sure what you need me to do exactly — can you be more specific?"
 
@@ -285,7 +268,6 @@ class UserProxyContext:
     last_response_id: str | None = None
     last_assistant_content: str = ""
     stalled: bool = False
-    skip_review: bool = False
     recent_memory: ProxyRecentMemorySnapshot | None = None
     review_events: list[dict[str, Any]] = field(default_factory=list)
     corrective_retry_count: int = 0
@@ -329,28 +311,6 @@ def _render_recent_memory(snapshot: ProxyRecentMemorySnapshot) -> str:
     if not snapshot.actions:
         return ""
     return "\n\n".join(action.result_text for action in snapshot.actions)
-
-
-def _find_cached_exact_output(
-    subject_message: str,
-    memory: ProxyRecentMemorySnapshot | None,
-) -> str | None:
-    """Return cached result text if the subject is asking for exact output of a known command."""
-    if memory is None or not memory.actions:
-        return None
-    lower_msg = subject_message.lower()
-    if not any(kw in lower_msg for kw in _EXACT_OUTPUT_KEYWORDS):
-        return None
-    for action in reversed(memory.actions):
-        if not action.command:
-            continue
-        cmd_parts = action.command.split()
-        cmd_base = cmd_parts[0] if cmd_parts else ""
-        if (cmd_base and re.search(r'\b' + re.escape(cmd_base) + r'\b', lower_msg)) or action.command in lower_msg:
-            return action.result_text
-    return None
-
-
 def _check_reply_issues(
     reply: str,
     *,
@@ -548,16 +508,6 @@ class UserProxyFSM:
         """Call the LLM and decide what to do next."""
         is_first_response = ctx.last_response_id is None
 
-        if is_first_response:
-            # Host-side exact-output shortcut: if the subject is clearly asking
-            # for the exact output of a command we have cached, return it
-            # directly without an LLM call.
-            exact_output = _find_cached_exact_output(ctx.assistant_reply, ctx.recent_memory)
-            if exact_output:
-                ctx.last_assistant_content = exact_output
-                ctx.skip_review = True  # cached terminal output must not be rewritten by reviewer
-                return UserProxyState.REPLY
-
         wait_payload = {"mode": "start" if is_first_response else "continue"}
         if not is_first_response:
             wait_payload["tool_outputs"] = len(ctx._pending_tool_outputs)
@@ -610,10 +560,7 @@ class UserProxyFSM:
                 # Model produced nothing at all — stall with a fallback message.
                 ctx.stalled = True
                 if not ctx.final_reply:
-                    ctx.final_reply = (
-                        _find_cached_exact_output(ctx.assistant_reply, ctx.recent_memory)
-                        or _FALLBACK_CLARIFICATION
-                    )
+                    ctx.final_reply = _FALLBACK_CLARIFICATION
                 return UserProxyState.STALLED
             # Had tool calls before but now empty content — treat as REPLY
             return UserProxyState.REPLY
@@ -667,8 +614,8 @@ class UserProxyFSM:
         """Apply always-on review, run host-side checks, emit final reply."""
         draft = ctx.last_assistant_content
 
-        # Always-on revision pass — skipped when content came from the exact-output cache.
-        review = None if ctx.skip_review else self._try_review(ctx, draft)
+        # Always-on revision pass, including cached exact-output replies.
+        review = self._try_review(ctx, draft)
         final = draft
         if review is not None and review.final_reply.strip():
             final = review.final_reply
@@ -692,10 +639,7 @@ class UserProxyFSM:
         if not final.strip():
             # Nothing left to send — stall with a fallback message.
             ctx.stalled = True
-            ctx.final_reply = (
-                _find_cached_exact_output(ctx.assistant_reply, ctx.recent_memory)
-                or _FALLBACK_CLARIFICATION
-            )
+            ctx.final_reply = _FALLBACK_CLARIFICATION
             return UserProxyState.STALLED
 
         # Host-side checks on the reviewed reply.
@@ -704,12 +648,6 @@ class UserProxyFSM:
 
         if not issues:
             ctx.final_reply = final
-            return UserProxyState.DONE
-
-        # Checks failed — prefer cached exact output as fallback.
-        cached_fallback = _find_cached_exact_output(ctx.assistant_reply, ctx.recent_memory)
-        if cached_fallback:
-            ctx.final_reply = cached_fallback
             return UserProxyState.DONE
 
         # Last-resort short clarification — never mark stalled here.
@@ -723,10 +661,7 @@ class UserProxyFSM:
         ctx.stalled = True
         # Always provide a fallback so benchmark does not re-send the opener unchanged.
         if not ctx.final_reply:
-            ctx.final_reply = (
-                _find_cached_exact_output(ctx.assistant_reply, ctx.recent_memory)
-                or _FALLBACK_CLARIFICATION
-            )
+            ctx.final_reply = _FALLBACK_CLARIFICATION
         return UserProxyState.STALLED
 
     # ------------------------------------------------------------------

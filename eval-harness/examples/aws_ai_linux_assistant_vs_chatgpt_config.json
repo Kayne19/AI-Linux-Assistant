@@ -44,7 +44,7 @@
   },
   "user_proxy_llm": {
     "provider": "openai",
-    "model": "gpt-4.1-mini",
+    "model": "gpt-5.4",
     "api_key": "env:EVAL_HARNESS_PLANNER_API_KEY",
     "mode": "pragmatic_human"
   },
