@@ -25,6 +25,8 @@ _VERSION_PATTERNS = [
     ), False),
     # bare "vX.Y.Z"
     (re.compile(r"\bv(\d+\.\d+(?:\.\d+)?)\b"), False),
+    # bare version at line start (e.g. "9.0 release notes")
+    (re.compile(r"^\s*(\d+\.\d+(?:\.\d+)?)\b", re.MULTILINE), False),
     # ISO date as weak fallback
     (re.compile(r"\b(\d{4}-\d{2}-\d{2})\b"), False),
 ]
@@ -146,7 +148,16 @@ def detect_from_outline(outline: list[dict]) -> dict:
 
 
 def extract_heuristic_signals(pdf_path: Path) -> dict:
-    base = collect_front_matter(pdf_path)
+    try:
+        base = collect_front_matter(pdf_path)
+    except Exception:
+        base = {
+            "filename": pdf_path.name,
+            "stem": pdf_path.stem,
+            "metadata": {"title": "", "subject": "", "author": "", "producer": ""},
+            "front_matter_samples": [],
+            "heading_candidates": [],
+        }
 
     version_detected: str | None = None
     vendors_detected: list[str] = []

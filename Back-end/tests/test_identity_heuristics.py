@@ -313,3 +313,38 @@ def test_extract_heuristic_signals_detects_vendor_and_version(tmp_path):
     result = extract_heuristic_signals(path)
     assert result["version_detected"] is not None
     assert any("Proxmox" in v for v in result["vendors_detected"])
+
+
+# ---------------------------------------------------------------------------
+# detect_version — line-start bare version
+# ---------------------------------------------------------------------------
+
+def test_detect_version_line_start_bare():
+    assert detect_version("9.0 release notes") == "9.0"
+
+
+def test_detect_version_no_bare_mid_line():
+    # A version number in the middle of prose without keyword context should not match
+    assert detect_version("the value 9.0 is stored") is None
+
+
+# ---------------------------------------------------------------------------
+# extract_heuristic_signals — graceful degradation
+# ---------------------------------------------------------------------------
+
+def test_extract_heuristic_signals_missing_pdf(tmp_path):
+    missing = tmp_path / "does_not_exist.pdf"
+    result = extract_heuristic_signals(missing)
+    assert result["filename"] == "does_not_exist.pdf"
+    assert result["front_matter_samples"] == []
+    assert result["heading_candidates"] == []
+    assert result["version_detected"] is None
+    assert result["vendors_detected"] == []
+
+
+def test_extract_heuristic_signals_corrupt_pdf(tmp_path):
+    corrupt = tmp_path / "corrupt.pdf"
+    corrupt.write_bytes(b"not a pdf")
+    result = extract_heuristic_signals(corrupt)
+    assert result["front_matter_samples"] == []
+    assert result["version_detected"] is None
