@@ -11,6 +11,7 @@ from typing import Any
 from pypdf import PdfReader
 
 from config.settings import SETTINGS
+from ingestion.audit import AuditLog
 from ingestion.console import print_artifact, print_banner, print_kv, print_progress, print_state, print_summary
 from ingestion.indexer import build_ingestion_indexer
 from ingestion.stages.cleaner import clean_elements
@@ -185,6 +186,92 @@ def summarize_registry_suggestion(suggestion) -> str:
     return json.dumps(suggestion, indent=2)
 
 
+def auto_apply_registry_suggestion(
+    suggestion: dict | None,
+    document_identity: dict,
+    *,
+    audit: "AuditLog | None" = None,
+) -> dict:
+    """Validate + accept an LLM registry suggestion autonomously. Never prompts.
+
+    Returns the suggestion (possibly normalized). If the LLM produced nothing
+    usable (None, missing action, or unrecognized action), returns
+    {"action": "skip", "reason": "<why>"} so the caller treats it as a no-op.
+    """
+    doc = document_identity.get("filename", "unknown")
+
+    if suggestion is None:
+        result = {"action": "skip", "reason": "parser_failed"}
+        if audit is not None:
+            audit.record(
+                doc=doc,
+                phase="registry_update",
+                action="reject_missing",
+                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                chosen=result,
+                confidence=None,
+                rationale="no LLM output",
+            )
+        return result
+
+    action = suggestion.get("action")
+    if action not in {"upsert", "skip"}:
+        result = {"action": "skip", "reason": "unrecognized_action"}
+        if audit is not None:
+            audit.record(
+                doc=doc,
+                phase="registry_update",
+                action="reject_bad_action",
+                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                chosen=result,
+                confidence=None,
+                rationale="unrecognized action from LLM",
+            )
+        return result
+
+    if action == "skip":
+        if audit is not None:
+            audit.record(
+                doc=doc,
+                phase="registry_update",
+                action="accept_skip",
+                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                chosen=suggestion,
+                confidence=None,
+                rationale="accepted LLM suggestion",
+            )
+        return suggestion
+
+    # action == "upsert"
+    label = suggestion.get("label")
+    if not label or not str(label).strip():
+        result = {"action": "skip", "reason": "missing_label"}
+        if audit is not None:
+            audit.record(
+                doc=doc,
+                phase="registry_update",
+                action="reject_missing_label",
+                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                chosen=result,
+                confidence=None,
+                rationale="label missing",
+            )
+        return result
+
+    if audit is not None:
+        audit.record(
+            doc=doc,
+            phase="registry_update",
+            action="accept_upsert",
+            inputs={"document_identity": document_identity, "suggestion": suggestion},
+            chosen=suggestion,
+            confidence=None,
+            rationale="accepted LLM suggestion",
+        )
+    return suggestion
+
+
+# Unused after T5; retained for one release cycle. Remove in follow-up.
 def review_registry_suggestion(suggestion, document_identity):
     print("🧾 Registry suggestion")
     print(summarize_registry_suggestion(suggestion))
@@ -259,6 +346,8 @@ def update_routing_registry(
     context_output: Path,
     provider: str | None = None,
     model: str | None = None,
+    *,
+    audit: "AuditLog | None" = None,
 ) -> None:
     context_text = context_output.read_text(encoding="utf-8")
     front_excerpt = context_text[:6000]
@@ -304,7 +393,7 @@ def update_routing_registry(
         print("⚠️ Registry update skipped: could not parse local model output.")
         return
 
-    suggestion = review_registry_suggestion(suggestion, document_identity)
+    suggestion = auto_apply_registry_suggestion(suggestion, document_identity, audit=audit)
 
     if suggestion.get("action") == "skip":
         print(f"ℹ️ Registry unchanged: {suggestion.get('reason', 'not needed')}")
@@ -368,6 +457,7 @@ class IngestRunContext:
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     completed_at: str | None = None
     duration_seconds: float = 0.0
+    audit: "AuditLog | None" = None
 
 
 class IngestPipelineRunner:
@@ -380,40 +470,46 @@ class IngestPipelineRunner:
         )
 
     def run(self, pdf_path: Path, queue_index: int = 1, queue_total: int = 1) -> IngestRunContext:
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"_{pdf_path.stem}"
+        audit = AuditLog(run_id=run_id, traces_dir=self.config.trace_output_dir)
         context = IngestRunContext(
             pdf_path=pdf_path,
             config=self.config,
             queue_index=queue_index,
             queue_total=queue_total,
+            audit=audit,
         )
-        self._print_run_banner(context)
-        self._transition(context, IngestState.INITIALIZED)
-        self._transition(context, IngestState.VALIDATE_INPUT)
-        self._validate_input(context)
-        self._transition(context, IngestState.INTAKE_RAW)
-        self._intake_raw(context)
-        self._transition(context, IngestState.EXPORT_TEXT)
-        self._export_text(context)
-        self._transition(context, IngestState.UPDATE_REGISTRY)
-        self._update_registry(context)
-        self._transition(context, IngestState.CLEAN_ELEMENTS)
-        self._clean_elements(context)
-        self._transition(context, IngestState.ENRICH_CONTEXT)
-        self._enrich_context(context)
-        self._transition(context, IngestState.FINALIZE_OUTPUT)
-        self._finalize_output(context)
-        self._transition(context, IngestState.INGEST_VECTOR_DB)
-        self._ingest_vector_db(context)
-        self._transition(context, IngestState.CLEANUP_ARTIFACTS)
-        self._cleanup_artifacts(context)
-        self._transition(context, IngestState.COMPLETED)
-        duration = time.time() - context.start_time
-        context.duration_seconds = duration
-        context.completed_at = datetime.now(timezone.utc).isoformat()
-        print(
-            f"🏁 Completed {self._document_label(context)} in {duration:.2f}s"
-            f" | raw={len(context.raw_elements)} | cleaned={len(context.cleaned_elements)}"
-        )
+        try:
+            self._print_run_banner(context)
+            self._transition(context, IngestState.INITIALIZED)
+            self._transition(context, IngestState.VALIDATE_INPUT)
+            self._validate_input(context)
+            self._transition(context, IngestState.INTAKE_RAW)
+            self._intake_raw(context)
+            self._transition(context, IngestState.EXPORT_TEXT)
+            self._export_text(context)
+            self._transition(context, IngestState.UPDATE_REGISTRY)
+            self._update_registry(context)
+            self._transition(context, IngestState.CLEAN_ELEMENTS)
+            self._clean_elements(context)
+            self._transition(context, IngestState.ENRICH_CONTEXT)
+            self._enrich_context(context)
+            self._transition(context, IngestState.FINALIZE_OUTPUT)
+            self._finalize_output(context)
+            self._transition(context, IngestState.INGEST_VECTOR_DB)
+            self._ingest_vector_db(context)
+            self._transition(context, IngestState.CLEANUP_ARTIFACTS)
+            self._cleanup_artifacts(context)
+            self._transition(context, IngestState.COMPLETED)
+            duration = time.time() - context.start_time
+            context.duration_seconds = duration
+            context.completed_at = datetime.now(timezone.utc).isoformat()
+            print(
+                f"🏁 Completed {self._document_label(context)} in {duration:.2f}s"
+                f" | raw={len(context.raw_elements)} | cleaned={len(context.cleaned_elements)}"
+            )
+        finally:
+            audit.close()
         return context
 
     def _document_label(self, context: IngestRunContext) -> str:
@@ -461,6 +557,7 @@ class IngestPipelineRunner:
             context.config.context_output,
             provider=context.config.registry_provider,
             model=context.config.registry_model,
+            audit=context.audit,
         )
 
     def _clean_elements(self, context: IngestRunContext) -> None:

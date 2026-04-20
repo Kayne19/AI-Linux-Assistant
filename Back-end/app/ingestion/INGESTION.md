@@ -198,6 +198,10 @@ If you modify ingestion, preserve these invariants:
 4. Indexing stays ingestion-owned.
 5. Console and trace outputs remain useful enough to answer what happened and where a run failed.
 
+## Autonomous Registry Decisions
+
+As of T5, registry update decisions are applied autonomously without human prompts. The `auto_apply_registry_suggestion` function validates LLM output and accepts or rejects it: a suggestion is skipped (treated as a no-op) if the LLM returns nothing, an unrecognized action, or an `upsert` with no label; otherwise the suggestion is accepted as-is. Every decision is written as a JSON line to `Back-end/ingest_traces/audit_<run_id>.jsonl` via the `AuditLog` instance that `IngestPipelineRunner` creates at the start of each `run()` call and closes in a `finally` block. The CLI (`scripts/ingest/ingest_pipeline.py`) no longer prompts interactively when no path argument is given; it prints usage to stderr and exits with code 2.
+
 ## Files To Read First
 
 1. [app/ingestion/pipeline.py](app/ingestion/pipeline.py)

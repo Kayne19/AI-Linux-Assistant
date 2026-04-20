@@ -69,12 +69,11 @@ def main() -> int:
     pdf_path_arg = args.pdf_path
 
     if not pdf_path_arg:
-        print("Run directly with a path, for example:")
-        print("  python scripts/ingest/ingest_pipeline.py data/The_Linux_Command_Line.pdf")
-        print("  python scripts/ingest/ingest_pipeline.py /path/to/queue_root")
-        pdf_path_arg = input("PDF path: ").strip()
-        if not pdf_path_arg:
-            raise SystemExit("No PDF path provided.")
+        print("Usage: python scripts/ingest/ingest_pipeline.py <pdf_path_or_queue_dir>", file=sys.stderr)
+        print("  Examples:", file=sys.stderr)
+        print("    python scripts/ingest/ingest_pipeline.py data/The_Linux_Command_Line.pdf", file=sys.stderr)
+        print("    python scripts/ingest/ingest_pipeline.py /path/to/queue_root", file=sys.stderr)
+        raise SystemExit(2)
 
     target_path = resolve_path(pdf_path_arg)
     config = build_config(args)
