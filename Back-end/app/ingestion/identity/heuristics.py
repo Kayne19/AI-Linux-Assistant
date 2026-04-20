@@ -14,21 +14,21 @@ _VENDOR_TOKENS = [
 
 _VERSION_PATTERNS = [
     # vendor-anchored versions — captured group is the version number
-    (re.compile(
+    re.compile(
         r"(?:Proxmox VE|Debian|Ubuntu|RHEL|CentOS)\s+([\d.]+)",
         re.IGNORECASE,
-    ), True),
+    ),
     # "Version X.Y", "Release X.Y", "vX.Y.Z" at line/title context
-    (re.compile(
+    re.compile(
         r"(?:version|release|v)\s*(v?\d+\.\d+(?:\.\d+)?)",
         re.IGNORECASE,
-    ), False),
+    ),
     # bare "vX.Y.Z"
-    (re.compile(r"\bv(\d+\.\d+(?:\.\d+)?)\b"), False),
+    re.compile(r"\bv(\d+\.\d+(?:\.\d+)?)\b"),
     # bare version at line start (e.g. "9.0 release notes")
-    (re.compile(r"^\s*(\d+\.\d+(?:\.\d+)?)\b", re.MULTILINE), False),
+    re.compile(r"^\s*(\d+\.\d+(?:\.\d+)?)\b", re.MULTILINE),
     # ISO date as weak fallback
-    (re.compile(r"\b(\d{4}-\d{2}-\d{2})\b"), False),
+    re.compile(r"\b(\d{4}-\d{2}-\d{2})\b"),
 ]
 
 
@@ -113,10 +113,10 @@ def collect_front_matter(pdf_path: Path) -> dict:
 
 
 def detect_version(text: str) -> str | None:
-    for pattern, use_group_1 in _VERSION_PATTERNS:
+    for pattern in _VERSION_PATTERNS:
         m = pattern.search(text)
         if m:
-            return m.group(1) if use_group_1 else m.group(1)
+            return m.group(1)
     return None
 
 
@@ -126,13 +126,14 @@ def detect_vendor_strings(text: str) -> list[str]:
     for token in _VENDOR_TOKENS:
         if len(results) >= 10:
             break
-        if re.search(re.escape(token), text, re.IGNORECASE):
-            lower = token.lower()
-            if lower not in seen_lower:
-                seen_lower.add(lower)
-                # preserve casing as it appears in text
-                m = re.search(re.escape(token), text, re.IGNORECASE)
-                results.append(m.group(0) if m else token)
+        m = re.search(re.escape(token), text, re.IGNORECASE)
+        if not m:
+            continue
+        lower = token.lower()
+        if lower not in seen_lower:
+            seen_lower.add(lower)
+            # preserve casing as it appears in text
+            results.append(m.group(0))
     return results
 
 

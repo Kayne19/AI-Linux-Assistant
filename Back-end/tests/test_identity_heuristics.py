@@ -1,9 +1,5 @@
-import io
-import os
-import tempfile
 from pathlib import Path
 
-import pytest
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
@@ -43,13 +39,11 @@ def _add_text_page(writer: PdfWriter, text: str) -> None:
     page[NameObject("/Resources")] = resources
 
 
-def _write_pdf(writer: PdfWriter) -> Path:
-    buf = io.BytesIO()
-    writer.write(buf)
-    f = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    f.write(buf.getvalue())
-    f.close()
-    return Path(f.name)
+def _write_pdf(writer: PdfWriter, tmp_path: Path) -> Path:
+    path = tmp_path / "test.pdf"
+    with path.open("wb") as f:
+        writer.write(f)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -237,12 +231,9 @@ def test_collect_front_matter_sample_limit(tmp_path):
     writer = PdfWriter()
     for i in range(6):
         _add_text_page(writer, f"Chapter {i + 1} Main Heading\nSome content on page {i + 1}")
-    pdf = _write_pdf(writer)
-    try:
-        result = collect_front_matter(pdf)
-        assert len(result["front_matter_samples"]) <= 3
-    finally:
-        os.unlink(pdf)
+    pdf = _write_pdf(writer, tmp_path)
+    result = collect_front_matter(pdf)
+    assert len(result["front_matter_samples"]) <= 3
 
 
 def test_collect_front_matter_heading_limit(tmp_path):
@@ -253,12 +244,9 @@ def test_collect_front_matter_heading_limit(tmp_path):
             f"Heading Number {i * 6 + j + 1} Title" for j in range(6)
         )
         _add_text_page(writer, lines)
-    pdf = _write_pdf(writer)
-    try:
-        result = collect_front_matter(pdf)
-        assert len(result["heading_candidates"]) <= 15
-    finally:
-        os.unlink(pdf)
+    pdf = _write_pdf(writer, tmp_path)
+    result = collect_front_matter(pdf)
+    assert len(result["heading_candidates"]) <= 15
 
 
 def test_collect_front_matter_includes_filename_and_stem(tmp_path):

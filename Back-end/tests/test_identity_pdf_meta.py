@@ -1,8 +1,6 @@
-import io
 from pathlib import Path
 
-import pytest
-from pypdf import PdfWriter, PdfReader
+from pypdf import PdfWriter
 
 from ingestion.identity.pdf_meta import _clean, read_pdf_info, read_outline
 
