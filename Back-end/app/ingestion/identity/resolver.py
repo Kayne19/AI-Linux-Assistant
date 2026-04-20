@@ -116,19 +116,17 @@ def _heuristic_fields(heuristic_signals: dict, pdf_info: dict) -> dict:
     if version_detected:
         out["version"] = version_detected
 
-    # vendor_or_project: only when first vendor string maps unambiguously
+    # vendor_or_project + source_family: derive from first detected vendor string
     vendors = heuristic_signals.get("vendors_detected", [])
     if vendors:
         raw = vendors[0].lower().strip()
+
         mapped = _VENDOR_STRING_MAP.get(raw)
         if mapped:
             coerced = coerce_enum("vendor_or_project", mapped)
             if coerced != "unknown":
                 out["vendor_or_project"] = coerced
 
-    # source_family: check if a vendor string maps cleanly
-    if vendors:
-        raw = vendors[0].lower().strip()
         sf_coerced = coerce_enum("source_family", raw)
         if sf_coerced != "unknown":
             out["source_family"] = sf_coerced
@@ -316,16 +314,11 @@ def resolve_identity(
         ("llm", llm_fields),
     ]
 
-    # Determine winner layer per field for auditing
-    field_winner: dict[str, str | None] = {}
+    # Derive winner layer per field directly from contributions (accepted entries)
+    field_winner: dict[str, str | None] = {c.field: c.layer for c in contributions if c.accepted}
+    # Ensure every merged field has an entry (None if no winner found)
     for field in merged:
-        for layer_name, layer_data in all_layers:
-            val = layer_data.get(field)
-            if not _is_empty(val):
-                field_winner[field] = layer_name
-                break
-        else:
-            field_winner[field] = None
+        field_winner.setdefault(field, None)
 
     # Detect enum coercion fallbacks before coercing
     pre_coerce = dict(merged)

@@ -166,7 +166,7 @@ class TestEnumCoercion:
         pdf = _make_pdf_path(tmp_path)
         sidecar = {"source_family": "totally_invalid_family"}
         identity, _ = _call_resolve(pdf, sidecar=sidecar)
-        assert identity.source_family == "unknown" or identity.source_family == "other"
+        assert identity.source_family == "unknown"
 
     def test_invalid_enum_logged_in_audit(self, tmp_path):
         pdf = _make_pdf_path(tmp_path)
@@ -231,6 +231,18 @@ class TestOperatorOverridePresent:
         pdf = _make_pdf_path(tmp_path)
         identity, _ = _call_resolve(pdf, sidecar=None)
         assert identity.operator_override_present is False
+
+    def test_false_when_sidecar_has_only_filtered_keys(self, tmp_path):
+        """Sidecar present but its only key is excluded from the merge field set."""
+        pdf = _make_pdf_path(tmp_path)
+        # pipeline_version is stripped from all_fields in _merge_layers, so no
+        # contribution from sidecar ever reaches contributions with accepted=True.
+        sidecar = {"pipeline_version": "something"}
+        identity, contributions = _call_resolve(pdf, sidecar=sidecar)
+        assert identity.operator_override_present is False
+        # Also confirm that no sidecar contribution was accepted
+        accepted_sidecar = [c for c in contributions if c.layer == "sidecar" and c.accepted]
+        assert accepted_sidecar == []
 
 
 # ---------------------------------------------------------------------------
