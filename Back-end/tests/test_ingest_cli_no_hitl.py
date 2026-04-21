@@ -7,7 +7,7 @@ from pathlib import Path
 _BACKEND = Path(__file__).resolve().parents[1]
 _SCRIPT = _BACKEND / "scripts" / "ingest" / "ingest_pipeline.py"
 
-PYTHON = "/home/kayne19/miniforge3/envs/AI-Linux-Assistant/bin/python"
+PYTHON = sys.executable
 
 
 def test_no_args_exits_code_2():

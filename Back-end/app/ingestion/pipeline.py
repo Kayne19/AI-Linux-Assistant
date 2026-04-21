@@ -470,7 +470,7 @@ class IngestPipelineRunner:
         )
 
     def run(self, pdf_path: Path, queue_index: int = 1, queue_total: int = 1) -> IngestRunContext:
-        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"_{pdf_path.stem}"
+        run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%f')}Z_{pdf_path.stem}"
         audit = AuditLog(run_id=run_id, traces_dir=self.config.trace_output_dir)
         context = IngestRunContext(
             pdf_path=pdf_path,
