@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from app.ingestion.stages.sections import attach_sections
 
 
@@ -267,14 +265,15 @@ def test_preserves_existing_keys():
 
 
 def test_image_type_uncategorized():
-    """Image elements map to uncategorized (not code, even if text is code-like)."""
-    # Image with empty text is typical; even with text it should be uncategorized
-    # unless is_code_like triggers — but Image is in _TYPE_MAP as uncategorized
-    # and the code override only applies to narrative/uncategorized which includes Image.
-    # An Image with code-like alt-text will become code — that's acceptable behavior.
-    # Here test non-code Image.
+    """Image elements map to uncategorized even when text is code-like."""
+    # Non-code alt-text stays uncategorized.
     result = attach_sections([make_elem("Image", "A diagram of the network.")])
     assert result[0]["chunk_type"] == "uncategorized"
+
+    # Code-like alt-text must NOT trigger the code override for Image elements;
+    # the override is gated on NarrativeText / UncategorizedText only.
+    result_code_like = attach_sections([make_elem("Image", "$ sudo apt install foo")])
+    assert result_code_like[0]["chunk_type"] == "uncategorized"
 
 
 def test_part_prefix_treated_as_depth_1():

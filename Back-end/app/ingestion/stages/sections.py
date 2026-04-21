@@ -49,7 +49,7 @@ def _infer_heading_depth(text: str, element_type: str) -> int:
     # Fallback by element type
     if element_type == "Title":
         return 1
-    # Header (and anything else we treat as a heading)
+    # Header fallback → depth 2
     return 2
 
 
@@ -69,13 +69,16 @@ _TYPE_MAP: dict[str, ChunkType] = {
     "Footer": ChunkType.uncategorized,
 }
 
-_CODE_OVERRIDE_TYPES = {ChunkType.narrative, ChunkType.uncategorized}
+# Only text elements whose original type is NarrativeText or UncategorizedText
+# are candidates for the code-detection override.  Image (and other non-text
+# types) keep their mapped value regardless of text content.
+_CODE_OVERRIDE_ELEMENT_TYPES = {"NarrativeText", "UncategorizedText"}
 
 
 def _map_chunk_type(element_type: str, text: str) -> ChunkType:
     """Return the ChunkType for the element, with code-detection override."""
     chunk_type = _TYPE_MAP.get(element_type, ChunkType.uncategorized)
-    if chunk_type in _CODE_OVERRIDE_TYPES and is_code_like(text):
+    if element_type in _CODE_OVERRIDE_ELEMENT_TYPES and is_code_like(text):
         return ChunkType.code
     return chunk_type
 
@@ -92,7 +95,7 @@ def attach_sections(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     Returns a new list (does not mutate input). Heading elements themselves
     receive section_path (the path *ending* at that heading) and
-    chunk_type=HEADING. Non-heading elements receive the path of the most
+    chunk_type="heading". Non-heading elements receive the path of the most
     recent heading stack.
     """
     # Stack of (depth: int, title: str) tuples, monotonically increasing depth.
@@ -109,15 +112,13 @@ def attach_sections(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if text.strip():
                 # Compute depth before pushing
                 depth = _infer_heading_depth(text, element_type)
-                # Pop any frames with depth >= d to maintain monotonic stack
+                # Pop any frames with depth >= d to maintain monotonic stack;
+                # push after so the heading's own path ends at itself.
                 while stack and stack[-1][0] >= depth:
                     stack.pop()
                 stack.append((depth, text.strip()))
 
-            # Heading itself gets the path ending at itself (post-push path)
-            section_path = [title for (_, title) in stack]
-        else:
-            section_path = [title for (_, title) in stack]
+        section_path = [title for (_, title) in stack]
 
         section_title = section_path[-1] if section_path else ""
 
