@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import sys
 import time
@@ -8,6 +9,16 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
+
+class LowPageCoverageError(Exception):
+    """Raised when intake page coverage falls below the configured threshold.
+
+    Caught at the queue level so the bad document is quarantined without
+    killing the rest of the queue run.
+    """
+
 from pypdf import PdfReader
 
 from config.settings import SETTINGS
@@ -16,7 +27,8 @@ from ingestion.console import print_artifact, print_banner, print_kv, print_prog
 from ingestion.indexer import build_ingestion_indexer
 from ingestion.stages.cleaner import clean_elements
 from ingestion.stages.context_enrichment import enrich_elements
-from ingestion.stages.pdf_intake import process_pdf_parallel
+from ingestion.stages.pdf_intake import IntakeResult, process_pdf_parallel
+from ingestion.stages.sanitizer import sanitize_pdf
 from ingestion.trace import IngestTraceRecorder
 from orchestration.routing_registry import load_registry, merge_domain_suggestion
 from prompting.prompts import REGISTRY_UPDATE_SYSTEM_PROMPT
@@ -441,6 +453,10 @@ class IngestPipelineConfig:
     registry_provider: str
     registry_model: str
     trace_output_dir: Path
+    # Mass-ingestion robustness fields
+    mass_mode: bool = False
+    sanitize: bool = False
+    min_page_coverage: float = 0.9
 
 
 @dataclass
@@ -458,6 +474,7 @@ class IngestRunContext:
     completed_at: str | None = None
     duration_seconds: float = 0.0
     audit: "AuditLog | None" = None
+    intake_result: "IntakeResult | None" = None
 
 
 class IngestPipelineRunner:
@@ -529,16 +546,101 @@ class IngestPipelineRunner:
         if not context.pdf_path.exists():
             raise FileNotFoundError(context.pdf_path)
 
+    def _quarantine_doc(
+        self,
+        context: IngestRunContext,
+        *,
+        reason: str,
+        action: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Move the source PDF into data/failed/<stem>/ and write error.json.
+
+        Also emits an audit-log entry and then raises LowPageCoverageError so
+        the queue-level loop can cleanly catch it.
+        """
+        pdf_path = context.pdf_path
+        failed_root = pdf_path.parent.parent.parent / "data" / "failed" / pdf_path.stem
+        failed_root.mkdir(parents=True, exist_ok=True)
+
+        dest_pdf = failed_root / pdf_path.name
+        shutil.copy2(str(pdf_path), str(dest_pdf))
+
+        ts = datetime.now(timezone.utc).isoformat()
+        error_data: dict[str, Any] = {"reason": reason, "ts": ts}
+        if extra:
+            error_data.update(extra)
+        error_json_path = failed_root / "error.json"
+        with error_json_path.open("w", encoding="utf-8") as fh:
+            json.dump(error_data, fh, indent=2, ensure_ascii=False)
+
+        if context.audit is not None:
+            context.audit.record(
+                doc=pdf_path.name,
+                phase="intake_quarantine",
+                action=action,
+                inputs=error_data,
+                chosen=None,
+                confidence=None,
+                rationale=reason,
+            )
+
+        raise LowPageCoverageError(
+            f"{pdf_path.name}: quarantined ({action}): {reason}"
+        )
+
     def _intake_raw(self, context: IngestRunContext) -> None:
         config = context.config
-        context.raw_elements = process_pdf_parallel(
-            str(context.pdf_path),
+        pdf_path = context.pdf_path
+
+        # --- optional sanitizer pass (mass_mode or explicit sanitize=True) ---
+        source_for_intake = pdf_path
+        if config.sanitize:
+            sanitized_path = pdf_path.with_name(f"{pdf_path.stem}_sanitized.pdf")
+            ok = sanitize_pdf(pdf_path, sanitized_path)
+            if not ok:
+                self._quarantine_doc(
+                    context,
+                    reason="sanitizer failed to rewrite PDF",
+                    action="sanitizer_failed",
+                )
+            source_for_intake = sanitized_path
+
+        intake_result = process_pdf_parallel(
+            str(source_for_intake),
             batch_size=config.batch_size,
             max_workers=config.max_workers,
             hi_res_model_name=config.hi_res_model_name,
             min_text_chars=config.min_text_chars,
             ocr_dpi=config.ocr_dpi,
         )
+        context.intake_result = intake_result
+
+        # Clean up temporary sanitized file if we created one
+        if config.sanitize and source_for_intake != pdf_path and source_for_intake.exists():
+            try:
+                source_for_intake.unlink()
+            except Exception:
+                pass
+
+        # --- coverage threshold check ---
+        if intake_result.page_coverage_pct < config.min_page_coverage:
+            self._quarantine_doc(
+                context,
+                reason=(
+                    f"page coverage {intake_result.page_coverage_pct:.1%} "
+                    f"below threshold {config.min_page_coverage:.1%}"
+                ),
+                action="low_coverage",
+                extra={
+                    "page_coverage_pct": intake_result.page_coverage_pct,
+                    "processed_pages": intake_result.processed_pages,
+                    "total_pages": intake_result.total_pages,
+                    "failed_batches": intake_result.failed_batches,
+                },
+            )
+
+        context.raw_elements = intake_result.elements
         write_json(config.raw_output, context.raw_elements)
         print_summary(
             "Raw extraction complete",
@@ -561,13 +663,15 @@ class IngestPipelineRunner:
         )
 
     def _clean_elements(self, context: IngestRunContext) -> None:
-        context.cleaned_elements = clean_elements(context.raw_elements, drop_boilerplate=False)
+        drop_boilerplate = context.config.mass_mode
+        context.cleaned_elements = clean_elements(context.raw_elements, drop_boilerplate=drop_boilerplate)
         write_json(context.config.clean_output, context.cleaned_elements)
         print_summary(
             "Cleaning complete",
             [
                 ("raw", len(context.raw_elements)),
                 ("clean", len(context.cleaned_elements)),
+                ("drop_boilerplate", drop_boilerplate),
                 ("artifact", context.config.clean_output.name),
             ],
         )
@@ -635,6 +739,9 @@ def _trace_config_snapshot(config: IngestPipelineConfig) -> dict[str, Any]:
         "registry_provider": config.registry_provider,
         "registry_model": config.registry_model,
         "trace_output_dir": str(config.trace_output_dir),
+        "mass_mode": config.mass_mode,
+        "sanitize": config.sanitize,
+        "min_page_coverage": config.min_page_coverage,
     }
 
 
@@ -792,6 +899,38 @@ def unique_completed_path(completed_dir: Path, source_file: Path) -> Path:
     return _unique_destination_path(completed_dir, source_file)
 
 
+def _log_queue_doc_failure(
+    context: "IngestRunContext",
+    exc: Exception,
+    trace: "IngestTraceRecorder",
+) -> None:
+    """Record a per-doc failure to the trace and log it; does not raise."""
+    logger.warning(
+        "queue: document failed %s: %s",
+        context.pdf_path.name,
+        exc,
+    )
+    try:
+        trace.record_document(
+            queue_index=context.queue_index,
+            queue_total=context.queue_total,
+            source_path=context.pdf_path,
+            filename=context.pdf_path.name,
+            status="failed",
+            state_trace=context.state_trace,
+            raw_elements=len(context.raw_elements),
+            cleaned_elements=len(context.cleaned_elements),
+            started_at=context.started_at,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            duration_seconds=time.time() - context.start_time,
+            artifacts=_context_artifacts(context),
+            error=str(exc),
+        )
+    except Exception as record_exc:
+        logger.warning("queue: failed to record trace for %s: %s", context.pdf_path.name, record_exc)
+    print_artifact("trace", trace.trace_path)
+
+
 def run_directory_queue(root_dir: Path, config: IngestPipelineConfig) -> None:
     ingest_dir, completed_dir = ensure_queue_directories(root_dir)
     staged_count = stage_root_queue_files(root_dir, ingest_dir, completed_dir)
@@ -851,23 +990,24 @@ def run_directory_queue(root_dir: Path, config: IngestPipelineConfig) -> None:
                 archived_to=destination,
             )
             print_artifact("archived", destination)
-        except Exception as exc:
-            trace.record_document(
-                queue_index=context.queue_index,
-                queue_total=context.queue_total,
-                source_path=context.pdf_path,
-                filename=context.pdf_path.name,
-                status="failed",
-                state_trace=context.state_trace,
-                raw_elements=len(context.raw_elements),
-                cleaned_elements=len(context.cleaned_elements),
-                started_at=context.started_at,
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                duration_seconds=time.time() - context.start_time,
-                artifacts=_context_artifacts(context),
-                error=str(exc),
-            )
-            print_artifact("trace", trace.trace_path)
-            raise
+        except (LowPageCoverageError, Exception) as exc:
+            # Log failure but continue to next document so one bad PDF can't
+            # kill the whole queue run.
+            _log_queue_doc_failure(context, exc, trace)
+            # Attempt to record failure in a standalone audit log entry so the
+            # failure trail is always inspectable even without a runner audit.
+            try:
+                if context.audit is not None:
+                    context.audit.record(
+                        doc=context.pdf_path.name,
+                        phase="queue_error",
+                        action="document_failed",
+                        inputs=None,
+                        chosen=None,
+                        confidence=None,
+                        rationale=str(exc),
+                    )
+            except Exception:
+                pass
     print_artifact("trace", trace.trace_path)
     print_banner("QUEUE COMPLETE", [f"Processed documents: {total}"], char="=")

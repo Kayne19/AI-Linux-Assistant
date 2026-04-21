@@ -33,6 +33,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--registry-provider", default=SETTINGS.registry_updater.provider)
     parser.add_argument("--registry-model", default=SETTINGS.registry_updater.model)
     parser.add_argument("--trace-output-dir", default="ingest_traces")
+    # Mass-ingestion robustness flags
+    parser.add_argument(
+        "--mass-mode",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable mass-ingestion mode: runs sanitizer before intake, enables "
+            "drop_boilerplate in the cleaner, and enforces the page-coverage threshold."
+        ),
+    )
+    parser.add_argument(
+        "--sanitize",
+        action="store_true",
+        default=False,
+        help="Run the PDF sanitizer before intake even when --mass-mode is not set.",
+    )
+    parser.add_argument(
+        "--min-page-coverage",
+        type=float,
+        default=0.9,
+        help=(
+            "Minimum fraction of pages that must be successfully processed. "
+            "Documents below this threshold are quarantined. Default: 0.9"
+        ),
+    )
     return parser
 
 
@@ -44,6 +69,10 @@ def resolve_path(path_str: str) -> Path:
 
 
 def build_config(args) -> IngestPipelineConfig:
+    # --mass-mode implies sanitize=True; --sanitize can also enable it independently
+    mass_mode = getattr(args, "mass_mode", False)
+    sanitize = mass_mode or getattr(args, "sanitize", False)
+    min_page_coverage = getattr(args, "min_page_coverage", 0.9)
     return IngestPipelineConfig(
         raw_output=resolve_path(args.raw_output),
         clean_output=resolve_path(args.clean_output),
@@ -60,6 +89,9 @@ def build_config(args) -> IngestPipelineConfig:
         registry_provider=args.registry_provider,
         registry_model=args.registry_model,
         trace_output_dir=resolve_path(args.trace_output_dir),
+        mass_mode=mass_mode,
+        sanitize=sanitize,
+        min_page_coverage=min_page_coverage,
     )
 
 

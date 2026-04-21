@@ -202,6 +202,10 @@ If you modify ingestion, preserve these invariants:
 
 As of T5, registry update decisions are applied autonomously without human prompts. The `auto_apply_registry_suggestion` function validates LLM output and accepts or rejects it: a suggestion is skipped (treated as a no-op) if the LLM returns nothing, an unrecognized action, or an `upsert` with no label; otherwise the suggestion is accepted as-is. Every decision is written as a JSON line to `Back-end/ingest_traces/audit_<run_id>.jsonl` via the `AuditLog` instance that `IngestPipelineRunner` creates at the start of each `run()` call and closes in a `finally` block. The CLI (`scripts/ingest/ingest_pipeline.py`) no longer prompts interactively when no path argument is given; it prints usage to stderr and exits with code 2.
 
+## Mass-Mode and Intake Robustness
+
+Pass `--mass-mode` to the CLI to enable unattended bulk ingestion. Mass mode activates three behaviors: (1) a sanitizer pre-pass (`stages/sanitizer.py`) that rewrites each PDF via pypdf before intake — stripping `/Annots` and normalizing structure — quarantining the document immediately if sanitization fails; (2) a page-coverage threshold (default 0.9) that quarantines any document whose successfully processed pages fall below the fraction; (3) `drop_boilerplate=True` in the cleaner to strip repeated headers/footers across pages. Fine-grained control is available via `--sanitize` (sanitizer only) and `--min-page-coverage <float>`. Quarantined documents are copied to `Back-end/data/failed/<stem>/` along with an `error.json` containing `{reason, page_coverage_pct, processed_pages, total_pages, failed_batches, ts}`. Every quarantine event is written to the per-run audit JSONL with `phase="intake_quarantine"`. Batch-level failures within a single document are now tracked as structured `failed_batches` in `IntakeResult` rather than silently dropped.
+
 ## Files To Read First
 
 1. [app/ingestion/pipeline.py](app/ingestion/pipeline.py)
