@@ -131,6 +131,9 @@ def main() -> int:
         registry_provider=config.registry_provider,
         registry_model=config.registry_model,
         trace_output_dir=config.trace_output_dir,
+        mass_mode=config.mass_mode,
+        sanitize=config.sanitize,
+        min_page_coverage=config.min_page_coverage,
     )
     return 0
 

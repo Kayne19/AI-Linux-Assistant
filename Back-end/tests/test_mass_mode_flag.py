@@ -1,14 +1,34 @@
 """Tests for --mass-mode, --sanitize, and --min-page-coverage CLI flags.
 
 Uses build_parser + build_config directly rather than subprocess so the test
-stays fast and doesn't need a full environment import.
+stays fast and doesn't need a full environment import. Also confirms that
+run_pipeline itself accepts the three kwargs via inspect.signature.
 """
 
+import inspect
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+from ingestion.pipeline import run_pipeline
+
+
+# ---------------------------------------------------------------------------
+# Signature tests — run_pipeline must accept the three mass-ingestion kwargs
+# ---------------------------------------------------------------------------
+
+def test_run_pipeline_accepts_mass_mode():
+    assert "mass_mode" in inspect.signature(run_pipeline).parameters
+
+
+def test_run_pipeline_accepts_sanitize():
+    assert "sanitize" in inspect.signature(run_pipeline).parameters
+
+
+def test_run_pipeline_accepts_min_page_coverage():
+    assert "min_page_coverage" in inspect.signature(run_pipeline).parameters
 
 # ---------------------------------------------------------------------------
 # Import script helpers (path manipulation mirrors what the script does)

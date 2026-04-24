@@ -1,6 +1,5 @@
 """Tests for stages/sanitizer.py."""
 
-import io
 from pathlib import Path
 
 import pytest

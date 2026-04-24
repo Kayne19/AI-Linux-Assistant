@@ -11,14 +11,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-
-class LowPageCoverageError(Exception):
-    """Raised when intake page coverage falls below the configured threshold.
-
-    Caught at the queue level so the bad document is quarantined without
-    killing the rest of the queue run.
-    """
-
 from pypdf import PdfReader
 
 from config.settings import SETTINGS
@@ -37,6 +29,14 @@ from providers.google_caller import GoogleWorker
 from providers.local_caller import LocalWorker
 from providers.openAI_caller import OpenAIWorker
 from retrieval.config import load_retrieval_config
+
+
+class LowPageCoverageError(Exception):
+    """Raised when intake page coverage falls below the configured threshold.
+
+    Caught at the queue level so the bad document is quarantined without
+    killing the rest of the queue run.
+    """
 
 
 REGISTRY_UPDATE_OUTPUT_SCHEMA = {
@@ -560,13 +560,13 @@ class IngestPipelineRunner:
         the queue-level loop can cleanly catch it.
         """
         pdf_path = context.pdf_path
-        failed_root = pdf_path.parent.parent.parent / "data" / "failed" / pdf_path.stem
+        failed_root = pdf_path.parent.parent / "failed" / pdf_path.stem
         failed_root.mkdir(parents=True, exist_ok=True)
 
         dest_pdf = failed_root / pdf_path.name
         shutil.copy2(str(pdf_path), str(dest_pdf))
 
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
         error_data: dict[str, Any] = {"reason": reason, "ts": ts}
         if extra:
             error_data.update(extra)
@@ -774,6 +774,9 @@ def run_pipeline(
     registry_provider: str,
     registry_model: str,
     trace_output_dir: Path,
+    mass_mode: bool = False,
+    sanitize: bool = False,
+    min_page_coverage: float = 0.9,
 ) -> IngestRunContext:
     config = IngestPipelineConfig(
         raw_output=raw_output,
@@ -791,6 +794,9 @@ def run_pipeline(
         registry_provider=registry_provider,
         registry_model=registry_model,
         trace_output_dir=trace_output_dir,
+        mass_mode=mass_mode,
+        sanitize=sanitize,
+        min_page_coverage=min_page_coverage,
     )
     runner = IngestPipelineRunner(config)
     trace = IngestTraceRecorder(
@@ -990,7 +996,7 @@ def run_directory_queue(root_dir: Path, config: IngestPipelineConfig) -> None:
                 archived_to=destination,
             )
             print_artifact("archived", destination)
-        except (LowPageCoverageError, Exception) as exc:
+        except Exception as exc:
             # Log failure but continue to next document so one bad PDF can't
             # kill the whole queue run.
             _log_queue_doc_failure(context, exc, trace)

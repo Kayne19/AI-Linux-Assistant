@@ -5,12 +5,7 @@ run through partition_pdf.
 """
 
 import json
-import shutil
-import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -257,3 +252,34 @@ class TestSufficientCoverageNoQuarantine:
             runner._intake_raw(context)
 
         assert context.raw_elements == _full_coverage_result().elements
+
+
+# ---------------------------------------------------------------------------
+# Tests: quarantine path resolves relative to queue root (not repo layout)
+# ---------------------------------------------------------------------------
+
+class TestQuarantinePathQueueRelative:
+    def test_non_standard_queue_layout(self, tmp_path):
+        """Quarantine must land at <queue_root>/failed/<stem>/ for any queue root.
+
+        Layout: tmp_path/myqueue/to_ingest/sample.pdf
+        Expected: tmp_path/myqueue/failed/sample/
+        """
+        to_ingest = tmp_path / "myqueue" / "to_ingest"
+        to_ingest.mkdir(parents=True)
+        pdf = _make_pdf(to_ingest, stem="sample")
+        expected_failed_dir = tmp_path / "myqueue" / "failed" / "sample"
+
+        config = _minimal_config(tmp_path, min_page_coverage=0.9)
+
+        with patch("ingestion.pipeline.process_pdf_parallel", return_value=_low_coverage_result()):
+            runner = IngestPipelineRunner.__new__(IngestPipelineRunner)
+            runner.config = config
+            context = IngestRunContext(pdf_path=pdf, config=config, audit=MagicMock())
+            try:
+                runner._intake_raw(context)
+            except LowPageCoverageError:
+                pass
+
+        assert expected_failed_dir.exists(), f"Expected quarantine dir: {expected_failed_dir}"
+        assert (expected_failed_dir / "error.json").exists()
