@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -212,6 +213,7 @@ class OpenAIResponsesClient:
         truncation: str | None = None,
         user: str | None = None,
         metadata: dict[str, Any] | None = None,
+        background: bool = False,
     ) -> Any:
         request_kwargs: dict[str, Any] = {
             "model": self.config.model,
@@ -249,6 +251,9 @@ class OpenAIResponsesClient:
         }
         if cleaned_metadata:
             request_kwargs["metadata"] = cleaned_metadata
+        if background:
+            request_kwargs["background"] = True
+
         return self.client.responses.create(**request_kwargs)
 
     def create_conversation(
@@ -294,7 +299,16 @@ class OpenAIResponsesClient:
                 "strict": True,
                 "schema": schema,
             },
+            background=True,
         )
+
+        while True:
+            status = str(_item_get(response, "status", "")).strip().lower()
+            if status in ("completed", "failed", "incomplete", "cancelled"):
+                break
+            time.sleep(2)
+            response = self.client.responses.retrieve(_item_get(response, "id"))
+
         self._raise_for_refusal_or_incomplete(response, schema_name=schema_name)
         payload_text = self._extract_output_text(response).strip()
         if not payload_text:

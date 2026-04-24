@@ -1,0 +1,24 @@
+{
+  "planning_brief": "Create a high-complexity, cascading Linux troubleshooting benchmark. The scenario must NOT be a simple one-shot fix. It should involve a causal chain of faults across multiple services where resolving the surface symptom reveals a deeper, hidden issue, and that issue may in turn trigger a regression if handled recklessly.",
+  "target_image": "debian-12-ssm-golden",
+  "scenario_name_hint": "cascading-db-proxy-leak",
+  "constraints": [
+    "The environment must contain multiple interacting components (e.g., Nginx, a Python/FastAPI app, and a Redis or Postgres database).",
+    "Layered Symptoms: The initial symptom (e.g., 502 Bad Gateway) must be caused by a surface fault (e.g., bad systemd ExecStart path).",
+    "Causal Chain: Fixing the surface fault must reveal a hidden fault (e.g., the service starts but cannot connect to the DB because of a network bind mismatch or a legacy hardcoded credential error).",
+    "Resource/State Dependency: A third, deeper fault must exist that only manifests under specific conditions (e.g., a Redis maxmemory limit or a stale PID file preventing a clean restart after the first two fixes).",
+    "Realistic Narrative: Provide a believable admin backstory for why these services exist and what changed recently (e.g., 'a junior admin tried to migrate the app to a new directory and harden security').",
+    "State Awareness: The assistant must benefit from remembering earlier commands, logs, and configuration values to solve the final stage.",
+    "Regressions: Identify at least one common 'reckless' fix (like binding Redis to 0.0.0.0 or deleting an entire config folder) that should be flagged in the judge rubric as a failure in professional state awareness.",
+    "Repair checks must verify the end-to-end functional success (e.g., a curl that triggers a full DB write/read), not just a service 'active' state.",
+    "The turn budget should be high (40-60 turns) to support deep, multi-session troubleshooting and state-heavy reasoning."
+  ],
+  "tags": [
+    "cascading-faults",
+    "multi-service",
+    "state-awareness",
+    "networking",
+    "redis",
+    "persistence"
+  ]
+}

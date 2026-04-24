@@ -2,11 +2,19 @@
 
 Use this file for shared agent workflow and doc routing. Keep subsystem detail in the dedicated markdown files.
 
-## Sub-Agent Model Preference
+## Sub-Agent Routing Rules
 
-- For read-only tasks (audits, exploration, research, doc review) dispatch sub-agents using the latest available Gemini model via the `mcp__ai-cli__run` tool. Google models are preferred for these tasks to conserve Claude tokens.
-- Use Claude models for tasks that require code generation, editing, or any writes to the codebase.
-- Always instruct read-only Gemini agents explicitly that they must not modify files.
+- The orchestrator should preserve its own context for coordination, integration, and final judgment. Do not use the orchestrator as the default code writer when a scoped implementation can be delegated or returned to an existing capable sub-agent.
+- Mandatory routing: only Gemini read-only agents may be launched through `mcp__ai-cli__run`. All GPT/Codex implementation, review, and audit agents must be launched through the native Codex sub-agent spawner.
+- Use native Codex sub-agents for ChatGPT/GPT implementation, audit, and review work. Do not spawn ChatGPT/GPT agents through `mcp__ai-cli__run`; the MCP AI CLI is reserved for Gemini read-only agents in this repository workflow.
+- Use Gemini only for read-only exploration, repo reading, audits, research, doc review, test-output analysis, and similar investigation. Gemini agents are explicitly allowed to read repository files for these read-only tasks. They must not modify files, run write-oriented commands, or be assigned code generation.
+- For read-only exploration tasks, dispatch Gemini sub-agents with the latest available Gemini model via `mcp__ai-cli__run`. Google models are preferred for these tasks to conserve Codex/GPT tokens.
+- Always instruct read-only Gemini agents explicitly that they have permission to read the repo and that they must not modify files.
+- Use GPT/Codex agents for tasks that require code generation, editing, or any writes to the codebase. Default code-writing workers should be GPT 5.5 low unless the task is mechanical enough for GPT 5.4 mini high, or risky enough to justify a stronger tier.
+- A mechanical worker is a GPT 5.4 mini high native Codex sub-agent assigned to a narrow, low-risk, already-designed edit where the correct pattern is obvious from nearby code. Appropriate mechanical work includes adding or updating straightforward tests for existing behavior, applying the same small change across repeated call sites, renaming symbols after the design is settled, updating docs to match completed code, fixing lint/type errors with clear compiler messages, or wiring a simple field through existing request/response models. Do not use a mechanical worker for architecture changes, state-machine changes, auth/security logic, persistence semantics, concurrency behavior, provider/tool-loop logic, retrieval ranking behavior, or ambiguous bugs that require deciding what the system should do.
+- Use GPT 5.5 high as the preferred audit agent for completed implementation work. If the audit agent finds a concrete, localized issue it already understands, it should fix the issue itself instead of sending it back through the orchestrator or spawning another worker. Escalate broad, ambiguous, or cross-boundary findings back to the orchestrator for decision.
+- Before spawning any new sub-agent, check whether an existing agent already has the relevant context and can safely perform the next step. Reuse existing agents for follow-up questions, fixes in their owned files, and test failures caused by their own patches.
+- Keep ownership boundaries explicit: workers may fix issues inside their assigned scope; auditors may fix scoped findings they fully understand; explorers remain read-only; cross-cutting design or ownership changes go back to the orchestrator.
 - **Parallel agent rate limits:** Running 5+ Gemini agents simultaneously will hit capacity limits (`429 MODEL_CAPACITY_EXHAUSTED`). The agents retry with backoff and eventually complete, but total wall time can stretch to 30+ minutes. Expect this and use `mcp__ai-cli__wait` with a generous timeout (600s+), or poll with `mcp__ai-cli__list_processes` / `mcp__ai-cli__get_result` instead of blocking. Stagger large batches if rate pressure is a concern.
 - **Rate limits are per model tier:** Quota is shared across all concurrent agents using the same model (e.g. all `gemini-3.1-pro-preview` agents share one bucket). If rate pressure is high, spreading agents across tiers (e.g. some on `gemini-3.1-pro-preview`, others on `gemini-3-flash-preview`) can reduce contention.
 
@@ -83,6 +91,16 @@ cd Back-end && python scripts/db/init_postgres_schema.py
 ## Testing Expectations
 
 - Tests live under `Back-end/tests/` and should be named `test_*.py`.
+- Run the smallest test that can disprove the change. Prefer focused test files or pytest node IDs over full suites while iterating.
+- Avoid dumping large test output into the orchestrator context. Use quiet pytest output, short tracebacks, early failure, and log files when useful: `python -m pytest tests/test_file.py -q --tb=short --disable-warnings --maxfail=1`.
+- If a broader suite is needed, run it near the end and summarize only the command, pass/fail result, failed test names, and the relevant traceback excerpt. Do not paste full logs unless the full output is needed for diagnosis.
+- The worker that wrote a patch should run the first targeted verification for that patch. If those tests fail, return the failure to the same worker when possible because it already owns the context.
+- Gemini read-only agents may inspect saved test logs and summarize failures, but they must not fix test failures or edit files.
+- Docs-only changes do not require tests.
+- Tiny mechanical edits may use no tests or one targeted test when the behavior risk is negligible.
+- Localized backend changes should run one focused pytest file or node ID that covers the touched behavior.
+- FSM, provider/tool-loop, retrieval, memory, streaming, auth/security, persistence, or concurrency changes require targeted tests for the touched behavior and relevant regression coverage.
+- Large integration changes should run focused tests during implementation and a broader suite once near completion.
 - Coverage priorities are router flow, prompt regressions, provider tool-loop behavior, retrieval behavior, and the memory pipeline (`extract -> resolve -> commit`).
 - Durable chat-run behavior should cover idempotent create-run, per-chat/per-user concurrency policy, event replay ordering, and terminalization (`completed` / `failed` / `cancelled`).
 - When changing FSMs, update tests to assert the expected state trace.
