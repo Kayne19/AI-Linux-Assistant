@@ -18,9 +18,18 @@ from ingestion.audit import AuditLog
 from ingestion.console import print_artifact, print_banner, print_kv, print_progress, print_state, print_summary
 from ingestion.indexer import build_ingestion_indexer
 from ingestion.stages.cleaner import clean_elements
-from ingestion.stages.context_enrichment import enrich_elements
+from ingestion.stages.context_enrichment import (
+    build_enrichment_requests,
+    enrich_batch_merge,
+    enrich_batch_poll,
+    enrich_batch_prepare,
+    enrich_batch_submit,
+    enrich_elements,
+    enrich_sync,
+)
 from ingestion.stages.pdf_intake import IntakeResult, process_pdf_parallel
 from ingestion.stages.sanitizer import sanitize_pdf
+from ingestion.doc_state import DocState, save_state, load_state, state_dir
 from ingestion.trace import IngestTraceRecorder
 from orchestration.routing_registry import load_registry, merge_domain_suggestion
 from prompting.prompts import REGISTRY_UPDATE_SYSTEM_PROMPT
@@ -425,15 +434,25 @@ def update_routing_registry(
 class IngestState(str, Enum):
     INITIALIZED = "INITIALIZED"
     VALIDATE_INPUT = "VALIDATE_INPUT"
+    LOAD_SIDECAR = "LOAD_SIDECAR"
     INTAKE_RAW = "INTAKE_RAW"
     EXPORT_TEXT = "EXPORT_TEXT"
+    EXTRACT_IDENTITY = "EXTRACT_IDENTITY"
+    RESOLVE_IDENTITY = "RESOLVE_IDENTITY"
     UPDATE_REGISTRY = "UPDATE_REGISTRY"
     CLEAN_ELEMENTS = "CLEAN_ELEMENTS"
-    ENRICH_CONTEXT = "ENRICH_CONTEXT"
+    DETECT_SECTIONS = "DETECT_SECTIONS"
+    ENRICH_CONTEXT = "ENRICH_CONTEXT"        # sync path
+    ENRICH_PREPARE = "ENRICH_PREPARE"        # batch path: build JSONL
+    ENRICH_SUBMIT = "ENRICH_SUBMIT"          # batch path: upload + create
+    AWAITING_ENRICHMENT = "AWAITING_ENRICHMENT"  # parked between phase 1 and phase 2
+    ENRICH_POLL = "ENRICH_POLL"
+    ENRICH_MERGE = "ENRICH_MERGE"
     FINALIZE_OUTPUT = "FINALIZE_OUTPUT"
     INGEST_VECTOR_DB = "INGEST_VECTOR_DB"
     CLEANUP_ARTIFACTS = "CLEANUP_ARTIFACTS"
     COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
 
 
 @dataclass(frozen=True)
@@ -457,6 +476,9 @@ class IngestPipelineConfig:
     mass_mode: bool = False
     sanitize: bool = False
     min_page_coverage: float = 0.9
+    # Two-phase batch-mode fields
+    batch_mode: bool = False            # when True, phase 1 stops after ENRICH_PREPARE
+    ingest_state_dir: Path | None = None  # parent dir for durable per-doc state
 
 
 @dataclass
@@ -475,6 +497,9 @@ class IngestRunContext:
     duration_seconds: float = 0.0
     audit: "AuditLog | None" = None
     intake_result: "IntakeResult | None" = None
+    doc_id: str | None = None                 # canonical_source_id; stem fallback
+    enrichment_requests: list = field(default_factory=list)
+    doc_state_path: Path | None = None
 
 
 class IngestPipelineRunner:
@@ -509,6 +534,18 @@ class IngestPipelineRunner:
             self._update_registry(context)
             self._transition(context, IngestState.CLEAN_ELEMENTS)
             self._clean_elements(context)
+            if self.config.batch_mode:
+                self._transition(context, IngestState.ENRICH_PREPARE)
+                self._enrich_prepare(context)
+                self._transition(context, IngestState.AWAITING_ENRICHMENT)
+                self._park_for_batch(context)
+                duration = time.time() - context.start_time
+                context.duration_seconds = duration
+                context.completed_at = datetime.now(timezone.utc).isoformat()
+                print(
+                    f"🅿️  Parked {self._document_label(context)} at AWAITING_ENRICHMENT in {duration:.2f}s"
+                )
+                return context
             self._transition(context, IngestState.ENRICH_CONTEXT)
             self._enrich_context(context)
             self._transition(context, IngestState.FINALIZE_OUTPUT)
@@ -688,6 +725,98 @@ class IngestPipelineRunner:
             },
         )
 
+    def _doc_id_for(self, context: IngestRunContext) -> str:
+        return context.doc_id or context.pdf_path.stem
+
+    def _enrich_prepare(self, context: IngestRunContext) -> None:
+        """Build per-chunk enrichment requests and write the Batch API JSONL.
+
+        In batch mode the sync enricher is not called. Instead we stage
+        ``batch_input.jsonl`` + serialized requests under the doc's state dir,
+        leaving the actual submit/poll/merge to Phase 2.
+        """
+        with open(context.config.clean_output, "r", encoding="utf-8") as handle:
+            elements = json.load(handle)
+        with open(context.config.context_output, "r", encoding="utf-8") as handle:
+            full_doc_context = handle.read()
+
+        requests = build_enrichment_requests(
+            elements,
+            full_doc_context,
+            model=context.config.enrichment_model,
+        )
+        context.enrichment_requests = list(requests)
+        context.cleaned_elements = elements
+
+        if context.config.ingest_state_dir is None:
+            raise RuntimeError("batch_mode requires IngestPipelineConfig.ingest_state_dir")
+
+        doc_id = self._doc_id_for(context)
+        dir_path = state_dir(context.config.ingest_state_dir, doc_id)
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        batch_input_path = dir_path / "batch_input.jsonl"
+        enrich_batch_prepare(requests, batch_input_path)
+
+        requests_path = dir_path / "requests.json"
+        requests_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "custom_id": r.custom_id,
+                        "element_index": r.element_index,
+                        "system_prompt": r.system_prompt,
+                        "user_message": r.user_message,
+                        "model": r.model,
+                        "temperature": r.temperature,
+                        "max_output_tokens": r.max_output_tokens,
+                    }
+                    for r in requests
+                ]
+            )
+        )
+
+        cleaned_path = dir_path / "cleaned.json"
+        cleaned_path.write_text(json.dumps(elements))
+        context_path = dir_path / "context.txt"
+        context_path.write_text(full_doc_context)
+
+        print_summary(
+            "Batch JSONL prepared",
+            [
+                ("doc_id", doc_id),
+                ("chunks", len(requests)),
+                ("batch_input", batch_input_path.name),
+            ],
+        )
+
+    def _park_for_batch(self, context: IngestRunContext) -> None:
+        """Persist DocState after a successful ENRICH_PREPARE."""
+        doc_id = self._doc_id_for(context)
+        state = DocState(
+            doc_id=doc_id,
+            source_pdf=str(context.pdf_path.resolve()),
+            state=IngestState.AWAITING_ENRICHMENT.value,
+            total_chunks=len(context.enrichment_requests),
+            artifacts={
+                "raw_output": str(context.config.raw_output),
+                "clean_output": str(context.config.clean_output),
+                "context_output": str(context.config.context_output),
+                "final_output": str(context.config.final_output),
+            },
+        )
+        context.doc_state_path = save_state(context.config.ingest_state_dir, state)
+        if context.audit is not None:
+            context.audit.record(
+                doc=doc_id,
+                phase="batch_park",
+                action="await_enrichment",
+                inputs={"total_chunks": len(context.enrichment_requests)},
+                chosen={"state_path": str(context.doc_state_path)},
+                confidence=None,
+                rationale="Phase 1 complete; document parked pending batch enrichment.",
+            )
+
     def _finalize_output(self, context: IngestRunContext) -> None:
         generated_final_output = context.config.clean_output.with_name(f"{context.config.clean_output.stem}_final.json")
         context.generated_final_output = generated_final_output
@@ -742,6 +871,8 @@ def _trace_config_snapshot(config: IngestPipelineConfig) -> dict[str, Any]:
         "mass_mode": config.mass_mode,
         "sanitize": config.sanitize,
         "min_page_coverage": config.min_page_coverage,
+        "batch_mode": config.batch_mode,
+        "ingest_state_dir": str(config.ingest_state_dir) if config.ingest_state_dir else None,
     }
 
 
@@ -777,6 +908,8 @@ def run_pipeline(
     mass_mode: bool = False,
     sanitize: bool = False,
     min_page_coverage: float = 0.9,
+    batch_mode: bool = False,
+    ingest_state_dir: Path | None = None,
 ) -> IngestRunContext:
     config = IngestPipelineConfig(
         raw_output=raw_output,
@@ -797,6 +930,8 @@ def run_pipeline(
         mass_mode=mass_mode,
         sanitize=sanitize,
         min_page_coverage=min_page_coverage,
+        batch_mode=batch_mode,
+        ingest_state_dir=ingest_state_dir,
     )
     runner = IngestPipelineRunner(config)
     trace = IngestTraceRecorder(

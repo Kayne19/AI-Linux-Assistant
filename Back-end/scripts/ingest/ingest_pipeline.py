@@ -58,6 +58,20 @@ def build_parser() -> argparse.ArgumentParser:
             "Documents below this threshold are quarantined. Default: 0.9"
         ),
     )
+    parser.add_argument(
+        "--batch-mode",
+        action="store_true",
+        default=False,
+        help=(
+            "Run Phase 1 only: stop after ENRICH_PREPARE and park each document "
+            "under --ingest-state-dir for later enrichment by scripts/ingest/batch_runner.py."
+        ),
+    )
+    parser.add_argument(
+        "--ingest-state-dir",
+        default="ingest_state",
+        help="Directory holding per-document durable state for Phase 2. Default: ingest_state",
+    )
     return parser
 
 
@@ -73,6 +87,8 @@ def build_config(args) -> IngestPipelineConfig:
     mass_mode = getattr(args, "mass_mode", False)
     sanitize = mass_mode or getattr(args, "sanitize", False)
     min_page_coverage = getattr(args, "min_page_coverage", 0.9)
+    batch_mode = getattr(args, "batch_mode", False)
+    ingest_state_dir = resolve_path(getattr(args, "ingest_state_dir", "ingest_state")) if batch_mode else None
     return IngestPipelineConfig(
         raw_output=resolve_path(args.raw_output),
         clean_output=resolve_path(args.clean_output),
@@ -92,6 +108,8 @@ def build_config(args) -> IngestPipelineConfig:
         mass_mode=mass_mode,
         sanitize=sanitize,
         min_page_coverage=min_page_coverage,
+        batch_mode=batch_mode,
+        ingest_state_dir=ingest_state_dir,
     )
 
 
@@ -134,6 +152,8 @@ def main() -> int:
         mass_mode=config.mass_mode,
         sanitize=config.sanitize,
         min_page_coverage=config.min_page_coverage,
+        batch_mode=config.batch_mode,
+        ingest_state_dir=config.ingest_state_dir,
     )
     return 0
 
