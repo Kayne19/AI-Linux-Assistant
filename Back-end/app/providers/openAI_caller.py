@@ -7,10 +7,16 @@ from orchestration.run_control import invoke_cancel_check
 from providers.structured_output import (
     is_valid_json_text,
     require_output_schema,
-    schema_name,
     warning_payload,
 )
 from providers.step_protocol import ProviderStepResult, ProviderToolCall
+from providers.openai_request_builder import (
+    build_responses_request_kwargs,
+    build_structured_output_kwargs,
+    normalize_strict_schema,
+    schema_allows_null,
+    make_schema_nullable,
+)
 
 try:
     from dotenv import load_dotenv
@@ -51,56 +57,13 @@ class OpenAICaller:
         return messages
 
     def _schema_allows_null(self, schema):
-        if not isinstance(schema, dict):
-            return False
-        schema_type = schema.get("type")
-        if schema_type == "null":
-            return True
-        if isinstance(schema_type, list) and "null" in schema_type:
-            return True
-        if None in (schema.get("enum") or []):
-            return True
-        for variant_key in ("anyOf", "oneOf"):
-            variants = schema.get(variant_key) or []
-            if any(isinstance(variant, dict) and self._schema_allows_null(variant) for variant in variants):
-                return True
-        return False
+        return schema_allows_null(schema)
 
     def _make_schema_nullable(self, schema):
-        if self._schema_allows_null(schema):
-            return schema
-        return {"anyOf": [schema, {"type": "null"}]}
+        return make_schema_nullable(schema)
 
     def _normalize_strict_schema(self, schema):
-        if isinstance(schema, list):
-            return [self._normalize_strict_schema(item) for item in schema]
-        if not isinstance(schema, dict):
-            return schema
-
-        normalized = {}
-        for key, value in schema.items():
-            if key in {"properties", "items", "anyOf", "oneOf", "allOf"}:
-                continue
-            normalized[key] = value
-
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            original_required = set(schema.get("required") or [])
-            normalized_properties = {}
-            for name, subschema in properties.items():
-                normalized_subschema = self._normalize_strict_schema(subschema)
-                if name not in original_required:
-                    normalized_subschema = self._make_schema_nullable(normalized_subschema)
-                normalized_properties[name] = normalized_subschema
-            normalized["properties"] = normalized_properties
-            normalized["required"] = list(properties.keys())
-
-        if "items" in schema:
-            normalized["items"] = self._normalize_strict_schema(schema["items"])
-        for variant_key in ("anyOf", "oneOf", "allOf"):
-            if variant_key in schema:
-                normalized[variant_key] = self._normalize_strict_schema(schema[variant_key])
-        return normalized
+        return normalize_strict_schema(schema)
 
     def _translate_tools(self, tools):
         translated = []
@@ -199,17 +162,7 @@ class OpenAICaller:
         return outputs
 
     def _build_structured_output_kwargs(self, output_schema):
-        normalized_schema = self._normalize_strict_schema(output_schema)
-        return {
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": schema_name(output_schema),
-                    "schema": normalized_schema,
-                    "strict": True,
-                }
-            }
-        }
+        return build_structured_output_kwargs(output_schema)
 
     def _build_request_kwargs(
         self,
@@ -220,22 +173,16 @@ class OpenAICaller:
         structured_output=False,
         output_schema=None,
     ):
-        request_kwargs = {
-            "model": self.model,
-            "instructions": system_prompt,
-        }
-        if self.reasoning_effort:
-            request_kwargs["reasoning"] = {"effort": self.reasoning_effort}
-        if translated_tools:
-            request_kwargs["tools"] = translated_tools
-            request_kwargs["parallel_tool_calls"] = True
-        if temperature is not None and not self.reasoning_effort:
-            request_kwargs["temperature"] = temperature
-        if max_output_tokens is not None:
-            request_kwargs["max_output_tokens"] = max_output_tokens
-        if structured_output:
-            request_kwargs.update(self._build_structured_output_kwargs(output_schema))
-        return request_kwargs
+        return build_responses_request_kwargs(
+            model=self.model,
+            reasoning_effort=self.reasoning_effort,
+            system_prompt=system_prompt,
+            translated_tools=translated_tools,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            structured_output=structured_output,
+            output_schema=output_schema,
+        )
 
     def _build_prompt_cache_kwargs(self, system_prompt, translated_tools, cache_config):
         if not cache_config or not cache_config.get("enabled", True):

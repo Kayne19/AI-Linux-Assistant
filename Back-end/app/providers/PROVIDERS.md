@@ -53,3 +53,16 @@ Google-specific notes:
 - Gemini tool calls are transported through `function_declarations`, returned as `function_call` parts, and resumed with `function_response` parts
 - the main-app Google path supports the same router single-step transport contract as OpenAI and Anthropic: `start_text_step()` plus `continue_text_step()`
 - native Google web search is intentionally not enabled in this path; callers that request it should receive an explicit unsupported event instead of an implicit fallback
+
+## OpenAI Batch API wrapper (`openai_batch.py`)
+
+`OpenAIBatchClient` is a transport-only wrapper around the four Batch API operations:
+
+- `upload_jsonl(path)` — uploads a JSONL request file via `files.create(purpose="batch")`, returns the `file_id`.
+- `submit_batch(input_file_id, ...)` — calls `batches.create` and returns a `BatchSubmission` dataclass with `batch_id`, `input_file_id`, `status`, and `created_at`.
+- `get_status(batch_id)` — calls `batches.retrieve` and returns a `BatchStatus` dataclass with `status`, `output_file_id`, `error_file_id`, `request_counts` (plain dict), and `completed_at`.
+- `download_output(file_id, dest_path)` — streams the file content to disk via `files.content`, returns `dest_path`.
+
+Terminal statuses are `TERMINAL_STATUSES = frozenset({"completed", "failed", "expired", "cancelled"})`. Use `is_terminal(status)` to check.
+
+All four methods retry on 429 rate-limit errors with the same exponential backoff used by `OpenAICaller` (min 1 s, max 80 s, up to 12 attempts). Request-body construction is shared with `OpenAICaller` via `openai_request_builder.py`; both callers produce byte-identical `responses.create` payloads from `build_responses_request_kwargs`.
