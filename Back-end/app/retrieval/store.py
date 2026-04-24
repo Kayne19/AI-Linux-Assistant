@@ -25,6 +25,41 @@ class LanceDBStore:
             .to_list()
         )
 
+    def search_hybrid_scoped(
+        self,
+        query_vector,
+        query_text: str,
+        limit: int,
+        canonical_source_ids: list[str],
+    ):
+        """Hybrid search narrowed to chunks whose canonical_source_id is in *canonical_source_ids*.
+
+        An empty or None ``canonical_source_ids`` is treated as "no filter" and
+        delegates to :meth:`search_hybrid`. SQL injection is avoided by
+        escaping single quotes in each ID.
+        """
+        if not canonical_source_ids:
+            return self.search_hybrid(query_vector, query_text, limit)
+        escaped = [f"'{str(doc_id).replace(chr(39), chr(39) + chr(39))}'" for doc_id in canonical_source_ids]
+        predicate = f"canonical_source_id IN ({', '.join(escaped)})"
+        return (
+            self.open_table()
+            .search(query_type="hybrid")
+            .vector(query_vector)
+            .text(query_text)
+            .where(predicate)
+            .limit(limit)
+            .to_list()
+        )
+
+    def load_documents(self):
+        """Return every row from the (already open) documents table as a list of dicts.
+
+        ``self.table_name`` must point at the documents table for this to be
+        meaningful. Used by the scope selector.
+        """
+        return self.open_table().to_pandas().to_dict("records")
+
     def fetch_source_page_window(self, source: str, page_start: int, page_end: int, limit: int | None = None):
         escaped_source = (source or "").replace("'", "''")
         query = (
