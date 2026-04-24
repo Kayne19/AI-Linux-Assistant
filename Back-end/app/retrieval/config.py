@@ -21,6 +21,7 @@ class RetrievalConfig:
     embed_device: str | None
     rerank_device: str | None
     voyage_output_dimension: int | None
+    documents_table_name: str = "documents"
 
 
 LEGACY_EMBED_PROVIDER = "local"

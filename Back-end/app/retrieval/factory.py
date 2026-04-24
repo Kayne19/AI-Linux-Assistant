@@ -30,6 +30,11 @@ def build_store(config: RetrievalConfig):
     return LanceDBStore(config.db_path, config.table_name)
 
 
+def build_documents_store(config: RetrievalConfig):
+    """LanceDB store for the per-document identity table (T11)."""
+    return LanceDBStore(config.db_path, config.documents_table_name)
+
+
 def build_index_metadata_store(config: RetrievalConfig):
     return IndexMetadataStore(config.db_path, config.table_name, config.index_metadata_suffix)
 
