@@ -148,6 +148,8 @@ When using graphify for repo understanding:
 
 This preserves low token cost for routine questions while keeping implementation depth available on demand.
 
+Token targets are advisory. The architecture wiki should usually answer navigation questions with substantially less context than the architecture graph, and the architecture graph should usually be smaller than the deep graph. Missed targets should produce warnings and measurements, not hard failures, unless required artifacts are missing or required subsystem coverage is absent.
+
 ## Error Handling
 
 - If a required subsystem path is missing, fail with a clear message naming the missing path
@@ -226,4 +228,3 @@ The repository should have:
 - A lean architecture graph plus wiki for default navigation
 - A denser deep graph for code tracing
 - First-class representation of `eval-harness` in the architecture layer
-

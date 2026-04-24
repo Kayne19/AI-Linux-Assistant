@@ -130,9 +130,17 @@ If code changes affect one of those surfaces, updating the relevant markdown is 
 
 ## graphify
 
-This project has a graphify knowledge graph at graphify-out/.
+This project uses a two-layer graphify navigation model:
+
+- `graphify-out/architecture/` is the default navigation surface.
+- `graphify-out/architecture/wiki/index.md` is the first file to read for repo orientation.
+- `graphify-out/deep/` is reserved for exact code tracing and implementation-level path questions.
 
 Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
+- Before answering architecture or codebase questions, read `graphify-out/architecture/wiki/index.md` if it exists.
+- Use `graphify-out/architecture/graph.json` for subsystem path tracing.
+- Use `graphify-out/deep/graph.json` only when the question needs exact code-level tracing.
+- If architecture outputs are missing or stale, run `python scripts/graphify_navigation.py architecture`.
+- If code tracing outputs are needed or stale, run `python scripts/graphify_navigation.py deep`.
+- After modifying code files in this session, run `python scripts/graphify_navigation.py architecture` to refresh default navigation. Run the deep build only when the change affects tracing needs.
+- Token targets in `graphify-out/navigation.json` are advisory guardrails. Treat warnings as tuning signals, not automatic failures.
