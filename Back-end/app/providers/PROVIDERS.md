@@ -66,3 +66,9 @@ Google-specific notes:
 Terminal statuses are `TERMINAL_STATUSES = frozenset({"completed", "failed", "expired", "cancelled"})`. Use `is_terminal(status)` to check.
 
 All four methods retry on 429 rate-limit errors with the same exponential backoff used by `OpenAICaller` (min 1 s, max 80 s, up to 12 attempts). Request-body construction is shared with `OpenAICaller` via `openai_request_builder.py`; both callers produce byte-identical `responses.create` payloads from `build_responses_request_kwargs`.
+
+Ingestion batch enrichment uses the same structured-output contract as sync
+enrichment. `context_enrichment.py` attaches the JSON schema block to each
+Batch `/v1/responses` body and validates the returned JSON before mutating
+chunk metadata. The Batch client remains transport-only; it does not parse
+chunk metadata or decide which fields to keep.

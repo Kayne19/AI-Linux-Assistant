@@ -23,14 +23,43 @@ composes ``build_enrichment_requests`` + ``enrich_sync`` and writes the
 
 import json
 import hashlib
+import inspect
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ingestion.console import print_artifact, print_progress, print_state, print_summary
+from ingestion.identity.vocabularies import MajorSubsystem, coerce_enum_list
+from providers.openai_request_builder import build_structured_output_kwargs
 
 TARGET_ELEMENT_TYPES = ("NarrativeText", "ListItem", "UncategorizedText")
 MIN_CHUNK_CHARS = 50
 DOC_CONTEXT_TRUNCATE = 25000
+ENTITY_KEYS = ("commands", "paths", "packages", "services", "daemons")
+
+CHUNK_ENRICHMENT_OUTPUT_SCHEMA = {
+    "title": "chunk_enrichment_output",
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "ai_context": {"type": "string"},
+        "local_subsystems": {
+            "type": "array",
+            "items": {"type": "string", "enum": [m.value for m in MajorSubsystem]},
+        },
+        "entities": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                key: {"type": "array", "items": {"type": "string"}}
+                for key in ENTITY_KEYS
+            },
+            "required": list(ENTITY_KEYS),
+        },
+        "applies_to_override": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["ai_context", "local_subsystems", "entities", "applies_to_override"],
+}
 
 
 @dataclass(frozen=True)
@@ -49,7 +78,7 @@ class EnrichmentRequest:
     user_message: str
     model: str
     temperature: float = 0.1
-    max_output_tokens: int = 120
+    max_output_tokens: int = 220
 
 
 @dataclass
@@ -77,8 +106,10 @@ def _build_system_prompt(full_doc_context: str) -> str:
 
     You are a retrieval optimizer. Your job is to situate chunks within the document context above.
     For each request, you will receive exactly one chunk.
-    Return exactly one short, succinct sentence situating that chunk within the document context.
-    Do not use bullet points.
+    Return exactly one JSON object with ai_context, local_subsystems, entities, and applies_to_override.
+    ai_context must be one short, succinct sentence situating that chunk within the document context.
+    Use only valid local_subsystems values from the supplied schema.
+    Keep entities narrow and copy only commands, paths, packages, services, or daemons visible in the chunk.
     Do not quote large spans verbatim.
     Do not mention that the chunk was "provided" or "shown".
     """
@@ -97,12 +128,126 @@ def _custom_id_for(element_index: int, text_content: str) -> str:
     return f"chunk-{element_index:06d}-{digest}"
 
 
+def _dedupe_cap(values, *, limit: int = 12) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        if not isinstance(value, str):
+            continue
+        cleaned = " ".join(value.split()).strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _extract_json_object(text: str) -> dict | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(raw[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+_COMMAND_RE = re.compile(r"\b(?:sudo\s+)?[a-z][a-z0-9_.+-]*(?:\s+[a-z0-9_./:=@%+-]+){0,4}\b")
+_PATH_RE = re.compile(r"(?<!\w)(?:/[A-Za-z0-9._@%+=:,~-]+)+/?")
+_PACKAGE_RE = re.compile(r"\b(?:apt|apt-get|dnf|yum|pacman|apk|zypper|brew|pip)\s+(?:install|remove|add)\s+([A-Za-z0-9_.:+-]+)")
+_SERVICE_RE = re.compile(r"\b(?:systemctl|service|rc-service)\s+(?:restart|reload|start|stop|status|enable|disable)\s+([A-Za-z0-9_.@+-]+)")
+
+
+def extract_deterministic_entities(text: str) -> dict[str, list[str]]:
+    text = text or ""
+    commands = []
+    for match in _COMMAND_RE.findall(text):
+        first = match.split()[0]
+        if first in {"the", "and", "for", "with", "this", "that", "from", "when"}:
+            continue
+        if any(marker in match for marker in ("-", "/", ".")) or " " in match:
+            commands.append(match)
+    return {
+        "commands": _dedupe_cap(commands),
+        "paths": _dedupe_cap(_PATH_RE.findall(text)),
+        "packages": _dedupe_cap(_PACKAGE_RE.findall(text)),
+        "services": _dedupe_cap(_SERVICE_RE.findall(text)),
+        "daemons": [],
+    }
+
+
+def _merge_entities(llm_entities, text: str) -> dict[str, list[str]]:
+    deterministic = extract_deterministic_entities(text)
+    merged: dict[str, list[str]] = {}
+    raw = llm_entities if isinstance(llm_entities, dict) else {}
+    text_lower = text.lower()
+    for key in ENTITY_KEYS:
+        values = list(deterministic.get(key, []))
+        for candidate in raw.get(key, []) or []:
+            if not isinstance(candidate, str):
+                continue
+            cleaned = " ".join(candidate.split()).strip()
+            if not cleaned:
+                continue
+            if cleaned.lower() not in text_lower:
+                continue
+            values.append(cleaned)
+        merged[key] = _dedupe_cap(values)
+    return {key: vals for key, vals in merged.items() if vals}
+
+
+def _parse_enrichment_payload(raw_text: str, original_text: str) -> dict:
+    parsed = _extract_json_object(raw_text)
+    if parsed is None:
+        return {
+            "ai_context": (raw_text or "").strip(),
+            "local_subsystems": [],
+            "entities": extract_deterministic_entities(original_text),
+            "applies_to_override": [],
+        }
+    ai_context = parsed.get("ai_context")
+    if not isinstance(ai_context, str) or not ai_context.strip():
+        ai_context = (raw_text or "").strip()
+    local_subsystems = coerce_enum_list("major_subsystems", parsed.get("local_subsystems"))
+    local_subsystems = [value for value in local_subsystems if value != "unknown"]
+    applies_to = _dedupe_cap(parsed.get("applies_to_override") or [], limit=8)
+    return {
+        "ai_context": ai_context.strip(),
+        "local_subsystems": local_subsystems,
+        "entities": _merge_entities(parsed.get("entities"), original_text),
+        "applies_to_override": applies_to,
+    }
+
+
 def _apply_enrichment(element: dict, context_text: str) -> None:
     if "metadata" not in element:
         element["metadata"] = {}
-    element["metadata"]["ai_context"] = context_text
     original_text = element.get("text", "")
-    element["metadata"]["embedding_text"] = f"CONTEXT: {context_text}\n\nCONTENT: {original_text}"
+    payload = _parse_enrichment_payload(context_text, original_text)
+    ai_context = payload["ai_context"]
+    element["metadata"]["ai_context"] = ai_context
+    element["metadata"]["embedding_text"] = f"CONTEXT: {ai_context}\n\nCONTENT: {original_text}"
+    if payload["local_subsystems"]:
+        element["metadata"]["local_subsystems"] = payload["local_subsystems"]
+    if payload["entities"]:
+        element["metadata"]["entities"] = payload["entities"]
+    if payload["applies_to_override"]:
+        element["metadata"]["applies_to_override"] = payload["applies_to_override"]
 
 
 def build_enrichment_requests(
@@ -113,7 +258,7 @@ def build_enrichment_requests(
     target_types=TARGET_ELEMENT_TYPES,
     min_chars=MIN_CHUNK_CHARS,
     temperature: float = 0.1,
-    max_output_tokens: int = 120,
+    max_output_tokens: int = 220,
 ):
     """Return an :class:`EnrichmentRequest` per eligible element.
 
@@ -189,7 +334,7 @@ def enrich_sync(
     total = len(requests)
     for index, request in enumerate(requests, start=1):
         try:
-            context_text = worker.generate_text(
+            call_kwargs = dict(
                 system_prompt=request.system_prompt,
                 user_message=request.user_message,
                 history=[],
@@ -197,7 +342,22 @@ def enrich_sync(
                 max_output_tokens=request.max_output_tokens,
                 event_listener=_listener,
                 cache_config=effective_cache_config,
-            ).strip()
+                structured_output=True,
+                output_schema=CHUNK_ENRICHMENT_OUTPUT_SCHEMA,
+            )
+            sig = inspect.signature(worker.generate_text)
+            accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            if "structured_output" not in sig.parameters and not accepts_kwargs:
+                call_kwargs.pop("structured_output", None)
+                call_kwargs.pop("output_schema", None)
+            try:
+                context_text = worker.generate_text(**call_kwargs).strip()
+            except TypeError:
+                if "structured_output" not in call_kwargs:
+                    raise
+                call_kwargs.pop("structured_output", None)
+                call_kwargs.pop("output_schema", None)
+                context_text = worker.generate_text(**call_kwargs).strip()
             _apply_enrichment(elements[request.element_index], context_text)
             result.completed_count += 1
 
@@ -238,6 +398,7 @@ def enrich_batch_prepare(requests, out_path):
                     "input": [{"role": "user", "content": request.user_message}],
                     "temperature": request.temperature,
                     "max_output_tokens": request.max_output_tokens,
+                    **build_structured_output_kwargs(CHUNK_ENRICHMENT_OUTPUT_SCHEMA),
                 },
             }
             handle.write(json.dumps(envelope))

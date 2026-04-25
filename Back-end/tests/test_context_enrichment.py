@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from ingestion.stages.context_enrichment import (
+    CHUNK_ENRICHMENT_OUTPUT_SCHEMA,
     EnrichmentRequest,
     EnrichmentResult,
     build_enrichment_requests,
@@ -189,8 +190,8 @@ def test_enrich_sync_applies_document_cache_key_suffix():
             return super().generate_text(**kwargs)
 
     enrich_sync(requests, elements, _Capture(), full_doc_context="SAME CONTEXT")
-    assert len(seen_configs) == 2
-    assert seen_configs[0]["key_suffix"] == seen_configs[1]["key_suffix"]
+    assert len(seen_configs) >= 2
+    assert len({config["key_suffix"] for config in seen_configs}) == 1
     assert seen_configs[0]["scope"] == "ingest_enrichment"
 
 
@@ -219,6 +220,7 @@ def test_enrich_batch_prepare_writes_valid_jsonl(tmp_path):
         assert body["input"] == [{"role": "user", "content": request.user_message}]
         assert body["temperature"] == request.temperature
         assert body["max_output_tokens"] == request.max_output_tokens
+        assert body["text"]["format"]["schema"]["title"] == CHUNK_ENRICHMENT_OUTPUT_SCHEMA["title"]
 
 
 def test_enrich_batch_prepare_empty_requests_writes_empty_file(tmp_path):
@@ -294,6 +296,40 @@ def test_enrich_batch_merge_applies_ai_context_via_custom_id(tmp_path):
     assert elements[0]["metadata"]["ai_context"] == "first summary"
     assert elements[1]["metadata"]["ai_context"] == "second summary"
     assert result.cache_metrics == {"cached_tokens": 4, "input_tokens": 100, "output_tokens": 20}
+
+
+def test_enrich_batch_merge_applies_structured_chunk_metadata(tmp_path):
+    elements = [
+        {
+            "type": "NarrativeText",
+            "text": "Run systemctl restart ssh after editing /etc/ssh/sshd_config with openssh-server.",
+        }
+    ]
+    requests = build_enrichment_requests(elements, "ctx", model="m")
+    payload = {
+        "ai_context": "This explains restarting SSH after changing daemon configuration.",
+        "local_subsystems": ["networking", "bad_value"],
+        "entities": {
+            "commands": ["systemctl restart ssh"],
+            "paths": ["/etc/ssh/sshd_config"],
+            "packages": ["openssh-server"],
+            "services": ["ssh"],
+            "daemons": ["sshd"],
+        },
+        "applies_to_override": ["debian-12"],
+    }
+    results = tmp_path / "out.jsonl"
+    results.write_text(json.dumps(_result_line(requests[0].custom_id, json.dumps(payload))))
+
+    result = enrich_batch_merge(requests, results, elements)
+
+    assert result.completed_count == 1
+    metadata = elements[0]["metadata"]
+    assert metadata["ai_context"] == payload["ai_context"]
+    assert metadata["local_subsystems"] == ["networking"]
+    assert metadata["entities"]["paths"] == ["/etc/ssh/sshd_config"]
+    assert metadata["entities"]["services"] == ["ssh"]
+    assert metadata["applies_to_override"] == ["debian-12"]
 
 
 def test_enrich_batch_merge_records_unmatched_custom_ids_as_errors(tmp_path):

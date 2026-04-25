@@ -16,6 +16,7 @@ from ingestion.pipeline import (
     IngestPipelineRunner,
     IngestRunContext,
     LowPageCoverageError,
+    _filter_llm_identity_fields,
 )
 from ingestion.stages.pdf_intake import IntakeResult
 
@@ -41,10 +42,14 @@ def _minimal_config(tmp_path: Path, **overrides) -> IngestPipelineConfig:
         enrichment_reasoning_effort=None,
         registry_provider="local",
         registry_model="test-model",
+        identity_provider="local",
+        identity_model="test-model",
+        identity_reasoning_effort=None,
         trace_output_dir=tmp_path / "traces",
         mass_mode=False,
         sanitize=False,
         min_page_coverage=0.9,
+        identity_llm_infill=False,
     )
     defaults.update(overrides)
     return IngestPipelineConfig(**defaults)
@@ -60,6 +65,16 @@ def _make_pdf(tmp_path: Path, stem: str = "test") -> Path:
     with pdf.open("wb") as fh:
         writer.write(fh)
     return pdf
+
+
+class _IdentityWorker:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def generate_text(self, **kwargs):
+        self.calls.append(kwargs)
+        return json.dumps(self.payload)
 
 
 def _low_coverage_result() -> IntakeResult:
@@ -342,6 +357,67 @@ class TestPipelineIdentitySections:
         data = json.loads(state_path.read_text())
         assert data["doc_id"] == context.document_identity.canonical_source_id
         assert data["document_identity"]["canonical_title"] == "Batch Manual"
+
+    def test_resolve_identity_uses_llm_for_weak_fields(self, tmp_path):
+        pdf = _make_pdf(tmp_path, stem="weak")
+        config = _minimal_config(tmp_path, identity_llm_infill=True)
+        runner = IngestPipelineRunner.__new__(IngestPipelineRunner)
+        runner.config = config
+        runner.identity_worker = _IdentityWorker(
+            {
+                "canonical_title": "Weak Manual",
+                "title_aliases": ["weak"],
+                "source_family": "debian",
+                "product": "Debian",
+                "vendor_or_project": "debian_project",
+                "version": "12",
+                "release_date": "",
+                "doc_kind": "install_guide",
+                "trust_tier": "official",
+                "freshness_status": "current",
+                "os_family": "linux",
+                "init_systems": ["systemd"],
+                "package_managers": ["apt", "dpkg"],
+                "major_subsystems": ["package_management"],
+                "applies_to": ["debian-12"],
+                "source_url": "",
+                "rationale": "Debian installer metadata.",
+            }
+        )
+        context = IngestRunContext(
+            pdf_path=pdf,
+            config=config,
+            pdf_info={"title": "", "subject": "", "author": "", "producer": ""},
+            heuristic_signals={
+                "filename": "weak.pdf",
+                "stem": "weak",
+                "metadata": {"title": "", "subject": "", "author": "", "producer": ""},
+                "front_matter_samples": [],
+                "heading_candidates": [],
+                "version_detected": None,
+                "vendors_detected": [],
+                "outline_summary": {"top_title": None, "depth": 0, "entry_count": 0},
+            },
+            audit=None,
+        )
+
+        runner._resolve_identity(context)
+
+        assert runner.identity_worker.calls
+        assert context.document_identity.source_family == "debian"
+        assert context.document_identity.product == "Debian"
+        assert context.document_identity.trust_tier == "unknown"
+        assert context.document_identity.freshness_status == "unknown"
+
+    def test_conservative_llm_fields_are_dropped(self):
+        filtered = _filter_llm_identity_fields(
+            llm_fields={"trust_tier": "canonical", "freshness_status": "current", "doc_kind": "admin_guide"},
+            requested_fields={"trust_tier", "freshness_status", "doc_kind"},
+            audit=None,
+            doc="x.pdf",
+        )
+
+        assert filtered == {"doc_kind": "admin_guide"}
 
 
 # ---------------------------------------------------------------------------

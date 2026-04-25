@@ -103,9 +103,13 @@ Owns cleaning and deduping of extracted elements.
 Owns enrichment of eligible chunks with:
 
 - `ai_context`
+- `local_subsystems`
+- `entities`
+- `applies_to_override`
 - `embedding_text`
 
-Current enrichment uses an injected text worker and prompt caching.
+Current enrichment uses an injected text worker, strict JSON output, validation,
+deterministic entity extraction as a fallback/check, and prompt caching.
 
 ### `app/ingestion/indexer.py`
 
@@ -213,7 +217,9 @@ Pass `--mass-mode` to the CLI to enable unattended bulk ingestion. Mass mode act
 
 ## Document Identity And Metadata
 
-Every ingested document carries a structured `DocumentIdentity` (controlled-vocabulary enums for `source_family`, `vendor_or_project`, `doc_kind`, `trust_tier`, `freshness_status`, `os_family`, `init_systems`, `package_managers`, `major_subsystems`, `ingest_source_type`). Identity resolves through ordered deterministic layers — operator sidecar (`<pdf>.meta.yaml`) → first-page/TOC heuristics → PDF `/Info` metadata — and the highest-priority non-empty value wins per field. The optional LLM normalizer exists as a module but is not used by default in live ingestion. See `app/ingestion/identity/{vocabularies,schema,sidecar,pdf_meta,heuristics,llm_normalizer,resolver,registry}.py`. Each layer contribution is audit-logged.
+Every ingested document carries a structured `DocumentIdentity` (controlled-vocabulary enums for `source_family`, `vendor_or_project`, `doc_kind`, `trust_tier`, `freshness_status`, `os_family`, `init_systems`, `package_managers`, `major_subsystems`, `ingest_source_type`). Identity resolves through ordered layers — operator sidecar (`<pdf>.meta.yaml`) → strong first-page/TOC heuristics → strong PDF `/Info` metadata → LLM infill → weak deterministic values → defaults. Sidecar fields always win. The LLM normalizer runs by default for live ingestion only when deterministic output is missing or weak; pass `--no-identity-llm-infill` to disable it. Configure the normalizer with `INGEST_IDENTITY_PROVIDER`, `INGEST_IDENTITY_MODEL`, and `INGEST_IDENTITY_REASONING_EFFORT`. See `app/ingestion/identity/{vocabularies,schema,sidecar,pdf_meta,heuristics,llm_normalizer,resolver,registry}.py`. Each layer contribution is audit-logged.
+
+Weak deterministic fields include `unknown`, empty, or `other` enum values; list fields containing only `unknown`; missing product/version/release/applicability fields; and sparse heuristic identity where only filename/stem or a single vendor token supports the field. LLM values are still vocabulary-validated and invalid values are dropped or coerced to `unknown`. `trust_tier` and `freshness_status` are conservative: sidecar or strong deterministic evidence can set them, but LLM suggestions are audit-logged and not promoted automatically.
 
 `IngestPipelineRunner.run()` drives `LOAD_SIDECAR`, `EXTRACT_IDENTITY`, `RESOLVE_IDENTITY`, and `DETECT_SECTIONS` before enrichment. Section metadata is attached after cleaning and before sync or batch enrichment. The indexer (`app/ingestion/indexer.py`) receives the resolved `DocumentIdentity`, writes one row per document to the LanceDB `documents` table, and stamps `canonical_source_id`, `section_path`, `page_start`/`page_end`, `chunk_type`, and `entities` on every chunk row. The legacy no-identity indexer path remains only for direct test/backward-compatible callers.
 

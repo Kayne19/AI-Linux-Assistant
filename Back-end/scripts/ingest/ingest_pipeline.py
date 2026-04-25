@@ -15,6 +15,10 @@ from app.config.settings import SETTINGS
 from app.ingestion.pipeline import IngestPipelineConfig, run_directory_queue, run_pipeline
 
 
+def _identity_settings():
+    return getattr(SETTINGS, "ingest_identity_normalizer", SETTINGS.ingest_enricher)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the full PDF -> clean -> enrich -> LanceDB pipeline.")
     parser.add_argument("pdf_path", nargs="?", help="Path to the PDF to ingest, relative to Back-end/ or absolute.")
@@ -32,6 +36,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enrichment-reasoning-effort", default=SETTINGS.ingest_enricher.reasoning_effort or "")
     parser.add_argument("--registry-provider", default=SETTINGS.registry_updater.provider)
     parser.add_argument("--registry-model", default=SETTINGS.registry_updater.model)
+    identity_settings = _identity_settings()
+    parser.add_argument("--identity-provider", default=identity_settings.provider)
+    parser.add_argument("--identity-model", default=identity_settings.model)
+    parser.add_argument("--identity-reasoning-effort", default=identity_settings.reasoning_effort or "")
+    parser.add_argument(
+        "--no-identity-llm-infill",
+        action="store_true",
+        default=False,
+        help="Disable the default document-level LLM metadata infill step.",
+    )
     parser.add_argument("--trace-output-dir", default="ingest_traces")
     # Mass-ingestion robustness flags
     parser.add_argument(
@@ -104,12 +118,16 @@ def build_config(args) -> IngestPipelineConfig:
         enrichment_reasoning_effort=args.enrichment_reasoning_effort or None,
         registry_provider=args.registry_provider,
         registry_model=args.registry_model,
+        identity_provider=args.identity_provider,
+        identity_model=args.identity_model,
+        identity_reasoning_effort=args.identity_reasoning_effort or None,
         trace_output_dir=resolve_path(args.trace_output_dir),
         mass_mode=mass_mode,
         sanitize=sanitize,
         min_page_coverage=min_page_coverage,
         batch_mode=batch_mode,
         ingest_state_dir=ingest_state_dir,
+        identity_llm_infill=not args.no_identity_llm_infill,
     )
 
 
@@ -148,12 +166,16 @@ def main() -> int:
         enrichment_reasoning_effort=config.enrichment_reasoning_effort,
         registry_provider=config.registry_provider,
         registry_model=config.registry_model,
+        identity_provider=config.identity_provider,
+        identity_model=config.identity_model,
+        identity_reasoning_effort=config.identity_reasoning_effort,
         trace_output_dir=config.trace_output_dir,
         mass_mode=config.mass_mode,
         sanitize=config.sanitize,
         min_page_coverage=config.min_page_coverage,
         batch_mode=config.batch_mode,
         ingest_state_dir=config.ingest_state_dir,
+        identity_llm_infill=config.identity_llm_infill,
     )
     return 0
 

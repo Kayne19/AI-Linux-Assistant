@@ -1,6 +1,8 @@
 """Merge loader outputs into a validated DocumentIdentity by layer precedence.
 
-Precedence (strict): sidecar > heuristics > pdf_meta > llm
+Default precedence is sidecar > heuristics > pdf_meta > llm. Callers may mark
+deterministic fields as weak, which lets LLM infill fill those gaps without
+overriding sidecar or strong deterministic values.
 """
 
 import re
@@ -188,6 +190,7 @@ def _merge_layers(
     heuristic_fields: dict,
     pdf_meta_fields: dict,
     llm_fields: dict,
+    weak_deterministic_fields: set[str] | None = None,
 ) -> tuple[dict, list[LayerContribution]]:
     """For each field, pick the first non-empty layer value."""
     # All possible field names from all layers
@@ -204,12 +207,19 @@ def _merge_layers(
         "pipeline_version",
     }
 
-    layers_ordered = [
+    default_layers = [
         ("sidecar", sidecar or {}),
         ("heuristics", heuristic_fields),
         ("pdf_meta", pdf_meta_fields),
         ("llm", llm_fields),
     ]
+    weak_layers = [
+        ("sidecar", sidecar or {}),
+        ("llm", llm_fields),
+        ("heuristics", heuristic_fields),
+        ("pdf_meta", pdf_meta_fields),
+    ]
+    weak_deterministic_fields = weak_deterministic_fields or set()
 
     merged: dict = {}
     contributions: list[LayerContribution] = []
@@ -219,10 +229,11 @@ def _merge_layers(
         winner_value = None
 
         layer_values: dict[str, object] = {}
-        for layer_name, layer_data in layers_ordered:
+        for layer_name, layer_data in default_layers:
             layer_values[layer_name] = layer_data.get(field)
 
-        for layer_name, layer_data in layers_ordered:
+        search_layers = weak_layers if field in weak_deterministic_fields else default_layers
+        for layer_name, layer_data in search_layers:
             val = layer_data.get(field)
             if not _is_empty(val):
                 if winner_layer is None:
@@ -230,7 +241,7 @@ def _merge_layers(
                     winner_value = val
 
         # Record contributions from all layers
-        for layer_name, _ in layers_ordered:
+        for layer_name, _ in default_layers:
             val = layer_values.get(layer_name)
             if val is not None:
                 contributions.append(LayerContribution(
@@ -323,6 +334,7 @@ def resolve_identity(
     pipeline_version: str,
     audit: "AuditLog | None" = None,
     run_id: str | None = None,
+    weak_deterministic_fields: set[str] | None = None,
 ) -> tuple[DocumentIdentity, list[LayerContribution]]:
     """Merge layers by precedence, validate enums, and build DocumentIdentity."""
     stem = heuristic_signals.get("stem", pdf_path.stem)
@@ -331,7 +343,13 @@ def resolve_identity(
     heuristic_flds = _heuristic_fields(heuristic_signals, pdf_info)
     pdf_meta_flds = _pdf_meta_fields(pdf_info, stem)
 
-    merged, contributions = _merge_layers(sidecar, heuristic_flds, pdf_meta_flds, llm_fields)
+    merged, contributions = _merge_layers(
+        sidecar,
+        heuristic_flds,
+        pdf_meta_flds,
+        llm_fields,
+        weak_deterministic_fields=weak_deterministic_fields,
+    )
 
     # Track which layers provided values before coercion, for audit
     all_layers = [

@@ -112,6 +112,7 @@ def build_llm_context(
     pdf_info: dict,
     heuristic_signals: dict,
     sidecar: dict | None,
+    requested_fields: list[str] | None = None,
 ) -> str:
     """Assemble the user-message payload from PDF signals for the LLM normalizer."""
     # Trim potentially large heuristic fields
@@ -130,7 +131,8 @@ def build_llm_context(
         f"<pdf_info>\n{json.dumps(pdf_info, ensure_ascii=False)}\n</pdf_info>",
         f"<heuristic_signals>\n{json.dumps(signals, ensure_ascii=False)}\n</heuristic_signals>",
         f"<operator_sidecar>\n{sidecar_text}\n</operator_sidecar>",
-        "<instructions>\nFill every field. Use \"unknown\" when unsure. Use the provided enum values verbatim.\n</instructions>",
+        f"<requested_fields>\n{json.dumps(requested_fields or [], ensure_ascii=False)}\n</requested_fields>",
+        "<instructions>\nFill every schema field, but focus on requested_fields. Use \"unknown\" when unsure. Use the provided enum values verbatim. Operator sidecar values are authoritative.\n</instructions>",
     ]
     return "\n\n".join(parts)
 
@@ -143,6 +145,7 @@ def normalize_with_llm(
     heuristic_signals: dict,
     sidecar: dict | None,
     cache_suffix: str | None = None,
+    requested_fields: list[str] | None = None,
 ) -> dict:
     """Return a raw dict of identity fields suggested by the LLM. Empty dict on any failure."""
     try:
@@ -151,6 +154,7 @@ def normalize_with_llm(
             pdf_info=pdf_info,
             heuristic_signals=heuristic_signals,
             sidecar=sidecar,
+            requested_fields=requested_fields,
         )
 
         base_kwargs = dict(

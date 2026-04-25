@@ -156,6 +156,43 @@ class TestLayerPrecedence:
         )
         assert identity.canonical_title == "PDF Meta Title"
 
+    def test_llm_fills_weak_deterministic_field(self, tmp_path):
+        pdf = _make_pdf_path(tmp_path)
+        heuristics = dict(_EMPTY_HEURISTICS, vendors_detected=["Debian"])
+        llm_fields = {"source_family": "ubuntu", "product": "Ubuntu Server"}
+
+        identity, contributions = resolve_identity(
+            pdf_path=pdf,
+            sidecar=None,
+            pdf_info=_EMPTY_PDF_INFO,
+            heuristic_signals=heuristics,
+            llm_fields=llm_fields,
+            pipeline_version=_PIPELINE_VERSION,
+            weak_deterministic_fields={"source_family", "product"},
+        )
+
+        assert identity.source_family == "ubuntu"
+        assert identity.product == "Ubuntu Server"
+        accepted = [c for c in contributions if c.field == "source_family" and c.accepted]
+        assert accepted[0].layer == "llm"
+
+    def test_llm_still_cannot_override_sidecar_when_field_is_weak(self, tmp_path):
+        pdf = _make_pdf_path(tmp_path)
+        sidecar = {"source_family": "debian"}
+        llm_fields = {"source_family": "ubuntu"}
+
+        identity, _ = resolve_identity(
+            pdf_path=pdf,
+            sidecar=sidecar,
+            pdf_info=_EMPTY_PDF_INFO,
+            heuristic_signals=_EMPTY_HEURISTICS,
+            llm_fields=llm_fields,
+            pipeline_version=_PIPELINE_VERSION,
+            weak_deterministic_fields={"source_family"},
+        )
+
+        assert identity.source_family == "debian"
+
 
 # ---------------------------------------------------------------------------
 # Enum coercion tests

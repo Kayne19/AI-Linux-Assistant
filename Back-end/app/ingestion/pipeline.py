@@ -3,6 +3,7 @@ import logging
 import shutil
 import sys
 import time
+import hashlib
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
@@ -18,6 +19,7 @@ from ingestion.audit import AuditLog
 from ingestion.console import print_artifact, print_banner, print_kv, print_progress, print_state, print_summary
 from ingestion.indexer import build_ingestion_indexer
 from ingestion.identity.heuristics import extract_heuristic_signals
+from ingestion.identity.llm_normalizer import normalize_with_llm
 from ingestion.identity.pdf_meta import read_pdf_info
 from ingestion.identity.resolver import resolve_identity
 from ingestion.identity.schema import DocumentIdentity
@@ -479,6 +481,9 @@ class IngestPipelineConfig:
     enrichment_reasoning_effort: str | None
     registry_provider: str
     registry_model: str
+    identity_provider: str
+    identity_model: str
+    identity_reasoning_effort: str | None
     trace_output_dir: Path
     # Mass-ingestion robustness fields
     mass_mode: bool = False
@@ -487,6 +492,7 @@ class IngestPipelineConfig:
     # Two-phase batch-mode fields
     batch_mode: bool = False            # when True, phase 1 stops after ENRICH_PREPARE
     ingest_state_dir: Path | None = None  # parent dir for durable per-doc state
+    identity_llm_infill: bool = True
 
 
 @dataclass
@@ -512,6 +518,95 @@ class IngestRunContext:
     pdf_info: dict[str, Any] = field(default_factory=dict)
     heuristic_signals: dict[str, Any] = field(default_factory=dict)
     document_identity: DocumentIdentity | None = None
+    identity_weak_fields: list[str] = field(default_factory=list)
+    identity_llm_fields: dict[str, Any] = field(default_factory=dict)
+
+
+_IDENTITY_INFILL_FIELDS = {
+    "canonical_title",
+    "source_family",
+    "product",
+    "vendor_or_project",
+    "version",
+    "release_date",
+    "doc_kind",
+    "trust_tier",
+    "freshness_status",
+    "os_family",
+    "init_systems",
+    "package_managers",
+    "major_subsystems",
+    "applies_to",
+    "source_url",
+}
+
+_CONSERVATIVE_LLM_FIELDS = {"trust_tier", "freshness_status"}
+
+
+def _identity_value_is_weak(field: str, value, *, stem: str) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "unknown"}:
+            return True
+        if field in {"source_family", "doc_kind"} and normalized == "other":
+            return True
+        if field == "canonical_title" and normalized == (stem or "").strip().lower():
+            return True
+        return False
+    if isinstance(value, list):
+        return not value or all(
+            item is None or (isinstance(item, str) and item.strip().lower() in {"", "unknown"})
+            for item in value
+        )
+    return False
+
+
+def _weak_identity_fields(identity: DocumentIdentity, sidecar: dict | None, heuristic_signals: dict) -> set[str]:
+    stem = heuristic_signals.get("stem", "")
+    sidecar_fields = set(sidecar or {})
+    weak: set[str] = set()
+    for field in _IDENTITY_INFILL_FIELDS:
+        if field in sidecar_fields:
+            continue
+        if _identity_value_is_weak(field, getattr(identity, field, None), stem=stem):
+            weak.add(field)
+
+    vendors = heuristic_signals.get("vendors_detected") or []
+    if len(vendors) == 1 and not identity.product and not identity.version:
+        weak.update({"source_family", "vendor_or_project"})
+    weak -= sidecar_fields
+    return weak
+
+
+def _filter_llm_identity_fields(
+    *,
+    llm_fields: dict,
+    requested_fields: set[str],
+    audit: "AuditLog | None",
+    doc: str,
+) -> dict:
+    filtered: dict[str, Any] = {}
+    for field, value in (llm_fields or {}).items():
+        if field not in _IDENTITY_INFILL_FIELDS:
+            continue
+        if field in _CONSERVATIVE_LLM_FIELDS:
+            if audit is not None and value not in (None, "", "unknown"):
+                audit.record(
+                    doc=doc,
+                    phase="identity_llm_infill",
+                    action="drop_conservative_field",
+                    inputs={"field": field, "value": value},
+                    chosen=None,
+                    confidence=None,
+                    rationale="LLM trust/freshness suggestions are audited but not applied without deterministic evidence.",
+                )
+            continue
+        if field not in requested_fields:
+            continue
+        filtered[field] = value
+    return filtered
 
 
 class IngestPipelineRunner:
@@ -522,6 +617,13 @@ class IngestPipelineRunner:
             config.enrichment_model,
             config.enrichment_reasoning_effort,
         )
+        self.identity_worker = None
+        if config.identity_llm_infill:
+            self.identity_worker = build_text_worker(
+                config.identity_provider,
+                config.identity_model,
+                config.identity_reasoning_effort,
+            )
 
     def run(self, pdf_path: Path, queue_index: int = 1, queue_total: int = 1) -> IngestRunContext:
         run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%f')}Z_{pdf_path.stem}"
@@ -630,18 +732,92 @@ class IngestPipelineRunner:
                     "heuristic_signals": context.heuristic_signals,
                 },
                 confidence=None,
-                rationale="sidecar, PDF metadata, and heuristics only; LLM normalization disabled",
+                rationale="sidecar, PDF metadata, and heuristics extracted before optional LLM infill",
             )
 
     def _resolve_identity(self, context: IngestRunContext) -> None:
-        identity, _contributions = resolve_identity(
+        preview_identity, _ = resolve_identity(
             pdf_path=context.pdf_path,
             sidecar=context.sidecar,
             pdf_info=context.pdf_info,
             heuristic_signals=context.heuristic_signals,
             llm_fields={},
             pipeline_version="1.0.0",
+            audit=None,
+        )
+        weak_fields = _weak_identity_fields(
+            preview_identity,
+            context.sidecar,
+            context.heuristic_signals,
+        )
+        context.identity_weak_fields = sorted(weak_fields)
+        llm_fields: dict[str, Any] = {}
+        if context.config.identity_llm_infill and weak_fields and self.identity_worker is not None:
+            if context.audit is not None:
+                context.audit.record(
+                    doc=context.pdf_path.name,
+                    phase="identity_llm_infill",
+                    action="attempt",
+                    inputs={"requested_fields": sorted(weak_fields)},
+                    chosen=None,
+                    confidence=None,
+                    rationale="deterministic identity has missing or weak fields",
+                )
+            cache_material = json.dumps(
+                {
+                    "pdf_info": context.pdf_info,
+                    "heuristic_signals": context.heuristic_signals,
+                    "sidecar": context.sidecar,
+                },
+                sort_keys=True,
+                default=str,
+            )
+            raw_llm_fields = normalize_with_llm(
+                worker=self.identity_worker,
+                filename=context.pdf_path.name,
+                pdf_info=context.pdf_info,
+                heuristic_signals=context.heuristic_signals,
+                sidecar=context.sidecar,
+                cache_suffix=hashlib.sha256(cache_material.encode("utf-8")).hexdigest()[:16],
+                requested_fields=sorted(weak_fields),
+            )
+            llm_fields = _filter_llm_identity_fields(
+                llm_fields=raw_llm_fields,
+                requested_fields=weak_fields,
+                audit=context.audit,
+                doc=context.pdf_path.name,
+            )
+            context.identity_llm_fields = dict(llm_fields)
+            if context.audit is not None:
+                context.audit.record(
+                    doc=context.pdf_path.name,
+                    phase="identity_llm_infill",
+                    action="accepted_fields" if llm_fields else "no_usable_fields",
+                    inputs={"raw_fields": raw_llm_fields},
+                    chosen={"accepted_fields": sorted(llm_fields)},
+                    confidence=None,
+                    rationale=None,
+                )
+        elif context.audit is not None:
+            context.audit.record(
+                doc=context.pdf_path.name,
+                phase="identity_llm_infill",
+                action="skipped",
+                inputs={"enabled": context.config.identity_llm_infill, "weak_fields": sorted(weak_fields)},
+                chosen=None,
+                confidence=None,
+                rationale="no infill needed or worker disabled",
+            )
+
+        identity, _contributions = resolve_identity(
+            pdf_path=context.pdf_path,
+            sidecar=context.sidecar,
+            pdf_info=context.pdf_info,
+            heuristic_signals=context.heuristic_signals,
+            llm_fields=llm_fields,
+            pipeline_version="1.0.0",
             audit=context.audit,
+            weak_deterministic_fields=weak_fields,
         )
         errors = identity.validate()
         if errors:
@@ -970,6 +1146,10 @@ def _trace_config_snapshot(config: IngestPipelineConfig) -> dict[str, Any]:
         "enrichment_reasoning_effort": config.enrichment_reasoning_effort,
         "registry_provider": config.registry_provider,
         "registry_model": config.registry_model,
+        "identity_provider": config.identity_provider,
+        "identity_model": config.identity_model,
+        "identity_reasoning_effort": config.identity_reasoning_effort,
+        "identity_llm_infill": config.identity_llm_infill,
         "trace_output_dir": str(config.trace_output_dir),
         "mass_mode": config.mass_mode,
         "sanitize": config.sanitize,
@@ -1008,11 +1188,15 @@ def run_pipeline(
     registry_provider: str,
     registry_model: str,
     trace_output_dir: Path,
+    identity_provider: str | None = None,
+    identity_model: str | None = None,
+    identity_reasoning_effort: str | None = None,
     mass_mode: bool = False,
     sanitize: bool = False,
     min_page_coverage: float = 0.9,
     batch_mode: bool = False,
     ingest_state_dir: Path | None = None,
+    identity_llm_infill: bool = True,
 ) -> IngestRunContext:
     config = IngestPipelineConfig(
         raw_output=raw_output,
@@ -1029,12 +1213,16 @@ def run_pipeline(
         enrichment_reasoning_effort=enrichment_reasoning_effort,
         registry_provider=registry_provider,
         registry_model=registry_model,
+        identity_provider=identity_provider or SETTINGS.ingest_identity_normalizer.provider,
+        identity_model=identity_model or SETTINGS.ingest_identity_normalizer.model,
+        identity_reasoning_effort=identity_reasoning_effort or SETTINGS.ingest_identity_normalizer.reasoning_effort or None,
         trace_output_dir=trace_output_dir,
         mass_mode=mass_mode,
         sanitize=sanitize,
         min_page_coverage=min_page_coverage,
         batch_mode=batch_mode,
         ingest_state_dir=ingest_state_dir,
+        identity_llm_infill=identity_llm_infill,
     )
     runner = IngestPipelineRunner(config)
     trace = IngestTraceRecorder(
