@@ -4,6 +4,13 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
+from ingestion.identity.vocabularies import (
+    InitSystem,
+    MajorSubsystem,
+    OsFamily,
+    PackageManager,
+    SourceFamily,
+)
 from providers.anthropic_caller import AnthropicWorker
 from providers.google_caller import GoogleWorker
 from providers.local_caller import LocalWorker
@@ -128,6 +135,7 @@ class ModelRouter:
         self.database = database or VectorDB()
         if hasattr(self.database, "set_event_listener"):
             self.database.set_event_listener(self._emit_event)
+        self._known_canonical_doc_ids_cache = None
         self.memory_store = self._build_memory_store(memory_store)
         self.memory_extractor = self._build_memory_extractor(
             memory_extractor,
@@ -433,6 +441,15 @@ class ModelRouter:
                         },
                         "description": "Suggested domain labels to bias or narrow the search.",
                     },
+                    "scope_hints": self._scope_hint_schema(),
+                    "canonical_source_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": self._known_canonical_doc_ids(),
+                        },
+                        "description": "Optional canonical document IDs to pin the search to specific documents.",
+                    },
                     "focused_questions": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -559,6 +576,114 @@ class ModelRouter:
             "output": output,
         }
 
+    def _known_canonical_doc_ids(self):
+        if self._known_canonical_doc_ids_cache is not None:
+            return list(self._known_canonical_doc_ids_cache)
+
+        known_doc_ids = getattr(self.database, "known_canonical_doc_ids", None)
+        if callable(known_doc_ids):
+            try:
+                self._known_canonical_doc_ids_cache = sorted(
+                    {str(doc_id) for doc_id in known_doc_ids() if doc_id}
+                )
+                return list(self._known_canonical_doc_ids_cache)
+            except Exception:
+                pass
+
+        documents_store = getattr(self.database, "documents_store", None)
+        if documents_store is None:
+            self._known_canonical_doc_ids_cache = []
+            return []
+        try:
+            rows = documents_store.load_documents()
+        except Exception:
+            self._known_canonical_doc_ids_cache = []
+            return []
+        self._known_canonical_doc_ids_cache = sorted(
+            {
+                str(row.get("canonical_source_id"))
+                for row in rows
+                if isinstance(row, dict) and row.get("canonical_source_id")
+            }
+        )
+        return list(self._known_canonical_doc_ids_cache)
+
+    @staticmethod
+    def _scope_hint_schema():
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "os_family": {
+                    "type": "string",
+                    "enum": [member.value for member in OsFamily],
+                    "description": "Operating-system family the question targets.",
+                },
+                "source_family": {
+                    "type": "string",
+                    "enum": [member.value for member in SourceFamily],
+                    "description": "Document family, such as debian, proxmox, or arch.",
+                },
+                "package_managers": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": [member.value for member in PackageManager]},
+                    "description": "Package managers relevant to the question.",
+                },
+                "init_systems": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": [member.value for member in InitSystem]},
+                    "description": "Init systems relevant to the question.",
+                },
+                "major_subsystems": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": [member.value for member in MajorSubsystem]},
+                    "description": "Major subsystems the question targets.",
+                },
+            },
+        }
+
+    def _validated_scope_hints(self, value):
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            return None
+
+        scalar_fields = {
+            "os_family": {member.value for member in OsFamily},
+            "source_family": {member.value for member in SourceFamily},
+        }
+        list_fields = {
+            "package_managers": {member.value for member in PackageManager},
+            "init_systems": {member.value for member in InitSystem},
+            "major_subsystems": {member.value for member in MajorSubsystem},
+        }
+        cleaned = {}
+
+        for field_name, allowed in scalar_fields.items():
+            field_value = value.get(field_name)
+            if isinstance(field_value, str) and field_value in allowed:
+                cleaned[field_name] = field_value
+
+        for field_name, allowed in list_fields.items():
+            field_value = value.get(field_name)
+            if not isinstance(field_value, list):
+                continue
+            valid_values = [item for item in field_value if isinstance(item, str) and item in allowed]
+            if valid_values:
+                cleaned[field_name] = valid_values
+
+        return cleaned or None
+
+    def _validated_canonical_doc_ids(self, value):
+        if value is None:
+            return ()
+        if not isinstance(value, list):
+            return ()
+        known_ids = set(self._known_canonical_doc_ids())
+        if not known_ids:
+            return ()
+        return tuple(item for item in value if isinstance(item, str) and item in known_ids)
+
     def _validated_relevant_documents(self, relevant_documents):
         if relevant_documents is None:
             return []
@@ -587,6 +712,8 @@ class ModelRouter:
             "repeat_reason": normalize_repeat_reason(args.get("repeat_reason", "")),
             "query": str(args.get("query") or "").strip(),
             "relevant_documents": self._validated_relevant_documents(args.get("relevant_documents")),
+            "scope_hints": self._validated_scope_hints(args.get("scope_hints")),
+            "canonical_source_ids": self._validated_canonical_doc_ids(args.get("canonical_source_ids")),
             "focused_questions": [
                 str(question or "").strip()
                 for question in list(args.get("focused_questions") or [])
@@ -659,6 +786,8 @@ class ModelRouter:
     def _execute_regular_responder_search(self, decision):
         query = decision.get("query") or ""
         relevant_documents = list(decision.get("relevant_documents") or [])
+        scope_hints = decision.get("scope_hints")
+        explicit_doc_ids = tuple(decision.get("canonical_source_ids") or ())
         tool_args = {
             "query": query,
             "relevant_documents": relevant_documents,
@@ -667,6 +796,10 @@ class ModelRouter:
             "gap_type": decision.get("gap_type", ""),
             "unresolved_gap": decision.get("unresolved_gap", ""),
         }
+        if scope_hints:
+            tool_args["scope_hints"] = scope_hints
+        if explicit_doc_ids:
+            tool_args["canonical_source_ids"] = list(explicit_doc_ids)
         self._check_cancel("before_tool:search_rag_database")
         self._emit_event("tool_start", {"name": "search_rag_database", "args": tool_args})
         self._append_trace_marker("TOOL_RETRIEVE_CONTEXT")
@@ -680,6 +813,8 @@ class ModelRouter:
                 unresolved_issue=decision.get("unresolved_gap", ""),
                 gap_type=decision.get("gap_type", ""),
                 strict_repeat_reason=True,
+                router_hint=scope_hints,
+                explicit_doc_ids=explicit_doc_ids,
             )
             retrieval_metadata = dict(retrieval_result.get("retrieval_metadata") or {})
             search_text = str(retrieval_result.get("context_text") or "")
@@ -1206,9 +1341,9 @@ class ModelRouter:
             {
                 "name": "search_rag_database",
                 "description": (
-                    "Search the RAG database for relevant manual context. "
-                    "Use relevant_documents as suggested domains to scope the search when possible. "
-                    "If the best search path is unclear, you may search broadly."
+                    "Search the RAG database. Pass scope_hints to narrow by document metadata "
+                    "before chunk-level search, or canonical_source_ids to pin specific documents. "
+                    "Both are optional; relevant_documents remains the planner-supplied routing-domain hint."
                 ),
                 "parameters": {
                     "type": "object",
@@ -1224,7 +1359,19 @@ class ModelRouter:
                                 "type": "string",
                                 "enum": allowed_labels,
                             },
-                            "description": "Suggested domain labels to bias or narrow the search",
+                            "description": "Suggested routing-domain labels to bias or narrow the search",
+                        },
+                        "scope_hints": self._scope_hint_schema(),
+                        "canonical_source_ids": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": self._known_canonical_doc_ids(),
+                            },
+                            "description": (
+                                "Optional. Pin the search to specific documents by canonical ID. "
+                                "Use only when you know the exact document or documents to consult."
+                            ),
                         },
                         "repeat_reason": {
                             "type": "string",
@@ -1353,6 +1500,8 @@ class ModelRouter:
         excluded_block_keys,
         covered_region_keys,
         requested_evidence_goal,
+        router_hint=None,
+        explicit_doc_ids=(),
     ):
         if not hasattr(self.database, "retrieve_context_result"):
             return {
@@ -1379,6 +1528,10 @@ class ModelRouter:
                 kwargs["covered_region_keys"] = covered_region_keys
             if accepts_var_kwargs or "requested_evidence_goal" in signature.parameters:
                 kwargs["requested_evidence_goal"] = requested_evidence_goal
+            if accepts_var_kwargs or "router_hint" in signature.parameters:
+                kwargs["router_hint"] = router_hint
+            if accepts_var_kwargs or "explicit_doc_ids" in signature.parameters:
+                kwargs["explicit_doc_ids"] = explicit_doc_ids
         except (TypeError, ValueError):
             kwargs = {}
         return retrieve_context_result(query, searchable_labels, **kwargs) or {}
@@ -1401,11 +1554,23 @@ class ModelRouter:
             "source_profile_sample": getattr(config, "source_profile_sample", None),
         }
 
-    def _retrieval_fingerprint(self, query, searchable_labels, excluded_page_windows, excluded_block_keys, *, requested_evidence_goal=""):
+    def _retrieval_fingerprint(
+        self,
+        query,
+        searchable_labels,
+        excluded_page_windows,
+        excluded_block_keys,
+        *,
+        requested_evidence_goal="",
+        router_hint=None,
+        explicit_doc_ids=(),
+    ):
         payload = {
             "query": query,
             "searchable_labels": list(searchable_labels or []),
             "requested_evidence_goal": requested_evidence_goal or "",
+            "router_hint": router_hint or {},
+            "explicit_doc_ids": sorted(explicit_doc_ids or ()),
             "excluded_page_windows": [
                 {
                     "key": window.get("key"),
@@ -1506,6 +1671,8 @@ class ModelRouter:
         unresolved_issue: str = "",
         gap_type: str = "",
         strict_repeat_reason: bool = False,
+        router_hint=None,
+        explicit_doc_ids=(),
     ):
         """Core retrieval entry point. Uses the EvidencePool for gating, caching, and outcome tracking."""
         pool = self._active_evidence_pool()
@@ -1586,6 +1753,8 @@ class ModelRouter:
             excluded_page_windows,
             excluded_block_keys,
             requested_evidence_goal=requested_evidence_goal,
+            router_hint=router_hint,
+            explicit_doc_ids=explicit_doc_ids,
         )
         cached_result = pool._cache.get(fingerprint)
 
@@ -1623,6 +1792,8 @@ class ModelRouter:
             excluded_block_keys=excluded_block_keys,
             covered_region_keys=pool.known_covered_region_keys(),
             requested_evidence_goal=requested_evidence_goal,
+            router_hint=router_hint,
+            explicit_doc_ids=explicit_doc_ids,
         )
         retrieval_metadata = dict(retrieval_result.get("retrieval_metadata") or {})
         retrieval_metadata["cached_hit"] = False
@@ -1654,6 +1825,8 @@ class ModelRouter:
                     tool_complete_payload = None
                 else:
                     searchable_labels = self._searchable_labels(relevant_documents)
+                    scope_hints = self._validated_scope_hints(tool_args.get("scope_hints"))
+                    explicit_doc_ids = self._validated_canonical_doc_ids(tool_args.get("canonical_source_ids"))
                     repeat_reason = normalize_repeat_reason(tool_args.get("repeat_reason", ""))
                     requested_evidence_goal = normalize_evidence_goal(tool_args.get("requested_evidence_goal", "")) or self._derive_requested_evidence_goal(
                         query,
@@ -1666,6 +1839,8 @@ class ModelRouter:
                         repeat_reason=repeat_reason,
                         requested_evidence_goal=requested_evidence_goal,
                         unresolved_issue=self._active_caller_metadata().get("unresolved_issue", ""),
+                        router_hint=scope_hints,
+                        explicit_doc_ids=explicit_doc_ids,
                     )
                     retrieval_metadata = retrieval_result.get("retrieval_metadata") or {}
                     result = str(retrieval_result.get("context_text") or "")
