@@ -187,6 +187,26 @@ class TestEnumCoercion:
         audit.close()
         assert identity.source_family == "proxmox"
 
+    def test_heuristic_vendor_red_hat_resolves_to_rhel_source_family(self, tmp_path):
+        # Regression: "red hat" doesn't directly match the SourceFamily enum
+        # ("rhel"). Resolver must consult the vendor->family map.
+        pdf = _make_pdf_path(tmp_path)
+        heuristics = dict(_EMPTY_HEURISTICS, vendors_detected=["Red Hat"])
+        identity, _ = _call_resolve(pdf, heuristic_signals=heuristics)
+        assert identity.source_family == "rhel"
+
+    def test_heuristic_vendor_canonical_resolves_to_ubuntu_source_family(self, tmp_path):
+        pdf = _make_pdf_path(tmp_path)
+        heuristics = dict(_EMPTY_HEURISTICS, vendors_detected=["Canonical"])
+        identity, _ = _call_resolve(pdf, heuristic_signals=heuristics)
+        assert identity.source_family == "ubuntu"
+
+    def test_heuristic_vendor_arch_linux_resolves_to_arch_source_family(self, tmp_path):
+        pdf = _make_pdf_path(tmp_path)
+        heuristics = dict(_EMPTY_HEURISTICS, vendors_detected=["Arch Linux"])
+        identity, _ = _call_resolve(pdf, heuristic_signals=heuristics)
+        assert identity.source_family == "arch"
+
 
 # ---------------------------------------------------------------------------
 # build_canonical_source_id tests

@@ -93,10 +93,28 @@ def test_quarantined_sibling_dir_is_counted(tmp_path):
 
     result = _run(state_dir)
     assert "QUARANTINED" in result.stdout
+    # Quarantined docs are reported separately from the FSM total so they are
+    # not double-counted.
+    assert "Total documents tracked: 1" in result.stdout
+    assert "Quarantined: 1" in result.stdout
     assert "broken_doc" not in result.stdout  # only verbose mode lists names
 
     verbose = _run(state_dir, "--verbose")
     assert "broken_doc" in verbose.stdout
+
+
+def test_json_mode_includes_quarantined_in_totals(tmp_path):
+    state_dir = tmp_path / "ingest_state"
+    state_dir.mkdir()
+    _write_state(state_dir, "doc_a", state="AWAITING_ENRICHMENT")
+    quarantined = tmp_path / "failed" / "broken_doc"
+    quarantined.mkdir(parents=True)
+
+    result = _run(state_dir, "--json")
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["totals"]["QUARANTINED"] == 1
+    assert payload["totals"]["AWAITING_ENRICHMENT"] == 1
 
 
 def test_json_mode_emits_structured_payload(tmp_path):

@@ -204,11 +204,21 @@ def build_hint(
                 return c
         return None
 
+    def _coerce_to_list(value) -> list[str]:
+        # Be tolerant of router hints that pass a scalar string instead of a
+        # list (e.g. {"package_managers": "apt"}); without this guard, list("apt")
+        # would split into ["a", "p", "t"].
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value] if value else []
+        return list(value)
+
     def _merged(router_key: str, query_key: str) -> tuple[str, ...]:
-        router_value = router.get(router_key) or []
-        query_value = derived.get(query_key) or []
+        router_value = _coerce_to_list(router.get(router_key))
+        query_value = _coerce_to_list(derived.get(query_key))
         merged: list[str] = []
-        for v in list(router_value) + list(query_value):
+        for v in router_value + query_value:
             if v and v not in merged:
                 merged.append(v)
         return tuple(merged)

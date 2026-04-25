@@ -97,8 +97,8 @@ def _load_documents(store) -> list[dict]:
 def _make_chunk_backfiller(chunks_store):
     """Return a callable suitable for ``apply_migration(backfill_chunks=...)``.
 
-    LanceDB exposes ``Table.update(where=..., values=...)`` for column updates
-    on rows matching a SQL predicate. We update each chunk in place rather
+    LanceDB exposes ``Table.update(where=..., values=...)`` for typed Python
+    values matching a SQL predicate. We update each chunk in place rather
     than rewriting the table.
     """
 
@@ -113,49 +113,26 @@ def _make_chunk_backfiller(chunks_store):
         rows = table.search().where(predicate).limit(10000).to_list()
         if not rows:
             return 0
-        # Take a representative legacy row to derive page-only fields. We do
-        # the per-page update with one update call per (chunk_type, page)
-        # cluster so we don't have to rewrite the whole table.
-        updated = 0
-        # Group by (page, type) so column values are uniform per group.
+        # One update call per (page, legacy_type) cluster keeps page_start /
+        # page_end accurate without rewriting the whole table.
         groups: dict[tuple[int, str], int] = {}
         for r in rows:
             key = (int(r.get("page") or 0), (r.get("type") or "").strip())
             groups[key] = groups.get(key, 0) + 1
 
+        updated = 0
         for (page, legacy_type), _count in groups.items():
-            updates = reconstruct_chunk_metadata(
+            values = reconstruct_chunk_metadata(
                 {"page": page, "type": legacy_type},
                 canonical_source_id=canonical_source_id,
                 canonical_title=canonical_title,
             )
-            sql_set: dict[str, object] = {}
-            for k, v in updates.items():
-                if isinstance(v, str):
-                    sql_set[k] = f"'{_escape(v)}'"
-                elif isinstance(v, list):
-                    # LanceDB list literal — array(...) in DataFusion. For our
-                    # purposes the lists are always empty here, so use the
-                    # canonical empty-list literal.
-                    if not v:
-                        sql_set[k] = "[]"
-                    else:
-                        items = ", ".join(f"'{_escape(str(item))}'" for item in v)
-                        sql_set[k] = f"[{items}]"
-                else:
-                    sql_set[k] = str(v)
             where = (
                 f"source = '{_escape(source)}' AND "
                 f"page = {int(page)} AND type = '{_escape(legacy_type)}'"
             )
-            try:
-                table.update(where=where, values=sql_set)
-                updated += 1
-            except Exception:
-                # Fall back to a single all-rows-for-source update without the
-                # per-group narrowing if the structured update fails. Page
-                # range degrades to (0, 0) in this branch.
-                continue
+            table.update(where=where, values=values)
+            updated += 1
         return updated
 
     return _backfill

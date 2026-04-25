@@ -87,7 +87,6 @@ class MigrationStep:
 
 @dataclass
 class MigrationReport:
-    skipped_existing: list[str] = field(default_factory=list)
     written: list[str] = field(default_factory=list)
     stubbed: list[str] = field(default_factory=list)
     backfilled_chunks: dict[str, int] = field(default_factory=dict)
@@ -104,11 +103,16 @@ def collect_sources(chunks: Iterable[dict]) -> list[SourceSummary]:
 
     The result is ordered by source for stable migration plans; duplicate
     filenames (which should not happen in practice) collapse into one summary.
+    Rows that already carry a non-empty ``canonical_source_id`` are skipped
+    — they were ingested under the new schema and need no backfill.
     """
     by_source: dict[str, dict] = {}
     for row in chunks:
         source = (row.get("source") or "").strip()
         if not source:
+            continue
+        if (row.get("canonical_source_id") or "").strip():
+            # Already migrated under the T11 schema; nothing to backfill.
             continue
         page = int(row.get("page") or 0)
         ctype = row.get("type") or ""
@@ -361,7 +365,7 @@ def apply_migration(
     for step in steps:
         try:
             write_document(step.identity)
-        except Exception as exc:  # pragma: no cover - I/O failure paths
+        except Exception as exc:
             report.errors.append((step.source, f"write_document: {exc}"))
             continue
         report.written.append(step.identity.canonical_source_id)

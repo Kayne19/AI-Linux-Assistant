@@ -317,6 +317,13 @@ def enrich_batch_merge(requests, results_path, elements):
             custom_id = record.get("custom_id")
             request = by_custom_id.get(custom_id)
             if request is None:
+                # Don't silently drop rows whose custom_id we can't match —
+                # mismatch is signal that the prepare/merge contract drifted
+                # or that the result file is for a different doc.
+                result.error_count += 1
+                result.errors.append(
+                    {"custom_id": custom_id, "error": "unmatched custom_id"}
+                )
                 continue
             if record.get("error"):
                 result.error_count += 1

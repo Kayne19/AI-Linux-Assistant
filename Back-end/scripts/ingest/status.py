@@ -88,11 +88,13 @@ def _collect_states(state_dir: Path) -> tuple[Counter, list[DocState], list[Path
 
 
 def _render_human(state_dir: Path, counts: Counter, docs: list[DocState], quarantined: list[Path], verbose: bool) -> None:
-    total = sum(counts.values())
+    fsm_total = sum(counts.get(s, 0) for s in STATE_ORDER)
+    quarantined_count = counts.get("QUARANTINED", 0)
     print(f"Ingest state directory: {state_dir}")
-    print(f"Total documents tracked: {total}")
+    print(f"Total documents tracked: {fsm_total}")
+    print(f"Quarantined: {quarantined_count}")
     print()
-    if total == 0:
+    if fsm_total == 0 and quarantined_count == 0:
         print("No documents under tracking. Run scripts/ingest/ingest_pipeline.py --batch-mode <pdf>.")
         return
 
@@ -128,9 +130,11 @@ def _render_human(state_dir: Path, counts: Counter, docs: list[DocState], quaran
 
 
 def _render_json(state_dir: Path, counts: Counter, docs: list[DocState], quarantined: list[Path]) -> None:
+    totals = {state: counts.get(state, 0) for state in STATE_ORDER}
+    totals["QUARANTINED"] = counts.get("QUARANTINED", 0)
     payload = {
         "state_dir": str(state_dir),
-        "totals": {state: counts.get(state, 0) for state in STATE_ORDER},
+        "totals": totals,
         "quarantined": [p.name for p in quarantined],
         "documents": [
             {

@@ -105,10 +105,20 @@ def _advance_poll(
     state.output_file_id = batch_status.output_file_id
     state.error_file_id = batch_status.error_file_id
     if batch_status.status == "completed":
-        if download_fn is not None and batch_status.output_file_id:
+        # Only advance to MERGING when we actually have the output on disk —
+        # otherwise the merge will silently apply zero contexts and the doc
+        # will look "successful" with an unenriched corpus.
+        if download_fn is None or not batch_status.output_file_id:
+            state.state = FAILED
+            state.error = (
+                f"batch {state.batch_id} completed but output is unavailable "
+                f"(download_fn={'set' if download_fn is not None else 'None'}, "
+                f"output_file_id={batch_status.output_file_id!r})"
+            )
+        else:
             dest = state_dir(base_dir, state.doc_id) / "batch_output.jsonl"
             download_fn(batch_status.output_file_id, dest)
-        state.state = MERGING
+            state.state = MERGING
     elif batch_status.status in {"failed", "expired", "cancelled"}:
         state.state = FAILED
         state.error = f"batch {state.batch_id} terminated with status={batch_status.status}"

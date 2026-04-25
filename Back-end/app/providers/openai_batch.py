@@ -270,9 +270,9 @@ class OpenAIBatchClient:
     def download_output(self, file_id: str, dest_path: Path) -> Path:
         """Download the content of a batch output (or error) file to *dest_path*.
 
-        The initial ``files.content(file_id)`` call is wrapped in retry logic.
-        The subsequent read/write is not retried (content streams should not
-        fail with a transient 429 mid-stream).
+        The whole fetch+drain is wrapped in retry logic so a mid-stream
+        network blip doesn't drop the file silently — re-running the fetch
+        is cheap relative to losing the result.
 
         Args:
             file_id: The output or error file ID from :class:`BatchStatus`.
@@ -283,18 +283,18 @@ class OpenAIBatchClient:
         """
         dest_path = Path(dest_path)
 
-        content_response = _with_retries(lambda: self._client.files.content(file_id))
-
-        # The SDK may return an object with .read() (binary) or .iter_bytes().
-        # Try .read() first (most common), fall back to .iter_bytes() iteration.
-        raw: bytes
-        if hasattr(content_response, "read"):
-            raw = content_response.read()
-        else:
+        def _fetch_and_drain() -> bytes:
+            content_response = self._client.files.content(file_id)
+            # The SDK may return an object with .read() (binary) or
+            # .iter_bytes(). Try .read() first, fall back to .iter_bytes().
+            if hasattr(content_response, "read"):
+                return content_response.read()
             chunks = []
             for chunk in content_response.iter_bytes():
                 chunks.append(chunk)
-            raw = b"".join(chunks)
+            return b"".join(chunks)
+
+        raw = _with_retries(_fetch_and_drain)
 
         dest_path.write_bytes(raw)
         logger.debug("Downloaded file %s -> %s (%d bytes)", file_id, dest_path, len(raw))

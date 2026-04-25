@@ -100,6 +100,13 @@ def test_build_hint_preserves_explicit_doc_ids():
     assert hint.explicit_doc_ids == ("a", "b")
 
 
+def test_build_hint_scalar_string_in_router_list_field_is_treated_as_one_value():
+    # Regression: list("apt") splits into ['a','p','t'] — we must wrap scalar
+    # strings before iterating.
+    hint = build_hint(router_hint={"package_managers": "apt"})
+    assert hint.package_managers == ("apt",)
+
+
 # ---------------------------------------------------------------------------
 # score_doc
 # ---------------------------------------------------------------------------
@@ -221,6 +228,30 @@ def test_widen_hint_step_5_empties_almost_everything():
     assert widened.os_family is None
     assert widened.source_family is None
     assert widened.explicit_doc_ids == ("pinned",)  # not widened-away
+
+
+def test_widen_hint_step_2_drops_init_systems():
+    hint = ScopeHint(
+        os_family="linux", package_managers=("apt",), init_systems=("systemd",),
+        major_subsystems=("containers",), source_family="debian",
+    )
+    widened = widen_hint(hint, step=2)
+    assert widened.package_managers == ()
+    assert widened.init_systems == ()
+    assert widened.major_subsystems == ("containers",)
+    assert widened.os_family == "linux"
+    assert widened.source_family == "debian"
+
+
+def test_widen_hint_step_4_drops_os_family():
+    hint = ScopeHint(
+        os_family="linux", package_managers=("apt",), init_systems=("systemd",),
+        major_subsystems=("containers",), source_family="debian",
+    )
+    widened = widen_hint(hint, step=4)
+    assert widened.os_family is None
+    assert widened.source_family == "debian"
+    assert widened.major_subsystems == ()
 
 
 def test_widen_hint_step_zero_is_identity():

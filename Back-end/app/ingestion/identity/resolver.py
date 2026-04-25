@@ -41,6 +41,26 @@ _VENDOR_STRING_MAP: dict[str, str] = {
     "opensuse": VendorOrProject.suse.value,
 }
 
+# Vendor string -> SourceFamily mapping. Defined separately because some
+# vendor labels do not equal the source-family slug (e.g. "red hat" -> "rhel",
+# "canonical" -> "ubuntu") and direct enum coercion would silently return
+# "unknown" for those.
+_VENDOR_TO_SOURCE_FAMILY: dict[str, str] = {
+    "proxmox": "proxmox",
+    "debian": "debian",
+    "ubuntu": "ubuntu",
+    "canonical": "ubuntu",
+    "docker": "docker",
+    "red hat": "rhel",
+    "rhel": "rhel",
+    "centos": "rhel",
+    "fedora": "fedora",
+    "arch linux": "arch",
+    "alpine": "alpine",
+    "nginx": "nginx",
+    "apache": "apache",
+}
+
 # List enum fields
 _LIST_ENUM_FIELDS = {"init_systems", "package_managers", "major_subsystems"}
 
@@ -127,7 +147,14 @@ def _heuristic_fields(heuristic_signals: dict, pdf_info: dict) -> dict:
             if coerced != "unknown":
                 out["vendor_or_project"] = coerced
 
-        sf_coerced = coerce_enum("source_family", raw)
+        # Try the vendor->family map first (covers "red hat" -> "rhel"),
+        # then fall back to direct enum coercion for vendors that share a
+        # name with their source family (e.g. "debian", "fedora", "nginx").
+        sf_via_map = _VENDOR_TO_SOURCE_FAMILY.get(raw)
+        if sf_via_map:
+            sf_coerced = coerce_enum("source_family", sf_via_map)
+        else:
+            sf_coerced = coerce_enum("source_family", raw)
         if sf_coerced != "unknown":
             out["source_family"] = sf_coerced
 

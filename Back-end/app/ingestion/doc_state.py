@@ -18,6 +18,8 @@ doc's FSM independently; a single bad doc never blocks the others.
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,7 +63,10 @@ def save_state(base_dir: Path, state: DocState) -> Path:
     dir_path.mkdir(parents=True, exist_ok=True)
     state.touch()
     target = dir_path / "state.json"
-    tmp = target.with_suffix(".tmp")
+    # Per-process unique tmp name so concurrent writers (multiple batch
+    # runner processes acting on the same doc) cannot clobber each other's
+    # in-flight tmp before the rename.
+    tmp = dir_path / f"state.json.tmp.{os.getpid()}.{uuid.uuid4().hex}"
     tmp.write_text(json.dumps(asdict(state), indent=2, sort_keys=True))
     tmp.replace(target)
     return target

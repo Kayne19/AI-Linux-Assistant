@@ -245,6 +245,29 @@ def test_advance_one_poll_stays_when_in_progress(tmp_path):
     assert state.batch_status == "in_progress"
 
 
+def test_advance_one_poll_marks_failed_when_completed_without_output(tmp_path):
+    """Regression: batch reported 'completed' but output_file_id is missing
+    (or download_fn is None). We must not advance to MERGING with no data —
+    the merge would silently apply zero contexts."""
+    base_dir, _state, _requests = _prime_doc(tmp_path)
+
+    submit_fn = lambda path, metadata=None: _FakeSubmission(
+        batch_id="batch_1", input_file_id="file_1", status="validating"
+    )
+    poll_fn = lambda bid: _FakeStatus(
+        batch_id=bid,
+        status="completed",
+        output_file_id=None,
+        error_file_id=None,
+        request_counts={"total": 2, "completed": 2, "failed": 0},
+    )
+
+    # No download_fn — and even if one were provided, output_file_id is None.
+    state = advance_one(base_dir, "testdoc", submit_fn=submit_fn, poll_fn=poll_fn)
+    assert state.state == FAILED
+    assert "output is unavailable" in (state.error or "")
+
+
 def test_advance_one_poll_marks_failed_on_terminal_error(tmp_path):
     base_dir, _state, _requests = _prime_doc(tmp_path)
 

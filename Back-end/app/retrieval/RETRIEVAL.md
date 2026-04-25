@@ -161,18 +161,20 @@ Runtime config rule:
 - compatibility overrides are runtime composition only, not ingestion/indexing behavior
 - admin-tunable retrieval settings are runtime-only and must not mutate ingestion/index metadata policy
 
-## Document Scope Pre-Narrowing
+## Document Scope Pre-Narrowing (module ready, runtime wiring pending)
 
-The corpus now carries a structured `documents` table populated by ingestion (`canonical_source_id`, `canonical_title`, `source_family`, `vendor_or_project`, `os_family`, `init_systems`, `package_managers`, `major_subsystems`, `trust_tier`, `freshness_status`, …). Before the chunk-level hybrid search runs, retrieval narrows by document family so a Debian install guide does not contaminate an Arch wiki query and vice-versa.
+The corpus now carries a structured `documents` table populated by ingestion (`canonical_source_id`, `canonical_title`, `source_family`, `vendor_or_project`, `os_family`, `init_systems`, `package_managers`, `major_subsystems`, `trust_tier`, `freshness_status`, …). The intent is to narrow by document family before hybrid search so a Debian install guide does not contaminate an Arch wiki query and vice-versa.
 
-The selector lives in [app/retrieval/scope.py](app/retrieval/scope.py):
+The selector module lives in [app/retrieval/scope.py](app/retrieval/scope.py) and is fully unit-tested:
 
-- `build_hint(query, router_hint)` merges router hints with query-entity extraction (e.g. `apt-get` → `apt`, `systemctl` → `systemd`, `docker` → `containers`). Router hints win on scalar fields; list fields union.
+- `build_hint(query, router_hint)` merges router hints with query-entity extraction (e.g. `apt-get` → `apt`, `systemctl` → `systemd`, `docker` → `containers`). Router hints win on scalar fields; list fields union. Scalar strings on list-typed router fields are wrapped, not iterated as characters.
 - `select_candidate_docs(hint, documents)` ranks candidates by tier-weighted field match plus trust and freshness. `explicit_doc_ids` short-circuits ranking when the router pins a specific document.
-- `widen_hint(hint, step)` drops constraints in the documented order — `package_managers` → `init_systems` → `major_subsystems` → `os_family` → `source_family` — preserving `explicit_doc_ids`.
+- `widen_hint(hint, step)` drops constraints in this order — `package_managers` → `init_systems` → `major_subsystems` → `os_family` → `source_family` — preserving `explicit_doc_ids`.
 - `should_widen(candidates, …)` gates retry on `scope_min_hit_count` and `scope_min_top_score` (see `RetrievalConfig`).
 
-The chunk-level search runs against `LanceDBStore.search_hybrid_scoped(...)`, which adds a `canonical_source_id IN (...)` predicate. Empty candidate lists fall through to the unscoped hybrid search so queries against legacy chunks (no documents row) still return results. SQL-injection-safe escaping is handled inside the store.
+The store-side hook is also in place: `LanceDBStore.search_hybrid_scoped(...)` adds a `canonical_source_id IN (...)` predicate with single-quote-escaped values, falling back to the unscoped hybrid search when the candidate list is empty.
+
+**Runtime wiring is the remaining piece.** `search_pipeline.py` does not yet call `build_hint` / `select_candidate_docs` / `search_hybrid_scoped` — that integration will land in a follow-up. Until then, retrieval still runs the full unscoped hybrid search regardless of document family.
 
 ## Runtime Flow
 
@@ -180,11 +182,9 @@ At runtime, the flow is:
 
 1. Router decides retrieval is needed.
 2. Search pipeline checks index compatibility.
-3. Scope hint is built from query + router hints; candidate documents are picked from the `documents` table.
-4. Query is embedded.
-5. Hybrid search runs against LanceDB, scoped to the candidate `canonical_source_id` set when one exists.
-6. If the scoped result is too small or weak, the hint is widened by one step and the search retries (capped by `scope_max_widenings`).
-7. Candidates are reranked.
+3. Query is embedded.
+4. Hybrid search runs against LanceDB.
+5. Candidates are reranked.
 6. Source boosting selects anchor chunks.
 7. Each anchor builds a preserved same-source bundle:
    - page-based anchors fetch a direct page window from the store

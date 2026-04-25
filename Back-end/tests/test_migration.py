@@ -48,6 +48,15 @@ def test_collect_sources_groups_rows_and_tracks_page_range():
     assert "ListItem" in a.sample_types
 
 
+def test_collect_sources_skips_rows_already_carrying_canonical_id():
+    chunks = [
+        {"source": "a.pdf", "page": 1, "type": "NarrativeText"},
+        {"source": "b.pdf", "page": 1, "type": "NarrativeText", "canonical_source_id": "b_id"},
+    ]
+    summaries = collect_sources(chunks)
+    assert [s.source for s in summaries] == ["a.pdf"]
+
+
 def test_collect_sources_skips_blank_source():
     chunks = [
         {"source": "", "page": 1, "type": "NarrativeText"},
@@ -241,6 +250,54 @@ def test_apply_migration_skips_chunks_when_backfill_callback_is_none(tmp_path):
     report = apply_migration(steps, write_document=_write, backfill_chunks=None)
     assert report.backfilled_chunks == {}
     assert report.written == written
+
+
+def test_make_chunk_backfiller_passes_typed_values_to_lancedb_update(tmp_path):
+    """Regression: the backfiller must pass typed Python values (not SQL
+    expression strings) to ``Table.update``. LanceDB's ``values=`` kwarg
+    treats the dict as raw values; SQL expressions belong on ``values_sql=``.
+    """
+    from scripts.ingest.migrate_identity import _make_chunk_backfiller
+
+    # Fake chain: chunks_store -> open_table() -> search().where().limit().to_list()
+    # plus open_table().update(where=..., values=...).
+    captured: dict = {}
+
+    class _FakeSearch:
+        def where(self, _predicate):
+            return self
+        def limit(self, _n):
+            return self
+        def to_list(self):
+            return [{"page": 3, "type": "NarrativeText"}]
+
+    class _FakeTable:
+        def search(self):
+            return _FakeSearch()
+        def update(self, where, values):
+            captured["where"] = where
+            captured["values"] = values
+
+    class _FakeStore:
+        def table_exists(self):
+            return True
+        def open_table(self):
+            return _FakeTable()
+
+    backfill = _make_chunk_backfiller(_FakeStore())
+    n = backfill("legacy.pdf", "cid", "Canonical Title")
+    assert n == 1
+    values = captured["values"]
+    # Must be a dict of native Python types, not SQL strings:
+    assert values["canonical_source_id"] == "cid"
+    assert values["source"] == "Canonical Title"
+    assert values["section_path"] == []
+    assert values["page_start"] == 3
+    assert values["page_end"] == 3
+    assert values["chunk_type"] == "narrative"
+    assert values["entities"] == "{}"
+    # No raw SQL quoting must leak into the values:
+    assert "'cid'" not in str(values["canonical_source_id"])
 
 
 def test_apply_migration_records_write_errors(tmp_path):

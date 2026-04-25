@@ -296,7 +296,7 @@ def test_enrich_batch_merge_applies_ai_context_via_custom_id(tmp_path):
     assert result.cache_metrics == {"cached_tokens": 4, "input_tokens": 100, "output_tokens": 20}
 
 
-def test_enrich_batch_merge_skips_unknown_custom_ids(tmp_path):
+def test_enrich_batch_merge_records_unmatched_custom_ids_as_errors(tmp_path):
     elements = _sample_elements()
     requests = build_enrichment_requests(elements, "ctx", model="m")
     results = tmp_path / "out.jsonl"
@@ -304,6 +304,8 @@ def test_enrich_batch_merge_skips_unknown_custom_ids(tmp_path):
 
     result = enrich_batch_merge(requests, results, elements)
     assert result.completed_count == 0
+    assert result.error_count == 1
+    assert any("unmatched custom_id" in (e.get("error") or "") for e in result.errors)
     assert all("ai_context" not in e.get("metadata", {}) for e in elements)
 
 

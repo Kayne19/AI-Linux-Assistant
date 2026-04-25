@@ -601,7 +601,14 @@ class IngestPipelineRunner:
         failed_root.mkdir(parents=True, exist_ok=True)
 
         dest_pdf = failed_root / pdf_path.name
-        shutil.copy2(str(pdf_path), str(dest_pdf))
+        # Move (not copy) so the queue-level loop does not retry the same
+        # broken PDF on the next run. shutil.move falls back to copy+unlink
+        # across filesystems.
+        try:
+            shutil.move(str(pdf_path), str(dest_pdf))
+        except FileNotFoundError:
+            # Source already gone — nothing to move; continue with audit only.
+            pass
 
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
         error_data: dict[str, Any] = {"reason": reason, "ts": ts}
