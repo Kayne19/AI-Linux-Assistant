@@ -55,17 +55,22 @@ Per document, the pipeline walks these states:
 
 - `INITIALIZED`
 - `VALIDATE_INPUT`
+- `LOAD_SIDECAR`
 - `INTAKE_RAW`
 - `EXPORT_TEXT`
+- `EXTRACT_IDENTITY`
+- `RESOLVE_IDENTITY`
 - `UPDATE_REGISTRY`
 - `CLEAN_ELEMENTS`
-- `ENRICH_CONTEXT`
+- `DETECT_SECTIONS`
+- `ENRICH_PREPARE`
+- `ENRICH_CONTEXT` (sync mode) or `AWAITING_ENRICHMENT` → `ENRICH_SUBMIT` → `ENRICH_POLL` → `ENRICH_MERGE` (batch mode)
 - `FINALIZE_OUTPUT`
 - `INGEST_VECTOR_DB`
 - `CLEANUP_ARTIFACTS`
 - `COMPLETED`
 
-These states are explicit in [app/ingestion/pipeline.py](app/ingestion/pipeline.py).
+These states are explicit in [app/ingestion/pipeline.py](app/ingestion/pipeline.py). In `--batch-mode`, Phase 1 runs through `ENRICH_PREPARE` and parks the document under `ingest_state/<doc_id>/state.json`. Phase 2 is driven separately by `scripts/ingest/batch_runner.py`, which advances the doc through OpenAI Batch submission/poll/merge and onward to indexing.
 
 ## Main Files
 
@@ -98,9 +103,13 @@ Owns cleaning and deduping of extracted elements.
 Owns enrichment of eligible chunks with:
 
 - `ai_context`
+- `local_subsystems`
+- `entities`
+- `applies_to_override`
 - `embedding_text`
 
-Current enrichment uses an injected text worker and prompt caching.
+Current enrichment uses an injected text worker, strict JSON output, validation,
+deterministic entity extraction as a fallback/check, and prompt caching.
 
 ### `app/ingestion/indexer.py`
 
@@ -198,11 +207,40 @@ If you modify ingestion, preserve these invariants:
 4. Indexing stays ingestion-owned.
 5. Console and trace outputs remain useful enough to answer what happened and where a run failed.
 
+## Autonomous Registry Decisions
+
+As of T5, registry update decisions are applied autonomously without human prompts. The `auto_apply_registry_suggestion` function validates LLM output and accepts or rejects it: a suggestion is skipped (treated as a no-op) if the LLM returns nothing, an unrecognized action, or an `upsert` with no label; otherwise the suggestion is accepted as-is. Every decision is written as a JSON line to `Back-end/ingest_traces/audit_<run_id>.jsonl` via the `AuditLog` instance that `IngestPipelineRunner` creates at the start of each `run()` call and closes in a `finally` block. The CLI (`scripts/ingest/ingest_pipeline.py`) no longer prompts interactively when no path argument is given; it prints usage to stderr and exits with code 2.
+
+## Mass-Mode and Intake Robustness
+
+Pass `--mass-mode` to the CLI to enable unattended bulk ingestion. Mass mode activates three behaviors: (1) a sanitizer pre-pass (`stages/sanitizer.py`) that rewrites each PDF via pypdf before intake — stripping `/Annots` and normalizing structure — quarantining the document immediately if sanitization fails; (2) a page-coverage threshold (default 0.9) that quarantines any document whose successfully processed pages fall below the fraction; (3) `drop_boilerplate=True` in the cleaner to strip repeated headers/footers across pages. Fine-grained control is available via `--sanitize` (sanitizer only) and `--min-page-coverage <float>`. Quarantined documents are copied to `Back-end/data/failed/<stem>/` along with an `error.json` containing `{reason, page_coverage_pct, processed_pages, total_pages, failed_batches, ts}`. Every quarantine event is written to the per-run audit JSONL with `phase="intake_quarantine"`. Batch-level failures within a single document are now tracked as structured `failed_batches` in `IntakeResult` rather than silently dropped.
+
+## Document Identity And Metadata
+
+Every ingested document carries a structured `DocumentIdentity` (controlled-vocabulary enums for `source_family`, `vendor_or_project`, `doc_kind`, `trust_tier`, `freshness_status`, `os_family`, `init_systems`, `package_managers`, `major_subsystems`, `ingest_source_type`). Identity resolves through ordered layers — operator sidecar (`<pdf>.meta.yaml`) → strong first-page/TOC heuristics → strong PDF `/Info` metadata → LLM infill → weak deterministic values → defaults. Sidecar fields always win. The LLM normalizer runs by default for live ingestion only when deterministic output is missing or weak; pass `--no-identity-llm-infill` to disable it. Configure the normalizer with `INGEST_IDENTITY_PROVIDER`, `INGEST_IDENTITY_MODEL`, and `INGEST_IDENTITY_REASONING_EFFORT`. See `app/ingestion/identity/{vocabularies,schema,sidecar,pdf_meta,heuristics,llm_normalizer,resolver,registry}.py`. Each layer contribution is audit-logged.
+
+Weak deterministic fields include `unknown`, empty, or `other` enum values; list fields containing only `unknown`; missing product/version/release/applicability fields; and sparse heuristic identity where only filename/stem or a single vendor token supports the field. LLM values are still vocabulary-validated and invalid values are dropped or coerced to `unknown`. `trust_tier` and `freshness_status` are conservative: sidecar or strong deterministic evidence can set them, but LLM suggestions are audit-logged and not promoted automatically.
+
+`IngestPipelineRunner.run()` drives `LOAD_SIDECAR`, `EXTRACT_IDENTITY`, `RESOLVE_IDENTITY`, and `DETECT_SECTIONS` before enrichment. Section metadata is attached after cleaning and before sync or batch enrichment. The indexer (`app/ingestion/indexer.py`) receives the resolved `DocumentIdentity`, writes one row per document to the LanceDB `documents` table, and stamps `canonical_source_id`, `section_path`, `page_start`/`page_end`, `chunk_type`, and `entities` on every chunk row. The legacy no-identity indexer path remains only for direct test/backward-compatible callers.
+
+Fresh re-ingest is the only supported path for populating this metadata. The old in-place update path for existing chunks has been removed; existing legacy-indexed documents must be re-ingested to receive document rows and section metadata.
+
+## Two-Phase Batch Ingestion
+
+For corpus-scale runs the enrichment stage can switch from per-chunk synchronous calls to the OpenAI Batch API (50% cost, ~24h SLA). Phase 1 runs through `ENRICH_PREPARE` and writes `batch_input.jsonl`, `requests.json`, `cleaned.json`, and `context.txt` to `ingest_state/<doc_id>/`, then parks the doc as `AWAITING_ENRICHMENT`. Phase 2 is driven by `scripts/ingest/batch_runner.py`, which walks the state directory, submits/polls/merges each batch via the transport-only client at `app/providers/openai_batch.py`, and continues into `INGEST_VECTOR_DB` and `CLEANUP_ARTIFACTS`. Per-doc state on disk makes the runner idempotent across restarts. `--sync` keeps the existing in-process worker for one-off ingests where prompt caching is preferable.
+
+## Status Dashboard
+
+`scripts/ingest/status.py` summarizes the in-flight FSM. It walks `ingest_state/` and the adjacent `failed/` quarantine dir, counts docs per state, and supports `--verbose` (per-doc rows) and `--json` (machine-readable) modes. Use it to answer "how many docs are still waiting on OpenAI?" without grepping the state JSON.
+
 ## Files To Read First
 
 1. [app/ingestion/pipeline.py](app/ingestion/pipeline.py)
 2. [app/ingestion/indexer.py](app/ingestion/indexer.py)
-3. [app/ingestion/stages/context_enrichment.py](app/ingestion/stages/context_enrichment.py)
-4. [app/ingestion/stages/cleaner.py](app/ingestion/stages/cleaner.py)
-5. [app/ingestion/stages/pdf_intake.py](app/ingestion/stages/pdf_intake.py)
-6. [scripts/ingest/ingest_pipeline.py](scripts/ingest/ingest_pipeline.py)
+3. [app/ingestion/identity/resolver.py](app/ingestion/identity/resolver.py)
+4. [app/ingestion/stages/context_enrichment.py](app/ingestion/stages/context_enrichment.py)
+5. [app/ingestion/stages/sections.py](app/ingestion/stages/sections.py)
+6. [app/ingestion/batch_runner.py](app/ingestion/batch_runner.py)
+7. [scripts/ingest/ingest_pipeline.py](scripts/ingest/ingest_pipeline.py)
+8. [scripts/ingest/batch_runner.py](scripts/ingest/batch_runner.py)
+9. [scripts/ingest/status.py](scripts/ingest/status.py)

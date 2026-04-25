@@ -21,6 +21,11 @@ class RetrievalConfig:
     embed_device: str | None
     rerank_device: str | None
     voyage_output_dimension: int | None
+    documents_table_name: str = "documents"
+    # Scope pre-narrowing (T12)
+    scope_min_hit_count: int = 3
+    scope_min_top_score: float = 2.0
+    scope_max_widenings: int = 2
 
 
 LEGACY_EMBED_PROVIDER = "local"

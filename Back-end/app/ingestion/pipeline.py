@@ -1,21 +1,43 @@
 import json
+import logging
 import shutil
 import sys
 import time
+import hashlib
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 from pypdf import PdfReader
 
 from config.settings import SETTINGS
+from ingestion.audit import AuditLog
 from ingestion.console import print_artifact, print_banner, print_kv, print_progress, print_state, print_summary
 from ingestion.indexer import build_ingestion_indexer
+from ingestion.identity.heuristics import extract_heuristic_signals
+from ingestion.identity.llm_normalizer import normalize_with_llm
+from ingestion.identity.pdf_meta import read_pdf_info
+from ingestion.identity.resolver import resolve_identity
+from ingestion.identity.schema import DocumentIdentity
+from ingestion.identity.sidecar import load_sidecar
 from ingestion.stages.cleaner import clean_elements
-from ingestion.stages.context_enrichment import enrich_elements
-from ingestion.stages.pdf_intake import process_pdf_parallel
+from ingestion.stages.context_enrichment import (
+    build_enrichment_requests,
+    enrich_batch_merge,
+    enrich_batch_poll,
+    enrich_batch_prepare,
+    enrich_batch_submit,
+    enrich_elements,
+    enrich_sync,
+)
+from ingestion.stages.pdf_intake import IntakeResult, process_pdf_parallel
+from ingestion.stages.sanitizer import sanitize_pdf
+from ingestion.stages.sections import attach_sections
+from ingestion.doc_state import DocState, save_state, load_state, state_dir
 from ingestion.trace import IngestTraceRecorder
 from orchestration.routing_registry import load_registry, merge_domain_suggestion
 from prompting.prompts import REGISTRY_UPDATE_SYSTEM_PROMPT
@@ -24,6 +46,14 @@ from providers.google_caller import GoogleWorker
 from providers.local_caller import LocalWorker
 from providers.openAI_caller import OpenAIWorker
 from retrieval.config import load_retrieval_config
+
+
+class LowPageCoverageError(Exception):
+    """Raised when intake page coverage falls below the configured threshold.
+
+    Caught at the queue level so the bad document is quarantined without
+    killing the rest of the queue run.
+    """
 
 
 REGISTRY_UPDATE_OUTPUT_SCHEMA = {
@@ -185,6 +215,92 @@ def summarize_registry_suggestion(suggestion) -> str:
     return json.dumps(suggestion, indent=2)
 
 
+def auto_apply_registry_suggestion(
+    suggestion: dict | None,
+    document_identity: dict,
+    *,
+    audit: "AuditLog | None" = None,
+) -> dict:
+    """Validate + accept an LLM registry suggestion autonomously. Never prompts.
+
+    Returns the suggestion (possibly normalized). If the LLM produced nothing
+    usable (None, missing action, or unrecognized action), returns
+    {"action": "skip", "reason": "<why>"} so the caller treats it as a no-op.
+    """
+    doc = document_identity.get("filename", "unknown")
+
+    if suggestion is None:
+        result = {"action": "skip", "reason": "parser_failed"}
+        if audit is not None:
+            audit.record(
+                doc=doc,
+                phase="registry_update",
+                action="reject_missing",
+                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                chosen=result,
+                confidence=None,
+                rationale="no LLM output",
+            )
+        return result
+
+    action = suggestion.get("action")
+    if action not in {"upsert", "skip"}:
+        result = {"action": "skip", "reason": "unrecognized_action"}
+        if audit is not None:
+            audit.record(
+                doc=doc,
+                phase="registry_update",
+                action="reject_bad_action",
+                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                chosen=result,
+                confidence=None,
+                rationale="unrecognized action from LLM",
+            )
+        return result
+
+    if action == "skip":
+        if audit is not None:
+            audit.record(
+                doc=doc,
+                phase="registry_update",
+                action="accept_skip",
+                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                chosen=suggestion,
+                confidence=None,
+                rationale="accepted LLM suggestion",
+            )
+        return suggestion
+
+    # action == "upsert"
+    label = suggestion.get("label")
+    if not label or not str(label).strip():
+        result = {"action": "skip", "reason": "missing_label"}
+        if audit is not None:
+            audit.record(
+                doc=doc,
+                phase="registry_update",
+                action="reject_missing_label",
+                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                chosen=result,
+                confidence=None,
+                rationale="label missing",
+            )
+        return result
+
+    if audit is not None:
+        audit.record(
+            doc=doc,
+            phase="registry_update",
+            action="accept_upsert",
+            inputs={"document_identity": document_identity, "suggestion": suggestion},
+            chosen=suggestion,
+            confidence=None,
+            rationale="accepted LLM suggestion",
+        )
+    return suggestion
+
+
+# Unused after T5; retained for one release cycle. Remove in follow-up.
 def review_registry_suggestion(suggestion, document_identity):
     print("🧾 Registry suggestion")
     print(summarize_registry_suggestion(suggestion))
@@ -259,11 +375,15 @@ def update_routing_registry(
     context_output: Path,
     provider: str | None = None,
     model: str | None = None,
+    *,
+    document_identity: dict | None = None,
+    audit: "AuditLog | None" = None,
 ) -> None:
     context_text = context_output.read_text(encoding="utf-8")
     front_excerpt = context_text[:6000]
     tail_excerpt = context_text[-2500:] if len(context_text) > 6000 else ""
-    document_identity = extract_document_identity(pdf_path)
+    if document_identity is None:
+        document_identity = extract_document_identity(pdf_path)
     registry = load_registry()
     if provider is None:
         provider = SETTINGS.registry_updater.provider
@@ -304,7 +424,7 @@ def update_routing_registry(
         print("⚠️ Registry update skipped: could not parse local model output.")
         return
 
-    suggestion = review_registry_suggestion(suggestion, document_identity)
+    suggestion = auto_apply_registry_suggestion(suggestion, document_identity, audit=audit)
 
     if suggestion.get("action") == "skip":
         print(f"ℹ️ Registry unchanged: {suggestion.get('reason', 'not needed')}")
@@ -324,15 +444,25 @@ def update_routing_registry(
 class IngestState(str, Enum):
     INITIALIZED = "INITIALIZED"
     VALIDATE_INPUT = "VALIDATE_INPUT"
+    LOAD_SIDECAR = "LOAD_SIDECAR"
     INTAKE_RAW = "INTAKE_RAW"
     EXPORT_TEXT = "EXPORT_TEXT"
+    EXTRACT_IDENTITY = "EXTRACT_IDENTITY"
+    RESOLVE_IDENTITY = "RESOLVE_IDENTITY"
     UPDATE_REGISTRY = "UPDATE_REGISTRY"
     CLEAN_ELEMENTS = "CLEAN_ELEMENTS"
-    ENRICH_CONTEXT = "ENRICH_CONTEXT"
+    DETECT_SECTIONS = "DETECT_SECTIONS"
+    ENRICH_CONTEXT = "ENRICH_CONTEXT"        # sync path
+    ENRICH_PREPARE = "ENRICH_PREPARE"        # batch path: build JSONL
+    ENRICH_SUBMIT = "ENRICH_SUBMIT"          # batch path: upload + create
+    AWAITING_ENRICHMENT = "AWAITING_ENRICHMENT"  # parked between phase 1 and phase 2
+    ENRICH_POLL = "ENRICH_POLL"
+    ENRICH_MERGE = "ENRICH_MERGE"
     FINALIZE_OUTPUT = "FINALIZE_OUTPUT"
     INGEST_VECTOR_DB = "INGEST_VECTOR_DB"
     CLEANUP_ARTIFACTS = "CLEANUP_ARTIFACTS"
     COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
 
 
 @dataclass(frozen=True)
@@ -351,7 +481,18 @@ class IngestPipelineConfig:
     enrichment_reasoning_effort: str | None
     registry_provider: str
     registry_model: str
+    identity_provider: str
+    identity_model: str
+    identity_reasoning_effort: str | None
     trace_output_dir: Path
+    # Mass-ingestion robustness fields
+    mass_mode: bool = False
+    sanitize: bool = False
+    min_page_coverage: float = 0.9
+    # Two-phase batch-mode fields
+    batch_mode: bool = False            # when True, phase 1 stops after ENRICH_PREPARE
+    ingest_state_dir: Path | None = None  # parent dir for durable per-doc state
+    identity_llm_infill: bool = True
 
 
 @dataclass
@@ -368,6 +509,104 @@ class IngestRunContext:
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     completed_at: str | None = None
     duration_seconds: float = 0.0
+    audit: "AuditLog | None" = None
+    intake_result: "IntakeResult | None" = None
+    doc_id: str | None = None                 # canonical_source_id; stem fallback
+    enrichment_requests: list = field(default_factory=list)
+    doc_state_path: Path | None = None
+    sidecar: dict | None = None
+    pdf_info: dict[str, Any] = field(default_factory=dict)
+    heuristic_signals: dict[str, Any] = field(default_factory=dict)
+    document_identity: DocumentIdentity | None = None
+    identity_weak_fields: list[str] = field(default_factory=list)
+    identity_llm_fields: dict[str, Any] = field(default_factory=dict)
+
+
+_IDENTITY_INFILL_FIELDS = {
+    "canonical_title",
+    "source_family",
+    "product",
+    "vendor_or_project",
+    "version",
+    "release_date",
+    "doc_kind",
+    "trust_tier",
+    "freshness_status",
+    "os_family",
+    "init_systems",
+    "package_managers",
+    "major_subsystems",
+    "applies_to",
+    "source_url",
+}
+
+_CONSERVATIVE_LLM_FIELDS = {"trust_tier", "freshness_status"}
+
+
+def _identity_value_is_weak(field: str, value, *, stem: str) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "unknown"}:
+            return True
+        if field in {"source_family", "doc_kind"} and normalized == "other":
+            return True
+        if field == "canonical_title" and normalized == (stem or "").strip().lower():
+            return True
+        return False
+    if isinstance(value, list):
+        return not value or all(
+            item is None or (isinstance(item, str) and item.strip().lower() in {"", "unknown"})
+            for item in value
+        )
+    return False
+
+
+def _weak_identity_fields(identity: DocumentIdentity, sidecar: dict | None, heuristic_signals: dict) -> set[str]:
+    stem = heuristic_signals.get("stem", "")
+    sidecar_fields = set(sidecar or {})
+    weak: set[str] = set()
+    for field in _IDENTITY_INFILL_FIELDS:
+        if field in sidecar_fields:
+            continue
+        if _identity_value_is_weak(field, getattr(identity, field, None), stem=stem):
+            weak.add(field)
+
+    vendors = heuristic_signals.get("vendors_detected") or []
+    if len(vendors) == 1 and not identity.product and not identity.version:
+        weak.update({"source_family", "vendor_or_project"})
+    weak -= sidecar_fields
+    return weak
+
+
+def _filter_llm_identity_fields(
+    *,
+    llm_fields: dict,
+    requested_fields: set[str],
+    audit: "AuditLog | None",
+    doc: str,
+) -> dict:
+    filtered: dict[str, Any] = {}
+    for field, value in (llm_fields or {}).items():
+        if field not in _IDENTITY_INFILL_FIELDS:
+            continue
+        if field in _CONSERVATIVE_LLM_FIELDS:
+            if audit is not None and value not in (None, "", "unknown"):
+                audit.record(
+                    doc=doc,
+                    phase="identity_llm_infill",
+                    action="drop_conservative_field",
+                    inputs={"field": field, "value": value},
+                    chosen=None,
+                    confidence=None,
+                    rationale="LLM trust/freshness suggestions are audited but not applied without deterministic evidence.",
+                )
+            continue
+        if field not in requested_fields:
+            continue
+        filtered[field] = value
+    return filtered
 
 
 class IngestPipelineRunner:
@@ -378,42 +617,75 @@ class IngestPipelineRunner:
             config.enrichment_model,
             config.enrichment_reasoning_effort,
         )
+        self.identity_worker = None
+        if config.identity_llm_infill:
+            self.identity_worker = build_text_worker(
+                config.identity_provider,
+                config.identity_model,
+                config.identity_reasoning_effort,
+            )
 
     def run(self, pdf_path: Path, queue_index: int = 1, queue_total: int = 1) -> IngestRunContext:
+        run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%f')}Z_{pdf_path.stem}"
+        audit = AuditLog(run_id=run_id, traces_dir=self.config.trace_output_dir)
         context = IngestRunContext(
             pdf_path=pdf_path,
             config=self.config,
             queue_index=queue_index,
             queue_total=queue_total,
+            audit=audit,
         )
-        self._print_run_banner(context)
-        self._transition(context, IngestState.INITIALIZED)
-        self._transition(context, IngestState.VALIDATE_INPUT)
-        self._validate_input(context)
-        self._transition(context, IngestState.INTAKE_RAW)
-        self._intake_raw(context)
-        self._transition(context, IngestState.EXPORT_TEXT)
-        self._export_text(context)
-        self._transition(context, IngestState.UPDATE_REGISTRY)
-        self._update_registry(context)
-        self._transition(context, IngestState.CLEAN_ELEMENTS)
-        self._clean_elements(context)
-        self._transition(context, IngestState.ENRICH_CONTEXT)
-        self._enrich_context(context)
-        self._transition(context, IngestState.FINALIZE_OUTPUT)
-        self._finalize_output(context)
-        self._transition(context, IngestState.INGEST_VECTOR_DB)
-        self._ingest_vector_db(context)
-        self._transition(context, IngestState.CLEANUP_ARTIFACTS)
-        self._cleanup_artifacts(context)
-        self._transition(context, IngestState.COMPLETED)
-        duration = time.time() - context.start_time
-        context.duration_seconds = duration
-        context.completed_at = datetime.now(timezone.utc).isoformat()
-        print(
-            f"🏁 Completed {self._document_label(context)} in {duration:.2f}s"
-            f" | raw={len(context.raw_elements)} | cleaned={len(context.cleaned_elements)}"
-        )
+        try:
+            self._print_run_banner(context)
+            self._transition(context, IngestState.INITIALIZED)
+            self._transition(context, IngestState.VALIDATE_INPUT)
+            self._validate_input(context)
+            self._transition(context, IngestState.LOAD_SIDECAR)
+            self._load_sidecar(context)
+            self._transition(context, IngestState.INTAKE_RAW)
+            self._intake_raw(context)
+            self._transition(context, IngestState.EXPORT_TEXT)
+            self._export_text(context)
+            self._transition(context, IngestState.EXTRACT_IDENTITY)
+            self._extract_identity(context)
+            self._transition(context, IngestState.RESOLVE_IDENTITY)
+            self._resolve_identity(context)
+            self._transition(context, IngestState.UPDATE_REGISTRY)
+            self._update_registry(context)
+            self._transition(context, IngestState.CLEAN_ELEMENTS)
+            self._clean_elements(context)
+            self._transition(context, IngestState.DETECT_SECTIONS)
+            self._detect_sections(context)
+            if self.config.batch_mode:
+                self._transition(context, IngestState.ENRICH_PREPARE)
+                self._enrich_prepare(context)
+                self._transition(context, IngestState.AWAITING_ENRICHMENT)
+                self._park_for_batch(context)
+                duration = time.time() - context.start_time
+                context.duration_seconds = duration
+                context.completed_at = datetime.now(timezone.utc).isoformat()
+                print(
+                    f"🅿️  Parked {self._document_label(context)} at AWAITING_ENRICHMENT in {duration:.2f}s"
+                )
+                return context
+            self._transition(context, IngestState.ENRICH_CONTEXT)
+            self._enrich_context(context)
+            self._transition(context, IngestState.FINALIZE_OUTPUT)
+            self._finalize_output(context)
+            self._transition(context, IngestState.INGEST_VECTOR_DB)
+            self._ingest_vector_db(context)
+            self._transition(context, IngestState.CLEANUP_ARTIFACTS)
+            self._cleanup_artifacts(context)
+            self._transition(context, IngestState.COMPLETED)
+            duration = time.time() - context.start_time
+            context.duration_seconds = duration
+            context.completed_at = datetime.now(timezone.utc).isoformat()
+            print(
+                f"🏁 Completed {self._document_label(context)} in {duration:.2f}s"
+                f" | raw={len(context.raw_elements)} | cleaned={len(context.cleaned_elements)}"
+            )
+        finally:
+            audit.close()
         return context
 
     def _document_label(self, context: IngestRunContext) -> str:
@@ -433,16 +705,235 @@ class IngestPipelineRunner:
         if not context.pdf_path.exists():
             raise FileNotFoundError(context.pdf_path)
 
+    def _load_sidecar(self, context: IngestRunContext) -> None:
+        context.sidecar = load_sidecar(context.pdf_path)
+        if context.audit is not None:
+            context.audit.record(
+                doc=context.pdf_path.name,
+                phase="identity_sidecar",
+                action="loaded" if context.sidecar else "missing",
+                inputs={"pdf_path": str(context.pdf_path)},
+                chosen=context.sidecar,
+                confidence=None,
+                rationale=None,
+            )
+
+    def _extract_identity(self, context: IngestRunContext) -> None:
+        context.pdf_info = read_pdf_info(context.pdf_path)
+        context.heuristic_signals = extract_heuristic_signals(context.pdf_path)
+        if context.audit is not None:
+            context.audit.record(
+                doc=context.pdf_path.name,
+                phase="identity_extraction",
+                action="deterministic_extract",
+                inputs={"pdf_path": str(context.pdf_path)},
+                chosen={
+                    "pdf_info": context.pdf_info,
+                    "heuristic_signals": context.heuristic_signals,
+                },
+                confidence=None,
+                rationale="sidecar, PDF metadata, and heuristics extracted before optional LLM infill",
+            )
+
+    def _resolve_identity(self, context: IngestRunContext) -> None:
+        preview_identity, _ = resolve_identity(
+            pdf_path=context.pdf_path,
+            sidecar=context.sidecar,
+            pdf_info=context.pdf_info,
+            heuristic_signals=context.heuristic_signals,
+            llm_fields={},
+            pipeline_version="1.0.0",
+            audit=None,
+        )
+        weak_fields = _weak_identity_fields(
+            preview_identity,
+            context.sidecar,
+            context.heuristic_signals,
+        )
+        context.identity_weak_fields = sorted(weak_fields)
+        llm_fields: dict[str, Any] = {}
+        if context.config.identity_llm_infill and weak_fields and self.identity_worker is not None:
+            if context.audit is not None:
+                context.audit.record(
+                    doc=context.pdf_path.name,
+                    phase="identity_llm_infill",
+                    action="attempt",
+                    inputs={"requested_fields": sorted(weak_fields)},
+                    chosen=None,
+                    confidence=None,
+                    rationale="deterministic identity has missing or weak fields",
+                )
+            cache_material = json.dumps(
+                {
+                    "pdf_info": context.pdf_info,
+                    "heuristic_signals": context.heuristic_signals,
+                    "sidecar": context.sidecar,
+                },
+                sort_keys=True,
+                default=str,
+            )
+            raw_llm_fields = normalize_with_llm(
+                worker=self.identity_worker,
+                filename=context.pdf_path.name,
+                pdf_info=context.pdf_info,
+                heuristic_signals=context.heuristic_signals,
+                sidecar=context.sidecar,
+                cache_suffix=hashlib.sha256(cache_material.encode("utf-8")).hexdigest()[:16],
+                requested_fields=sorted(weak_fields),
+            )
+            llm_fields = _filter_llm_identity_fields(
+                llm_fields=raw_llm_fields,
+                requested_fields=weak_fields,
+                audit=context.audit,
+                doc=context.pdf_path.name,
+            )
+            context.identity_llm_fields = dict(llm_fields)
+            if context.audit is not None:
+                context.audit.record(
+                    doc=context.pdf_path.name,
+                    phase="identity_llm_infill",
+                    action="accepted_fields" if llm_fields else "no_usable_fields",
+                    inputs={"raw_fields": raw_llm_fields},
+                    chosen={"accepted_fields": sorted(llm_fields)},
+                    confidence=None,
+                    rationale=None,
+                )
+        elif context.audit is not None:
+            context.audit.record(
+                doc=context.pdf_path.name,
+                phase="identity_llm_infill",
+                action="skipped",
+                inputs={"enabled": context.config.identity_llm_infill, "weak_fields": sorted(weak_fields)},
+                chosen=None,
+                confidence=None,
+                rationale="no infill needed or worker disabled",
+            )
+
+        identity, _contributions = resolve_identity(
+            pdf_path=context.pdf_path,
+            sidecar=context.sidecar,
+            pdf_info=context.pdf_info,
+            heuristic_signals=context.heuristic_signals,
+            llm_fields=llm_fields,
+            pipeline_version="1.0.0",
+            audit=context.audit,
+            weak_deterministic_fields=weak_fields,
+        )
+        errors = identity.validate()
+        if errors:
+            raise ValueError(f"document identity validation failed: {errors}")
+        context.document_identity = identity
+        context.doc_id = identity.canonical_source_id
+        print_summary(
+            "Document identity resolved",
+            [
+                ("canonical_source_id", identity.canonical_source_id),
+                ("canonical_title", identity.canonical_title),
+            ],
+        )
+
+    def _quarantine_doc(
+        self,
+        context: IngestRunContext,
+        *,
+        reason: str,
+        action: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Move the source PDF into data/failed/<stem>/ and write error.json.
+
+        Also emits an audit-log entry and then raises LowPageCoverageError so
+        the queue-level loop can cleanly catch it.
+        """
+        pdf_path = context.pdf_path
+        failed_root = pdf_path.parent.parent / "failed" / pdf_path.stem
+        failed_root.mkdir(parents=True, exist_ok=True)
+
+        dest_pdf = failed_root / pdf_path.name
+        # Move (not copy) so the queue-level loop does not retry the same
+        # broken PDF on the next run. shutil.move falls back to copy+unlink
+        # across filesystems.
+        try:
+            shutil.move(str(pdf_path), str(dest_pdf))
+        except FileNotFoundError:
+            # Source already gone — nothing to move; continue with audit only.
+            pass
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+        error_data: dict[str, Any] = {"reason": reason, "ts": ts}
+        if extra:
+            error_data.update(extra)
+        error_json_path = failed_root / "error.json"
+        with error_json_path.open("w", encoding="utf-8") as fh:
+            json.dump(error_data, fh, indent=2, ensure_ascii=False)
+
+        if context.audit is not None:
+            context.audit.record(
+                doc=pdf_path.name,
+                phase="intake_quarantine",
+                action=action,
+                inputs=error_data,
+                chosen=None,
+                confidence=None,
+                rationale=reason,
+            )
+
+        raise LowPageCoverageError(
+            f"{pdf_path.name}: quarantined ({action}): {reason}"
+        )
+
     def _intake_raw(self, context: IngestRunContext) -> None:
         config = context.config
-        context.raw_elements = process_pdf_parallel(
-            str(context.pdf_path),
+        pdf_path = context.pdf_path
+
+        # --- optional sanitizer pass (mass_mode or explicit sanitize=True) ---
+        source_for_intake = pdf_path
+        if config.sanitize:
+            sanitized_path = pdf_path.with_name(f"{pdf_path.stem}_sanitized.pdf")
+            ok = sanitize_pdf(pdf_path, sanitized_path)
+            if not ok:
+                self._quarantine_doc(
+                    context,
+                    reason="sanitizer failed to rewrite PDF",
+                    action="sanitizer_failed",
+                )
+            source_for_intake = sanitized_path
+
+        intake_result = process_pdf_parallel(
+            str(source_for_intake),
             batch_size=config.batch_size,
             max_workers=config.max_workers,
             hi_res_model_name=config.hi_res_model_name,
             min_text_chars=config.min_text_chars,
             ocr_dpi=config.ocr_dpi,
         )
+        context.intake_result = intake_result
+
+        # Clean up temporary sanitized file if we created one
+        if config.sanitize and source_for_intake != pdf_path and source_for_intake.exists():
+            try:
+                source_for_intake.unlink()
+            except Exception:
+                pass
+
+        # --- coverage threshold check ---
+        if intake_result.page_coverage_pct < config.min_page_coverage:
+            self._quarantine_doc(
+                context,
+                reason=(
+                    f"page coverage {intake_result.page_coverage_pct:.1%} "
+                    f"below threshold {config.min_page_coverage:.1%}"
+                ),
+                action="low_coverage",
+                extra={
+                    "page_coverage_pct": intake_result.page_coverage_pct,
+                    "processed_pages": intake_result.processed_pages,
+                    "total_pages": intake_result.total_pages,
+                    "failed_batches": intake_result.failed_batches,
+                },
+            )
+
+        context.raw_elements = intake_result.elements
         write_json(config.raw_output, context.raw_elements)
         print_summary(
             "Raw extraction complete",
@@ -456,21 +947,43 @@ class IngestPipelineRunner:
         export_full_text(context.pdf_path, context.config.context_output)
 
     def _update_registry(self, context: IngestRunContext) -> None:
+        document_identity = None
+        if context.document_identity is not None:
+            document_identity = {
+                "filename": context.pdf_path.name,
+                "stem": context.pdf_path.stem,
+                **context.document_identity.to_dict(),
+            }
         update_routing_registry(
             context.pdf_path,
             context.config.context_output,
             provider=context.config.registry_provider,
             model=context.config.registry_model,
+            document_identity=document_identity,
+            audit=context.audit,
         )
 
     def _clean_elements(self, context: IngestRunContext) -> None:
-        context.cleaned_elements = clean_elements(context.raw_elements, drop_boilerplate=False)
+        drop_boilerplate = context.config.mass_mode
+        context.cleaned_elements = clean_elements(context.raw_elements, drop_boilerplate=drop_boilerplate)
         write_json(context.config.clean_output, context.cleaned_elements)
         print_summary(
             "Cleaning complete",
             [
                 ("raw", len(context.raw_elements)),
                 ("clean", len(context.cleaned_elements)),
+                ("drop_boilerplate", drop_boilerplate),
+                ("artifact", context.config.clean_output.name),
+            ],
+        )
+
+    def _detect_sections(self, context: IngestRunContext) -> None:
+        context.cleaned_elements = attach_sections(context.cleaned_elements)
+        write_json(context.config.clean_output, context.cleaned_elements)
+        print_summary(
+            "Section detection complete",
+            [
+                ("elements", len(context.cleaned_elements)),
                 ("artifact", context.config.clean_output.name),
             ],
         )
@@ -487,6 +1000,99 @@ class IngestPipelineRunner:
             },
         )
 
+    def _doc_id_for(self, context: IngestRunContext) -> str:
+        return context.doc_id or context.pdf_path.stem
+
+    def _enrich_prepare(self, context: IngestRunContext) -> None:
+        """Build per-chunk enrichment requests and write the Batch API JSONL.
+
+        In batch mode the sync enricher is not called. Instead we stage
+        ``batch_input.jsonl`` + serialized requests under the doc's state dir,
+        leaving the actual submit/poll/merge to Phase 2.
+        """
+        with open(context.config.clean_output, "r", encoding="utf-8") as handle:
+            elements = json.load(handle)
+        with open(context.config.context_output, "r", encoding="utf-8") as handle:
+            full_doc_context = handle.read()
+
+        requests = build_enrichment_requests(
+            elements,
+            full_doc_context,
+            model=context.config.enrichment_model,
+        )
+        context.enrichment_requests = list(requests)
+        context.cleaned_elements = elements
+
+        if context.config.ingest_state_dir is None:
+            raise RuntimeError("batch_mode requires IngestPipelineConfig.ingest_state_dir")
+
+        doc_id = self._doc_id_for(context)
+        dir_path = state_dir(context.config.ingest_state_dir, doc_id)
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        batch_input_path = dir_path / "batch_input.jsonl"
+        enrich_batch_prepare(requests, batch_input_path)
+
+        requests_path = dir_path / "requests.json"
+        requests_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "custom_id": r.custom_id,
+                        "element_index": r.element_index,
+                        "system_prompt": r.system_prompt,
+                        "user_message": r.user_message,
+                        "model": r.model,
+                        "temperature": r.temperature,
+                        "max_output_tokens": r.max_output_tokens,
+                    }
+                    for r in requests
+                ]
+            )
+        )
+
+        cleaned_path = dir_path / "cleaned.json"
+        cleaned_path.write_text(json.dumps(elements))
+        context_path = dir_path / "context.txt"
+        context_path.write_text(full_doc_context)
+
+        print_summary(
+            "Batch JSONL prepared",
+            [
+                ("doc_id", doc_id),
+                ("chunks", len(requests)),
+                ("batch_input", batch_input_path.name),
+            ],
+        )
+
+    def _park_for_batch(self, context: IngestRunContext) -> None:
+        """Persist DocState after a successful ENRICH_PREPARE."""
+        doc_id = self._doc_id_for(context)
+        state = DocState(
+            doc_id=doc_id,
+            source_pdf=str(context.pdf_path.resolve()),
+            state=IngestState.AWAITING_ENRICHMENT.value,
+            total_chunks=len(context.enrichment_requests),
+            document_identity=context.document_identity.to_dict() if context.document_identity else None,
+            artifacts={
+                "raw_output": str(context.config.raw_output),
+                "clean_output": str(context.config.clean_output),
+                "context_output": str(context.config.context_output),
+                "final_output": str(context.config.final_output),
+            },
+        )
+        context.doc_state_path = save_state(context.config.ingest_state_dir, state)
+        if context.audit is not None:
+            context.audit.record(
+                doc=doc_id,
+                phase="batch_park",
+                action="await_enrichment",
+                inputs={"total_chunks": len(context.enrichment_requests)},
+                chosen={"state_path": str(context.doc_state_path)},
+                confidence=None,
+                rationale="Phase 1 complete; document parked pending batch enrichment.",
+            )
+
     def _finalize_output(self, context: IngestRunContext) -> None:
         generated_final_output = context.config.clean_output.with_name(f"{context.config.clean_output.stem}_final.json")
         context.generated_final_output = generated_final_output
@@ -502,7 +1108,10 @@ class IngestPipelineRunner:
         print_summary("Vector DB ingest", [("source", context.config.final_output.name)])
         retrieval_config = load_retrieval_config()
         indexer = build_ingestion_indexer(retrieval_config)
-        result = indexer.ingest_json(str(context.config.final_output))
+        result = indexer.ingest_json(
+            str(context.config.final_output),
+            document_identity=context.document_identity,
+        )
         print_summary(
             "Vector DB ingest complete",
             [
@@ -537,7 +1146,16 @@ def _trace_config_snapshot(config: IngestPipelineConfig) -> dict[str, Any]:
         "enrichment_reasoning_effort": config.enrichment_reasoning_effort,
         "registry_provider": config.registry_provider,
         "registry_model": config.registry_model,
+        "identity_provider": config.identity_provider,
+        "identity_model": config.identity_model,
+        "identity_reasoning_effort": config.identity_reasoning_effort,
+        "identity_llm_infill": config.identity_llm_infill,
         "trace_output_dir": str(config.trace_output_dir),
+        "mass_mode": config.mass_mode,
+        "sanitize": config.sanitize,
+        "min_page_coverage": config.min_page_coverage,
+        "batch_mode": config.batch_mode,
+        "ingest_state_dir": str(config.ingest_state_dir) if config.ingest_state_dir else None,
     }
 
 
@@ -570,6 +1188,15 @@ def run_pipeline(
     registry_provider: str,
     registry_model: str,
     trace_output_dir: Path,
+    identity_provider: str | None = None,
+    identity_model: str | None = None,
+    identity_reasoning_effort: str | None = None,
+    mass_mode: bool = False,
+    sanitize: bool = False,
+    min_page_coverage: float = 0.9,
+    batch_mode: bool = False,
+    ingest_state_dir: Path | None = None,
+    identity_llm_infill: bool = True,
 ) -> IngestRunContext:
     config = IngestPipelineConfig(
         raw_output=raw_output,
@@ -586,7 +1213,16 @@ def run_pipeline(
         enrichment_reasoning_effort=enrichment_reasoning_effort,
         registry_provider=registry_provider,
         registry_model=registry_model,
+        identity_provider=identity_provider or SETTINGS.ingest_identity_normalizer.provider,
+        identity_model=identity_model or SETTINGS.ingest_identity_normalizer.model,
+        identity_reasoning_effort=identity_reasoning_effort or SETTINGS.ingest_identity_normalizer.reasoning_effort or None,
         trace_output_dir=trace_output_dir,
+        mass_mode=mass_mode,
+        sanitize=sanitize,
+        min_page_coverage=min_page_coverage,
+        batch_mode=batch_mode,
+        ingest_state_dir=ingest_state_dir,
+        identity_llm_infill=identity_llm_infill,
     )
     runner = IngestPipelineRunner(config)
     trace = IngestTraceRecorder(
@@ -617,12 +1253,17 @@ def run_pipeline(
         print_artifact("trace", trace.trace_path)
         raise
 
+    trace_status = (
+        "awaiting_enrichment"
+        if context.state_trace and context.state_trace[-1] == IngestState.AWAITING_ENRICHMENT.value
+        else "completed"
+    )
     trace.record_document(
         queue_index=context.queue_index,
         queue_total=context.queue_total,
         source_path=context.pdf_path,
         filename=context.pdf_path.name,
-        status="completed",
+        status=trace_status,
         state_trace=context.state_trace,
         raw_elements=len(context.raw_elements),
         cleaned_elements=len(context.cleaned_elements),
@@ -695,6 +1336,38 @@ def unique_completed_path(completed_dir: Path, source_file: Path) -> Path:
     return _unique_destination_path(completed_dir, source_file)
 
 
+def _log_queue_doc_failure(
+    context: "IngestRunContext",
+    exc: Exception,
+    trace: "IngestTraceRecorder",
+) -> None:
+    """Record a per-doc failure to the trace and log it; does not raise."""
+    logger.warning(
+        "queue: document failed %s: %s",
+        context.pdf_path.name,
+        exc,
+    )
+    try:
+        trace.record_document(
+            queue_index=context.queue_index,
+            queue_total=context.queue_total,
+            source_path=context.pdf_path,
+            filename=context.pdf_path.name,
+            status="failed",
+            state_trace=context.state_trace,
+            raw_elements=len(context.raw_elements),
+            cleaned_elements=len(context.cleaned_elements),
+            started_at=context.started_at,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            duration_seconds=time.time() - context.start_time,
+            artifacts=_context_artifacts(context),
+            error=str(exc),
+        )
+    except Exception as record_exc:
+        logger.warning("queue: failed to record trace for %s: %s", context.pdf_path.name, record_exc)
+    print_artifact("trace", trace.trace_path)
+
+
 def run_directory_queue(root_dir: Path, config: IngestPipelineConfig) -> None:
     ingest_dir, completed_dir = ensure_queue_directories(root_dir)
     staged_count = stage_root_queue_files(root_dir, ingest_dir, completed_dir)
@@ -743,7 +1416,11 @@ def run_directory_queue(root_dir: Path, config: IngestPipelineConfig) -> None:
                 queue_total=context.queue_total,
                 source_path=context.pdf_path,
                 filename=context.pdf_path.name,
-                status="completed",
+                status=(
+                    "awaiting_enrichment"
+                    if context.state_trace and context.state_trace[-1] == IngestState.AWAITING_ENRICHMENT.value
+                    else "completed"
+                ),
                 state_trace=context.state_trace,
                 raw_elements=len(context.raw_elements),
                 cleaned_elements=len(context.cleaned_elements),
@@ -755,22 +1432,23 @@ def run_directory_queue(root_dir: Path, config: IngestPipelineConfig) -> None:
             )
             print_artifact("archived", destination)
         except Exception as exc:
-            trace.record_document(
-                queue_index=context.queue_index,
-                queue_total=context.queue_total,
-                source_path=context.pdf_path,
-                filename=context.pdf_path.name,
-                status="failed",
-                state_trace=context.state_trace,
-                raw_elements=len(context.raw_elements),
-                cleaned_elements=len(context.cleaned_elements),
-                started_at=context.started_at,
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                duration_seconds=time.time() - context.start_time,
-                artifacts=_context_artifacts(context),
-                error=str(exc),
-            )
-            print_artifact("trace", trace.trace_path)
-            raise
+            # Log failure but continue to next document so one bad PDF can't
+            # kill the whole queue run.
+            _log_queue_doc_failure(context, exc, trace)
+            # Attempt to record failure in a standalone audit log entry so the
+            # failure trail is always inspectable even without a runner audit.
+            try:
+                if context.audit is not None:
+                    context.audit.record(
+                        doc=context.pdf_path.name,
+                        phase="queue_error",
+                        action="document_failed",
+                        inputs=None,
+                        chosen=None,
+                        confidence=None,
+                        rationale=str(exc),
+                    )
+            except Exception:
+                pass
     print_artifact("trace", trace.trace_path)
     print_banner("QUEUE COMPLETE", [f"Processed documents: {total}"], char="=")

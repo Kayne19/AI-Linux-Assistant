@@ -12,6 +12,7 @@ class FakeStore:
         }
         self.sample_frame = pd.DataFrame(sample_rows or [])
         self.window_calls = []
+        self.scoped_calls = []
 
     def open_table(self):
         return object()
@@ -19,6 +20,17 @@ class FakeStore:
     def search_hybrid(self, query_vector, query_text, limit):
         del query_vector, query_text, limit
         return [dict(row) for row in self.candidates]
+
+    def search_hybrid_scoped(self, query_vector, query_text, limit, canonical_source_ids):
+        self.scoped_calls.append(tuple(canonical_source_ids or ()))
+        if not canonical_source_ids:
+            return self.search_hybrid(query_vector, query_text, limit)
+        allowed = set(canonical_source_ids)
+        return [
+            dict(row)
+            for row in self.candidates
+            if row.get("canonical_source_id") in (None, "", *allowed)
+        ]
 
     def fetch_source_page_window(self, source, page_start, page_end, limit=None):
         del limit
@@ -53,6 +65,40 @@ class FakeRerankerProvider:
         return [float(self.score_by_text.get(document, 0.0)) for document in documents]
 
 
+class FakeDocumentsStore:
+    def __init__(self, documents=None):
+        self.documents = list(documents or [])
+
+    def load_documents(self):
+        return [dict(row) for row in self.documents]
+
+
+DEFAULT_DOCUMENTS = [
+    {
+        "canonical_source_id": "debian-guide",
+        "canonical_title": "Debian Guide",
+        "os_family": "linux",
+        "source_family": "debian",
+        "trust_tier": "official",
+        "freshness_status": "current",
+    },
+    {
+        "canonical_source_id": "arch-guide",
+        "canonical_title": "Arch Guide",
+        "os_family": "linux",
+        "source_family": "arch",
+        "trust_tier": "community",
+        "freshness_status": "current",
+    },
+    {
+        "canonical_source_id": "notes",
+        "canonical_title": "Notes",
+        "trust_tier": "unknown",
+        "freshness_status": "unknown",
+    },
+]
+
+
 def build_pipeline(*, candidates, window_rows, score_by_text, initial_fetch=10, final_top_k=2, neighbor_pages=2, max_expanded=20):
     store = FakeStore(
         candidates=candidates,
@@ -64,6 +110,7 @@ def build_pipeline(*, candidates, window_rows, score_by_text, initial_fetch=10, 
     )
     return RetrievalSearchPipeline(
         store=store,
+        documents_store=FakeDocumentsStore(DEFAULT_DOCUMENTS),
         metadata_store=FakeMetadataStore(),
         embedding_provider=FakeEmbeddingProvider(),
         reranker_provider=FakeRerankerProvider(score_by_text),
@@ -116,17 +163,16 @@ def test_retrieval_fetches_true_neighbors_and_preserves_them_as_final_block():
     result = pipeline.retrieve_context_result("install package", ["debian"])
 
     assert store.window_calls == [("Debian.pdf", 8, 12)]
-    assert result["merged_blocks"] == [
-        {
-            "source": "Debian.pdf",
-            "pages": [8, 9, 10, 11, 12],
-            "page_label": "Pages 8-12",
-            "text": "Prep\n\nDeps\n\nInstall anchor\n\nFlags\n\nCleanup",
-            "bundle_key": "bundle:Debian.pdf:8-12:anchor:vec_10",
-            "block_key": "block:Debian.pdf:8-12",
-            "page_window_key": "window:Debian.pdf:8-12",
-        }
-    ]
+    assert len(result["merged_blocks"]) == 1
+    block = result["merged_blocks"][0]
+    assert block["source"] == "Debian.pdf"
+    assert block["pages"] == [8, 9, 10, 11, 12]
+    assert block["page_label"] == "Pages 8-12"
+    assert block["text"] == "Prep\n\nDeps\n\nInstall anchor\n\nFlags\n\nCleanup"
+    assert block["bundle_key"] == "bundle:Debian.pdf:8-12:anchor:vec_10"
+    assert block["block_key"] == "block:Debian.pdf:8-12"
+    assert block["page_window_key"] == "window:Debian.pdf:8-12"
+    assert block["citation_label"] == "Debian.pdf, p.8"
     metadata = result["retrieval_metadata"]
     assert metadata["anchor_count"] == 1
     assert metadata["anchor_pages"] == [10]
@@ -189,17 +235,16 @@ def test_page_less_rows_stay_singleton_non_expandable_bundles():
     result = pipeline.retrieve_context_result("note", [])
 
     assert store.window_calls == []
-    assert result["merged_blocks"] == [
-        {
-            "source": "Notes.md",
-            "pages": [],
-            "page_label": "Page ?",
-            "text": "Unpaged note",
-            "bundle_key": "bundle:Notes.md:singleton:vec_unpaged",
-            "block_key": "block:Notes.md:singleton:vec_unpaged",
-            "page_window_key": None,
-        }
-    ]
+    assert len(result["merged_blocks"]) == 1
+    block = result["merged_blocks"][0]
+    assert block["source"] == "Notes.md"
+    assert block["pages"] == []
+    assert block["page_label"] == "Page ?"
+    assert block["text"] == "Unpaged note"
+    assert block["bundle_key"] == "bundle:Notes.md:singleton:vec_unpaged"
+    assert block["block_key"] == "block:Notes.md:singleton:vec_unpaged"
+    assert block["page_window_key"] is None
+    assert block["citation_label"] == "Notes.md"
     assert result["bundle_summaries"][0]["page_less"] is True
     assert result["bundle_summaries"][0]["requested_page_window_key"] is None
 

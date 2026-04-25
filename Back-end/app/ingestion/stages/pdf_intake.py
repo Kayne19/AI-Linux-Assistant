@@ -1,7 +1,9 @@
+import logging
 import os
 import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import onnxruntime as ort
@@ -10,6 +12,8 @@ from tqdm import tqdm
 from unstructured.partition.pdf import partition_pdf
 
 from ingestion.console import print_state, print_summary
+
+logger = logging.getLogger(__name__)
 
 os.environ.setdefault("OMP_THREAD_LIMIT", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -42,6 +46,25 @@ class PatchedInferenceSession(_OriginalInferenceSession):
 
 
 ort.InferenceSession = PatchedInferenceSession
+
+
+@dataclass
+class IntakeResult:
+    """Structured result from process_pdf_parallel.
+
+    Attributes:
+        elements: List of extracted element dicts.
+        total_pages: Total number of pages in the source PDF.
+        processed_pages: Number of pages that were successfully processed.
+        failed_batches: List of dicts with keys start_page, end_page, error for each failed batch.
+        page_coverage_pct: Fraction of pages successfully processed (0.0–1.0). 1.0 when total_pages==0.
+    """
+
+    elements: List[Dict[str, Any]] = field(default_factory=list)
+    total_pages: int = 0
+    processed_pages: int = 0
+    failed_batches: List[Dict[str, Any]] = field(default_factory=list)
+    page_coverage_pct: float = 1.0
 
 
 def _safe_get_page_number(el_dict: Dict[str, Any]) -> int:
@@ -184,7 +207,7 @@ def process_pdf_parallel(
     hi_res_model_name: str = "yolox",
     min_text_chars: int = 50,
     ocr_dpi: int = 300,
-) -> List[Dict[str, Any]]:
+) -> IntakeResult:
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(pdf_path)
 
@@ -206,8 +229,11 @@ def process_pdf_parallel(
         ],
     )
 
+    # Build per-batch task list, recording (start, end) page ranges for failure tracking
     tasks = []
+    batch_ranges: List[Tuple[int, int]] = []
     for start in range(0, total_pages, batch_size):
+        end = min(start + batch_size - 1, total_pages - 1)
         writer = PdfWriter()
         for page in reader.pages[start : start + batch_size]:
             writer.add_page(page)
@@ -220,46 +246,80 @@ def process_pdf_parallel(
             writer.write(handle)
 
         tasks.append((tmp_path, start, pdf_path, source_filename, hi_res_model_name, min_text_chars, ocr_dpi))
+        batch_ranges.append((start + 1, end + 1))  # 1-based page numbers for reporting
 
     all_elements: List[Dict[str, Any]] = []
-    failed_batches = 0
+    failed_batches: List[Dict[str, Any]] = []
+
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(process_single_chunk, task): task for task in tasks}
+        futures = {executor.submit(process_single_chunk, task): i for i, task in enumerate(tasks)}
         with tqdm(total=len(tasks), desc="Partitioning PDF batches", unit="batch", colour="cyan") as progress:
             for future in as_completed(futures):
-                result = future.result()
-                task_args = futures[future]
+                task_idx = futures[future]
+                task_args = tasks[task_idx]
                 chunk_path = task_args[0]
+                start_page, end_page = batch_ranges[task_idx]
                 try:
                     if os.path.exists(chunk_path):
                         os.remove(chunk_path)
                 except Exception:
                     pass
 
+                result = future.result()
                 if isinstance(result, dict) and "error" in result:
-                    failed_batches += 1
-                    print(f"\nworker failure • {result['error']}")
+                    error_str = result["error"]
+                    failed_batches.append({
+                        "start_page": start_page,
+                        "end_page": end_page,
+                        "error": error_str,
+                    })
+                    logger.warning(
+                        "pdf_intake: batch failed pages=%d-%d error=%s",
+                        start_page,
+                        end_page,
+                        error_str,
+                    )
                 else:
                     all_elements.extend(result)
                 progress.update(1)
 
     all_elements.sort(key=_sort_key)
+
+    # Compute processed_pages as total minus pages in failed batches
+    failed_page_count = sum(b["end_page"] - b["start_page"] + 1 for b in failed_batches)
+    processed_pages = total_pages - failed_page_count
+
+    if total_pages == 0:
+        page_coverage_pct = 1.0
+    else:
+        page_coverage_pct = processed_pages / total_pages
+
     print_summary(
         "PDF intake complete",
         [
             ("batches", len(tasks)),
-            ("failed_batches", failed_batches),
+            ("failed_batches", len(failed_batches)),
             ("elements", len(all_elements)),
+            ("processed_pages", processed_pages),
+            ("total_pages", total_pages),
+            ("coverage_pct", f"{page_coverage_pct:.1%}"),
         ],
     )
-    return all_elements
+
+    return IntakeResult(
+        elements=all_elements,
+        total_pages=total_pages,
+        processed_pages=processed_pages,
+        failed_batches=failed_batches,
+        page_coverage_pct=page_coverage_pct,
+    )
 
 
 if __name__ == "__main__":
     input_pdf = "data/The_Linux_Command_Line.pdf"
 
     start_time = time.time()
-    data = process_pdf_parallel(
+    intake_result = process_pdf_parallel(
         input_pdf,
         batch_size=40,
         max_workers=4,
@@ -269,5 +329,6 @@ if __name__ == "__main__":
     )
     duration = time.time() - start_time
 
-    print(f"\n✅ DONE! Extracted {len(data)} elements in {duration:.2f}s")
+    print(f"\n✅ DONE! Extracted {len(intake_result.elements)} elements in {duration:.2f}s")
     print(f"⚡ Speed: {len(PdfReader(input_pdf).pages) / duration:.2f} pages/sec (approx)")
+    print(f"📊 Coverage: {intake_result.page_coverage_pct:.1%} ({intake_result.processed_pages}/{intake_result.total_pages} pages)")

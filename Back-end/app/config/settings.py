@@ -28,6 +28,9 @@ class AppSettings:
     ingest_enricher: RoleModelSettings = field(
         default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-nano", "")
     )
+    ingest_identity_normalizer: RoleModelSettings = field(
+        default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-nano", "")
+    )
     chat_namer: RoleModelSettings = field(
         default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-nano", "")
     )
@@ -179,6 +182,11 @@ def load_settings():
             model=_get_env("INGEST_ENRICHER_MODEL", "gpt-5.4-nano"),
             reasoning_effort=_get_env("INGEST_ENRICHER_REASONING_EFFORT", ""),
         ),
+        ingest_identity_normalizer=RoleModelSettings(
+            provider=_get_env("INGEST_IDENTITY_PROVIDER", "openai"),
+            model=_get_env("INGEST_IDENTITY_MODEL", "gpt-5.4-nano"),
+            reasoning_effort=_get_env("INGEST_IDENTITY_REASONING_EFFORT", ""),
+        ),
         chat_namer=RoleModelSettings(
             provider=_get_env("CHAT_NAMER_PROVIDER", "openai"),
             model=_get_env("CHAT_NAMER_MODEL", "gpt-5.4-nano"),
@@ -320,6 +328,7 @@ def _apply_db_overrides(base: AppSettings, row) -> AppSettings:
         memory_extractor=_role(base.memory_extractor, "memory_extractor"),
         registry_updater=_role(base.registry_updater, "registry_updater"),
         ingest_enricher=_role(base.ingest_enricher, "ingest_enricher"),
+        ingest_identity_normalizer=base.ingest_identity_normalizer,
         chat_namer=_role(base.chat_namer, "chat_namer"),
         magi_eager=_role(base.magi_eager, "magi_eager"),
         magi_skeptic=_role(base.magi_skeptic, "magi_skeptic"),

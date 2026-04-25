@@ -22,6 +22,34 @@ function payloadNamesIncludeRetrievalTool(payload: Record<string, unknown>): boo
   return Array.isArray(payload.names) && payload.names.some((name) => isRetrievalToolName(name));
 }
 
+function formatStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item)) : [];
+}
+
+function summarizeRetrievalToolScope(payload: Record<string, unknown>): string {
+  const args = isObjectRecord(payload.args)
+    ? payload.args
+    : (isObjectRecord(payload.tool_args) ? payload.tool_args : {});
+  const scopeHints = isObjectRecord(args.scope_hints) ? args.scope_hints : {};
+  const scopeParts = [
+    ["os", scopeHints.os_family],
+    ["src", scopeHints.source_family],
+    ["pkg", scopeHints.package_managers],
+    ["init", scopeHints.init_systems],
+    ["subs", scopeHints.major_subsystems],
+  ]
+    .map(([label, value]) => {
+      const values = Array.isArray(value) ? value.filter(Boolean) : (value ? [value] : []);
+      return values.length > 0 ? `${label}=${values.join(",")}` : "";
+    })
+    .filter(Boolean);
+  const ids = formatStringArray(args.canonical_source_ids);
+  return [
+    scopeParts.length > 0 ? `scope_hints: ${scopeParts.join(",")}` : "",
+    ids.length > 0 ? `ids=${ids.length}` : "",
+  ].filter(Boolean).join(" • ");
+}
+
 export function isRetrievalToolEvent(event: RunEvent): boolean {
   if (event.type !== "event" || !event.code.startsWith("tool_") || !isObjectRecord(event.payload)) {
     return false;
@@ -154,6 +182,9 @@ function eventPhase(event: RunEvent): string {
   if (isRetrievalToolEvent(event)) {
     return "retrieval";
   }
+  if (event.code === "retrieval_scope_selected") {
+    return "retrieval";
+  }
   if (event.code.startsWith("retrieval_")) {
     return "retrieval";
   }
@@ -214,12 +245,20 @@ function summarizeGenericEventPayload(event: RunEvent): string {
         typeof payload.reason === "string" ? payload.reason : "",
         payload.used_prompt_fallback === true ? "prompt fallback" : "",
       ].filter(Boolean).join(" • ");
+    case "retrieval_scope_selected":
+      return [
+        typeof payload.candidate_count === "number" ? `scope: ${payload.candidate_count} docs` : "scope selected",
+        typeof payload.widenings_taken === "number" ? `widenings=${payload.widenings_taken}` : "",
+      ].filter(Boolean).join(" • ");
     case "tool_start":
       if (typeof payload.name === "string" && RETRIEVAL_TOOL_NAMES.has(payload.name)) {
-        const args = isObjectRecord(payload.args) ? payload.args : {};
+        const args = isObjectRecord(payload.args)
+          ? payload.args
+          : (isObjectRecord(payload.tool_args) ? payload.tool_args : {});
         return [
           "retrieval tool start",
           typeof args.query === "string" ? args.query : "",
+          summarizeRetrievalToolScope(payload),
         ].filter(Boolean).join(" • ");
       }
       return [
@@ -232,6 +271,7 @@ function summarizeGenericEventPayload(event: RunEvent): string {
           "retrieval tool complete",
           Array.isArray(payload.result_blocks) ? `${payload.result_blocks.length} block${payload.result_blocks.length === 1 ? "" : "s"}` : "",
           typeof payload.result_size === "number" ? `${payload.result_size} chars` : "",
+          summarizeRetrievalToolScope(payload),
         ].filter(Boolean).join(" • ");
       }
       return [
@@ -584,6 +624,9 @@ export function eventTitle(event: RunEvent): string {
   }
   if (isRetrievalToolEvent(event) && event.type === "event" && isObjectRecord(event.payload)) {
     return `retrieval_tool.${event.code.replace("tool_", "")}`;
+  }
+  if (event.type === "event" && event.code === "retrieval_scope_selected") {
+    return "retrieval.scope_selected";
   }
   if (event.type === "state") {
     return event.code;

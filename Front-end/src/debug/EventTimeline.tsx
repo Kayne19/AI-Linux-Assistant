@@ -181,6 +181,68 @@ function DetailCard({
   );
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item)) : [];
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeEntities(value: unknown): Record<string, string[]> | null {
+  if (!isObjectRecord(value)) {
+    return null;
+  }
+  const entries = Object.entries(value)
+    .map(([key, bucket]) => [key, stringArray(bucket)] as const)
+    .filter(([, bucket]) => bucket.length > 0);
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+}
+
+function formatEntityPreview(entities: Record<string, string[]> | null | undefined): string {
+  if (!entities) {
+    return "";
+  }
+  return ["commands", "paths", "services", "packages", "daemons"]
+    .map((key) => {
+      const values = entities[key] || [];
+      return values.length > 0 ? `${key}: ${values.slice(0, 3).join(", ")}` : "";
+    })
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function getEventPayload(event: RunEvent): Record<string, unknown> {
+  return event.type === "event" && isObjectRecord(event.payload) ? event.payload : {};
+}
+
+function getRetrievalToolArgs(payload: Record<string, unknown>): Record<string, unknown> {
+  return isObjectRecord(payload.args)
+    ? payload.args
+    : (isObjectRecord(payload.tool_args) ? payload.tool_args : {});
+}
+
+function getScopeHintSummary(args: Record<string, unknown>): string {
+  const scopeHints = isObjectRecord(args.scope_hints) ? args.scope_hints : {};
+  const hints = [
+    ["os", scopeHints.os_family],
+    ["src", scopeHints.source_family],
+    ["pkg", scopeHints.package_managers],
+    ["init", scopeHints.init_systems],
+    ["subs", scopeHints.major_subsystems],
+  ]
+    .map(([label, value]) => {
+      const values = Array.isArray(value) ? value.filter(Boolean) : (value ? [value] : []);
+      return values.length > 0 ? `${label}=${values.join(",")}` : "";
+    })
+    .filter(Boolean);
+  const ids = stringArray(args.canonical_source_ids);
+  return [
+    hints.length > 0 ? `scope_hints: ${hints.join(",")}` : "",
+    ids.length > 0 ? `ids=${ids.length}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
 function RetrievalBlockList({
   blocks,
   fallbackText,
@@ -232,12 +294,31 @@ function RetrievalBlockList({
         {collapseLabel}
       </button>
       <div className="debug-detail-list">
-        {blocks.map((block, index) => (
-          <div key={`${block.source}-${block.page_label}-${index}`} className="debug-detail-list-item">
-            <strong>{block.source} • {block.page_label}</strong>
-            <DetailText text={block.text} />
-          </div>
-        ))}
+        {blocks.map((block, index) => {
+          const sectionPath = stringArray(block.section_path);
+          const subsystems = stringArray(block.local_subsystems);
+          const entityPreview = formatEntityPreview(block.entities);
+          const pageLabel = block.citation_label || block.page_label;
+          return (
+            <div key={`${block.source}-${pageLabel}-${index}`} className="debug-detail-list-item">
+              <strong>{block.source} • {pageLabel}</strong>
+              {sectionPath.length > 0 ? <span className="debug-event-summary">§ {sectionPath.join(" › ")}</span> : null}
+              {block.section_title && sectionPath.length === 0 ? <span className="debug-event-summary">§ {block.section_title}</span> : null}
+              <div className="debug-detail-chip-list">
+                {block.chunk_type ? <span className="debug-detail-chip">chunk_type: {block.chunk_type}</span> : null}
+                {block.canonical_source_id ? <span className="debug-detail-chip">id: {block.canonical_source_id}</span> : null}
+                {subsystems.length > 0 ? <span className="debug-detail-chip">subsystems: {subsystems.join(", ")}</span> : null}
+                {block.page_start !== null && block.page_start !== undefined ? (
+                  <span className="debug-detail-chip">
+                    pages: {block.page_start}{block.page_end && block.page_end !== block.page_start ? `-${block.page_end}` : ""}
+                  </span>
+                ) : null}
+              </div>
+              {entityPreview ? <ExpandableText text={entityPreview} emptyText="—" collapsedLines={2} /> : null}
+              <DetailText text={block.text} />
+            </div>
+          );
+        })}
       </div>
     </>
   );
@@ -252,10 +333,84 @@ function normalizeRetrievedBlocks(value: unknown): RetrievedContextBlock[] {
     .map((block) => ({
       source: typeof block.source === "string" ? block.source : "Unknown",
       pages: Array.isArray(block.pages) ? block.pages.map((page) => Number(page)).filter(Number.isFinite) : [],
-      page_label: typeof block.page_label === "string" ? block.page_label : "Page ?",
+      page_label: typeof block.page_label === "string" ? block.page_label : (typeof block.citation_label === "string" ? block.citation_label : "Page ?"),
       text: typeof block.text === "string" ? block.text : "",
+      section_path: typeof block.section_path === "string" ? [block.section_path] : stringArray(block.section_path),
+      section_title: typeof block.section_title === "string" ? block.section_title : null,
+      chunk_type: typeof block.chunk_type === "string" ? block.chunk_type : null,
+      local_subsystems: stringArray(block.local_subsystems),
+      entities: normalizeEntities(block.entities),
+      canonical_source_id: typeof block.canonical_source_id === "string" ? block.canonical_source_id : null,
+      page_start: numberOrNull(block.page_start),
+      page_end: numberOrNull(block.page_end),
+      citation_label: typeof block.citation_label === "string" ? block.citation_label : null,
     }))
     .filter((block) => Boolean(block.text));
+}
+
+function RetrievalScopeCard({ events }: { events: RunEvent[] }) {
+  const scopeEvent = events.find((event) => event.type === "event" && event.code === "retrieval_scope_selected");
+  if (!scopeEvent) {
+    return null;
+  }
+
+  const payload = getEventPayload(scopeEvent);
+  const candidateCount = typeof payload.candidate_count === "number" ? payload.candidate_count : null;
+  const widenings = typeof payload.widenings_taken === "number" ? payload.widenings_taken : null;
+  const winningFilter = isObjectRecord(payload.winning_filter)
+    ? payload.winning_filter
+    : (isObjectRecord(payload.filter) ? payload.filter : (isObjectRecord(payload.selected_filter) ? payload.selected_filter : {}));
+  const rankingItems = Array.isArray(payload.tier_rankings) ? payload.tier_rankings.filter(isObjectRecord).slice(0, 10) : [];
+  const toolStart = events.find((event) => event.type === "event" && event.code === "tool_start" && isRetrievalToolEvent(event));
+  const toolInput = toolStart ? getScopeHintSummary(getRetrievalToolArgs(getEventPayload(toolStart))) : "";
+  const filterRows = [
+    ["os_family", winningFilter.os_family],
+    ["source_family", winningFilter.source_family],
+    ["package_managers", winningFilter.package_managers],
+    ["init_systems", winningFilter.init_systems],
+    ["major_subsystems", winningFilter.major_subsystems],
+    ["explicit_doc_ids", winningFilter.explicit_doc_ids],
+  ]
+    .map(([key, value]) => {
+      const values = Array.isArray(value) ? value.filter(Boolean) : (value ? [value] : []);
+      return values.length > 0 ? `${key}: ${values.join(", ")}` : "";
+    })
+    .filter(Boolean);
+
+  return (
+    <DetailCard label="Retrieval Scope">
+      <div className="debug-detail-list">
+        <div className="debug-detail-list-item">
+          <strong>
+            {candidateCount !== null ? `${candidateCount} candidate doc${candidateCount === 1 ? "" : "s"}` : "Candidate docs unavailable"}
+            {widenings !== null ? ` • widenings=${widenings}` : ""}
+          </strong>
+          {filterRows.length > 0 ? <DetailText text={filterRows.join("\n")} /> : null}
+        </div>
+        {rankingItems.length > 0 ? (
+          <div className="debug-detail-list-item">
+            <strong>tier rankings</strong>
+            <DetailText
+              text={rankingItems.map((item, index) => {
+                const title = typeof item.canonical_title === "string"
+                  ? item.canonical_title
+                  : (typeof item.title === "string" ? item.title : "Untitled document");
+                const score = typeof item.score === "number" ? item.score.toFixed(1) : String(item.score || "—");
+                const matched = stringArray(item.matched_fields);
+                return `${index + 1}. ${title} — score ${score}${matched.length > 0 ? ` [matched: ${matched.join(", ")}]` : ""}`;
+              }).join("\n")}
+            />
+          </div>
+        ) : null}
+        {toolInput ? (
+          <div className="debug-detail-list-item">
+            <strong>Tool input</strong>
+            <span className="debug-event-summary">{toolInput}</span>
+          </div>
+        ) : null}
+      </div>
+    </DetailCard>
+  );
 }
 
 function RetrievalEventRow({ event }: { event: RunEvent }) {
@@ -340,6 +495,7 @@ function RetrievalTab({ events, run }: { events: RunEvent[]; run?: ChatRun | nul
           fallbackText={inputs?.retrieved_context_text || ""}
         />
       </DetailCard>
+      <RetrievalScopeCard events={events} />
       <div className="debug-timeline-list">
         {events.length === 0 ? <div className="debug-empty-state">No retrieval events for this run.</div> : null}
         {events.map((event) => (

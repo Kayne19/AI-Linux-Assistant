@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 from collections import defaultdict
 
@@ -50,8 +51,8 @@ def build_row_key(doc):
     if explicit_key:
         return str(explicit_key)
 
-    source = doc.get("source", "Unknown")
-    page = coerce_page_number(doc.get("page"))
+    source = doc.get("canonical_source_id") or doc.get("source") or "Unknown"
+    page = coerce_page_number(doc.get("page_start")) or coerce_page_number(doc.get("page"))
     normalized_text = normalize_chunk_text(doc.get("text", ""))
     digest = hashlib.sha1(
         f"{source}|{page if page is not None else 'unp'}|{normalized_text}".encode("utf-8")
@@ -81,19 +82,52 @@ def build_block_key(source, pages=None, row_keys=None):
     return f"block:{source}:singleton:unknown"
 
 
+def _decode_entities(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except Exception:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _doc_source_key(doc):
+    return doc.get("source_key") or doc.get("canonical_source_id") or doc.get("source") or "Unknown"
+
+
+def _doc_display_source(doc):
+    return doc.get("canonical_title") or doc.get("source") or _doc_source_key(doc)
+
+
+def _doc_page_start(doc):
+    return coerce_page_number(doc.get("page_start")) or coerce_page_number(doc.get("page"))
+
+
+def _doc_page_end(doc):
+    return coerce_page_number(doc.get("page_end")) or _doc_page_start(doc)
+
+
 def _finalize_merged_group(source, group_docs, *, bundle_key=None, bundle_rank=0):
     pages = []
     seen_text = set()
     text_blocks = []
     max_score = 0.0
+    anchor_doc = {}
     row_keys = []
 
     for doc in group_docs:
-        page = coerce_page_number(doc.get("page"))
-        if page is not None:
-            pages.append(page)
+        page_start = _doc_page_start(doc)
+        page_end = _doc_page_end(doc)
+        if page_start is not None and page_end is not None:
+            pages.extend(range(page_start, page_end + 1))
 
-        max_score = max(max_score, float(doc.get("rerank_score", 0.0)))
+        score = float(doc.get("rerank_score", 0.0))
+        if not anchor_doc or score > max_score:
+            anchor_doc = doc
+            max_score = score
         row_key = build_row_key(doc)
         row_keys.append(row_key)
         normalized = normalize_chunk_text(doc.get("text", ""))
@@ -110,7 +144,8 @@ def _finalize_merged_group(source, group_docs, *, bundle_key=None, bundle_rank=0
     )
 
     return {
-        "source": source,
+        "source": _doc_display_source(anchor_doc),
+        "source_key": source,
         "pages": normalized_pages,
         "score": max_score,
         "text": "\n\n".join(text_blocks).strip(),
@@ -119,6 +154,15 @@ def _finalize_merged_group(source, group_docs, *, bundle_key=None, bundle_rank=0
         "page_window_key": page_window_key,
         "block_key": build_block_key(source, normalized_pages, row_keys),
         "row_keys": sorted(set(row_keys)),
+        "section_path": list(anchor_doc.get("section_path") or []),
+        "section_title": anchor_doc.get("section_title") or "",
+        "page_start": _doc_page_start(anchor_doc),
+        "page_end": _doc_page_end(anchor_doc),
+        "chunk_type": anchor_doc.get("chunk_type") or "",
+        "local_subsystems": list(anchor_doc.get("local_subsystems") or []),
+        "entities": _decode_entities(anchor_doc.get("entities")),
+        "canonical_source_id": anchor_doc.get("canonical_source_id") or "",
+        "canonical_title": anchor_doc.get("canonical_title") or anchor_doc.get("source") or source,
     }
 
 
@@ -130,7 +174,7 @@ def merge_context_chunks(docs):
     bundle_rank_by_key = {}
     source_by_bundle = {}
     for index, doc in enumerate(docs):
-        source = doc.get("source", "Unknown")
+        source = _doc_source_key(doc)
         bundle_key = doc.get("bundle_key") or build_bundle_key(source, f"legacy-{index}")
         docs_by_bundle[bundle_key].append(doc)
         source_by_bundle[bundle_key] = source
@@ -146,7 +190,7 @@ def merge_context_chunks(docs):
         source_docs = docs_by_bundle[bundle_key]
         sortable = []
         for original_index, doc in enumerate(source_docs):
-            page = coerce_page_number(doc.get("page"))
+            page = _doc_page_start(doc)
             sortable.append(
                 (
                     page if page is not None else 10**9,
@@ -202,7 +246,7 @@ def merge_context_chunks(docs):
                 current_last_page = None
 
             current_group.append(doc)
-            current_last_page = page
+            current_last_page = _doc_page_end(doc) or page
 
         if current_group:
             merged.append(
@@ -227,11 +271,32 @@ def merge_context_chunks(docs):
 def format_context_blocks(merged_results):
     blocks = serialize_context_blocks(merged_results)
     context_text = "".join(
-        f"---\n[Source: {block['source']} ({block['page_label']})]\n{block['text']}\n"
+        f"---\n[Source: {block['citation_label']}]\n{block['text']}\n"
         for block in blocks
     )
-    sources = [f"{block['source']}:{block['page_label']}" for block in blocks]
+    sources = [block["citation_label"] for block in blocks]
     return context_text, sources
+
+
+def format_citation_label(block):
+    title = block.get("canonical_title") or block.get("source") or "Unknown"
+    section_path = [str(part) for part in (block.get("section_path") or []) if part]
+    section_label = f" §{' › '.join(section_path)}" if section_path else ""
+    page_start = coerce_page_number(block.get("page_start"))
+    page_end = coerce_page_number(block.get("page_end"))
+    if page_start is None and page_end is None:
+        pages = block.get("pages") or []
+        if pages:
+            page_start = coerce_page_number(pages[0])
+            page_end = coerce_page_number(pages[-1])
+    if page_start is None and page_end is None:
+        return f"{title}{section_label}"
+    if page_end is None:
+        page_end = page_start
+    if page_start is None:
+        page_start = page_end
+    page_label = f"p.{page_start}" if page_start == page_end else f"p.{page_start}-{page_end}"
+    return f"{title}{section_label}, {page_label}"
 
 
 def serialize_context_blocks(merged_results):
@@ -243,15 +308,25 @@ def serialize_context_blocks(merged_results):
         text = item["text"]
         if not text:
             continue
-        blocks.append(
-            {
-                "source": source_file,
-                "pages": pages,
-                "page_label": page_label,
-                "text": text,
-                "bundle_key": item.get("bundle_key"),
-                "block_key": item.get("block_key"),
-                "page_window_key": item.get("page_window_key"),
-            }
-        )
+        block = {
+            "source": source_file,
+            "source_key": item.get("source_key") or source_file,
+            "pages": pages,
+            "page_label": page_label,
+            "text": text,
+            "bundle_key": item.get("bundle_key"),
+            "block_key": item.get("block_key"),
+            "page_window_key": item.get("page_window_key"),
+            "section_path": list(item.get("section_path") or []),
+            "section_title": item.get("section_title") or "",
+            "page_start": item.get("page_start"),
+            "page_end": item.get("page_end"),
+            "chunk_type": item.get("chunk_type") or "",
+            "local_subsystems": list(item.get("local_subsystems") or []),
+            "entities": item.get("entities") or {},
+            "canonical_source_id": item.get("canonical_source_id") or "",
+            "canonical_title": item.get("canonical_title") or source_file,
+        }
+        block["citation_label"] = format_citation_label(block)
+        blocks.append(block)
     return blocks

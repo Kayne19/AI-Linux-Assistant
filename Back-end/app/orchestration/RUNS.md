@@ -191,6 +191,14 @@ Worker-local reuse boundary:
 - mutable retrieval/response state must never be shared across concurrent chats
 - buffered text must be flushed before any terminal transition is written
 
+Router retrieval scope boundary:
+
+- the `search_rag_database` tool accepts optional `scope_hints` (`os_family`, `source_family`, `package_managers`, `init_systems`, `major_subsystems`) and optional `canonical_source_ids`
+- `relevant_documents` remains a routing-domain hint; metadata scoping is carried separately as router hints into the retrieval runtime
+- the router validates scope hints against the ingestion vocabularies and filters canonical document IDs against the database facade's known document IDs
+- direct responder tool calls and router-owned regular-responder decision searches must forward the same validated `router_hint` and `explicit_doc_ids`
+- the EvidencePool fingerprint includes `router_hint` and `explicit_doc_ids`, so a scoped search cannot reuse an unscoped cached result for the same query
+
 Local dev note:
 
 - `run_dev.py` starts `4` worker processes by default

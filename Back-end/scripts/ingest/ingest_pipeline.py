@@ -15,6 +15,10 @@ from app.config.settings import SETTINGS
 from app.ingestion.pipeline import IngestPipelineConfig, run_directory_queue, run_pipeline
 
 
+def _identity_settings():
+    return getattr(SETTINGS, "ingest_identity_normalizer", SETTINGS.ingest_enricher)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the full PDF -> clean -> enrich -> LanceDB pipeline.")
     parser.add_argument("pdf_path", nargs="?", help="Path to the PDF to ingest, relative to Back-end/ or absolute.")
@@ -32,7 +36,56 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enrichment-reasoning-effort", default=SETTINGS.ingest_enricher.reasoning_effort or "")
     parser.add_argument("--registry-provider", default=SETTINGS.registry_updater.provider)
     parser.add_argument("--registry-model", default=SETTINGS.registry_updater.model)
+    identity_settings = _identity_settings()
+    parser.add_argument("--identity-provider", default=identity_settings.provider)
+    parser.add_argument("--identity-model", default=identity_settings.model)
+    parser.add_argument("--identity-reasoning-effort", default=identity_settings.reasoning_effort or "")
+    parser.add_argument(
+        "--no-identity-llm-infill",
+        action="store_true",
+        default=False,
+        help="Disable the default document-level LLM metadata infill step.",
+    )
     parser.add_argument("--trace-output-dir", default="ingest_traces")
+    # Mass-ingestion robustness flags
+    parser.add_argument(
+        "--mass-mode",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable mass-ingestion mode: runs sanitizer before intake, enables "
+            "drop_boilerplate in the cleaner, and enforces the page-coverage threshold."
+        ),
+    )
+    parser.add_argument(
+        "--sanitize",
+        action="store_true",
+        default=False,
+        help="Run the PDF sanitizer before intake even when --mass-mode is not set.",
+    )
+    parser.add_argument(
+        "--min-page-coverage",
+        type=float,
+        default=0.9,
+        help=(
+            "Minimum fraction of pages that must be successfully processed. "
+            "Documents below this threshold are quarantined. Default: 0.9"
+        ),
+    )
+    parser.add_argument(
+        "--batch-mode",
+        action="store_true",
+        default=False,
+        help=(
+            "Run Phase 1 only: stop after ENRICH_PREPARE and park each document "
+            "under --ingest-state-dir for later enrichment by scripts/ingest/batch_runner.py."
+        ),
+    )
+    parser.add_argument(
+        "--ingest-state-dir",
+        default="ingest_state",
+        help="Directory holding per-document durable state for Phase 2. Default: ingest_state",
+    )
     return parser
 
 
@@ -44,6 +97,12 @@ def resolve_path(path_str: str) -> Path:
 
 
 def build_config(args) -> IngestPipelineConfig:
+    # --mass-mode implies sanitize=True; --sanitize can also enable it independently
+    mass_mode = getattr(args, "mass_mode", False)
+    sanitize = mass_mode or getattr(args, "sanitize", False)
+    min_page_coverage = getattr(args, "min_page_coverage", 0.9)
+    batch_mode = getattr(args, "batch_mode", False)
+    ingest_state_dir = resolve_path(getattr(args, "ingest_state_dir", "ingest_state")) if batch_mode else None
     return IngestPipelineConfig(
         raw_output=resolve_path(args.raw_output),
         clean_output=resolve_path(args.clean_output),
@@ -59,7 +118,16 @@ def build_config(args) -> IngestPipelineConfig:
         enrichment_reasoning_effort=args.enrichment_reasoning_effort or None,
         registry_provider=args.registry_provider,
         registry_model=args.registry_model,
+        identity_provider=args.identity_provider,
+        identity_model=args.identity_model,
+        identity_reasoning_effort=args.identity_reasoning_effort or None,
         trace_output_dir=resolve_path(args.trace_output_dir),
+        mass_mode=mass_mode,
+        sanitize=sanitize,
+        min_page_coverage=min_page_coverage,
+        batch_mode=batch_mode,
+        ingest_state_dir=ingest_state_dir,
+        identity_llm_infill=not args.no_identity_llm_infill,
     )
 
 
@@ -69,12 +137,11 @@ def main() -> int:
     pdf_path_arg = args.pdf_path
 
     if not pdf_path_arg:
-        print("Run directly with a path, for example:")
-        print("  python scripts/ingest/ingest_pipeline.py data/The_Linux_Command_Line.pdf")
-        print("  python scripts/ingest/ingest_pipeline.py /path/to/queue_root")
-        pdf_path_arg = input("PDF path: ").strip()
-        if not pdf_path_arg:
-            raise SystemExit("No PDF path provided.")
+        print("Usage: python scripts/ingest/ingest_pipeline.py <pdf_path_or_queue_dir>", file=sys.stderr)
+        print("  Examples:", file=sys.stderr)
+        print("    python scripts/ingest/ingest_pipeline.py data/The_Linux_Command_Line.pdf", file=sys.stderr)
+        print("    python scripts/ingest/ingest_pipeline.py /path/to/queue_root", file=sys.stderr)
+        raise SystemExit(2)
 
     target_path = resolve_path(pdf_path_arg)
     config = build_config(args)
@@ -99,7 +166,16 @@ def main() -> int:
         enrichment_reasoning_effort=config.enrichment_reasoning_effort,
         registry_provider=config.registry_provider,
         registry_model=config.registry_model,
+        identity_provider=config.identity_provider,
+        identity_model=config.identity_model,
+        identity_reasoning_effort=config.identity_reasoning_effort,
         trace_output_dir=config.trace_output_dir,
+        mass_mode=config.mass_mode,
+        sanitize=config.sanitize,
+        min_page_coverage=config.min_page_coverage,
+        batch_mode=config.batch_mode,
+        ingest_state_dir=config.ingest_state_dir,
+        identity_llm_infill=config.identity_llm_infill,
     )
     return 0
 

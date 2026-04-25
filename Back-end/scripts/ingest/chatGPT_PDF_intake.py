@@ -24,7 +24,7 @@ def main() -> int:
     print_banner("PDF INTAKE SCRIPT", [f"Source: {input_pdf}"], char="=")
 
     start_time = time.time()
-    data = process_pdf_parallel(
+    intake_result = process_pdf_parallel(
         input_pdf,
         batch_size=40,
         max_workers=4,
@@ -32,6 +32,7 @@ def main() -> int:
         min_text_chars=50,
         ocr_dpi=300,
     )
+    data = intake_result.elements
     duration = time.time() - start_time
 
     print_summary(
@@ -40,6 +41,7 @@ def main() -> int:
             ("elements", len(data)),
             ("duration_s", f"{duration:.2f}"),
             ("pages_per_s", f"{len(PdfReader(input_pdf).pages) / duration:.2f}"),
+            ("coverage_pct", f"{intake_result.page_coverage_pct:.1%}"),
         ],
     )
 

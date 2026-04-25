@@ -30,6 +30,11 @@ def build_store(config: RetrievalConfig):
     return LanceDBStore(config.db_path, config.table_name)
 
 
+def build_documents_store(config: RetrievalConfig):
+    """LanceDB store for the per-document identity table (T11)."""
+    return LanceDBStore(config.db_path, config.documents_table_name)
+
+
 def build_index_metadata_store(config: RetrievalConfig):
     return IndexMetadataStore(config.db_path, config.table_name, config.index_metadata_suffix)
 
@@ -37,6 +42,7 @@ def build_index_metadata_store(config: RetrievalConfig):
 def build_search_pipeline(config: RetrievalConfig, embedding_provider=None, reranker_provider=None, event_listener=None):
     return RetrievalSearchPipeline(
         store=build_store(config),
+        documents_store=build_documents_store(config),
         metadata_store=build_index_metadata_store(config),
         embedding_provider=build_embedding_provider(config, override=embedding_provider),
         reranker_provider=build_reranker_provider(config, override=reranker_provider),
@@ -61,6 +67,7 @@ def build_runtime_components(
     return {
         "config": config,
         "store": build_store(config),
+        "documents_store": build_documents_store(config),
         "metadata_store": build_index_metadata_store(config),
         "embedding_provider": resolved_embedding_provider,
         "reranker_provider": resolved_reranker_provider,
