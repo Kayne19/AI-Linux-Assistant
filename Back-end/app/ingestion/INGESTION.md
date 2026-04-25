@@ -213,19 +213,17 @@ Pass `--mass-mode` to the CLI to enable unattended bulk ingestion. Mass mode act
 
 ## Document Identity And Metadata
 
-The identity model is fully designed and unit-tested. Every ingested document is intended to carry a structured `DocumentIdentity` (controlled-vocabulary enums for `source_family`, `vendor_or_project`, `doc_kind`, `trust_tier`, `freshness_status`, `os_family`, `init_systems`, `package_managers`, `major_subsystems`, `ingest_source_type`). Identity resolves through four ordered layers — operator sidecar (`<pdf>.meta.yaml`) → first-page/TOC heuristics → PDF `/Info` metadata → optional LLM normalizer — and the highest-priority non-empty value wins per field. See `app/ingestion/identity/{vocabularies,schema,sidecar,pdf_meta,heuristics,llm_normalizer,resolver,registry}.py`. Each layer contribution is audit-logged.
+Every ingested document carries a structured `DocumentIdentity` (controlled-vocabulary enums for `source_family`, `vendor_or_project`, `doc_kind`, `trust_tier`, `freshness_status`, `os_family`, `init_systems`, `package_managers`, `major_subsystems`, `ingest_source_type`). Identity resolves through ordered deterministic layers — operator sidecar (`<pdf>.meta.yaml`) → first-page/TOC heuristics → PDF `/Info` metadata — and the highest-priority non-empty value wins per field. The optional LLM normalizer exists as a module but is not used by default in live ingestion. See `app/ingestion/identity/{vocabularies,schema,sidecar,pdf_meta,heuristics,llm_normalizer,resolver,registry}.py`. Each layer contribution is audit-logged.
 
-The indexer (`app/ingestion/indexer.py`) accepts a `document_identity` keyword argument: when supplied, it writes one row per document to the LanceDB `documents` table and stamps `canonical_source_id`, `section_path`, `page_start`/`page_end`, `chunk_type`, and `entities` on every chunk row. When not supplied, it falls back to the legacy "filename-as-source" schema with safe defaults on the new columns.
+`IngestPipelineRunner.run()` drives `LOAD_SIDECAR`, `EXTRACT_IDENTITY`, `RESOLVE_IDENTITY`, and `DETECT_SECTIONS` before enrichment. Section metadata is attached after cleaning and before sync or batch enrichment. The indexer (`app/ingestion/indexer.py`) receives the resolved `DocumentIdentity`, writes one row per document to the LanceDB `documents` table, and stamps `canonical_source_id`, `section_path`, `page_start`/`page_end`, `chunk_type`, and `entities` on every chunk row. The legacy no-identity indexer path remains only for direct test/backward-compatible callers.
 
-**Runtime wiring is partial.** The new FSM states `LOAD_SIDECAR`, `EXTRACT_IDENTITY`, `RESOLVE_IDENTITY`, and `DETECT_SECTIONS` are defined in `IngestState` and the resolver/sections modules are exercised by tests, but `pipeline.run()` does not yet drive these stages or pass the resolved `DocumentIdentity` into `_ingest_vector_db`. Until that follow-up lands, the live pipeline still calls `indexer.ingest_json(...)` without an identity, so production runs continue to populate the chunks table in legacy mode and skip the documents table. The migration script (`scripts/ingest/migrate_identity.py`) exists to backfill identity for already-ingested chunks once the runtime path is wired or out-of-band.
+Fresh re-ingest is the only supported path for populating this metadata. The old in-place update path for existing chunks has been removed; existing legacy-indexed documents must be re-ingested to receive document rows and section metadata.
 
 ## Two-Phase Batch Ingestion
 
 For corpus-scale runs the enrichment stage can switch from per-chunk synchronous calls to the OpenAI Batch API (50% cost, ~24h SLA). Phase 1 runs through `ENRICH_PREPARE` and writes `batch_input.jsonl`, `requests.json`, `cleaned.json`, and `context.txt` to `ingest_state/<doc_id>/`, then parks the doc as `AWAITING_ENRICHMENT`. Phase 2 is driven by `scripts/ingest/batch_runner.py`, which walks the state directory, submits/polls/merges each batch via the transport-only client at `app/providers/openai_batch.py`, and continues into `INGEST_VECTOR_DB` and `CLEANUP_ARTIFACTS`. Per-doc state on disk makes the runner idempotent across restarts. `--sync` keeps the existing in-process worker for one-off ingests where prompt caching is preferable.
 
-## Migration And Status
-
-`scripts/ingest/migrate_identity.py` backfills the documents table for chunks that were ingested under the pre-T11 schema. It groups existing rows by their legacy `source` filename, runs the resolver against the original PDF when present (or stubs identity from the filename and audit-logs it when not), and either upserts the doc row only (`--no-backfill-chunks`) or also patches each chunk row's new columns. `--dry-run` prints the proposed identities without writing. The script is idempotent: sources whose `canonical_source_id` is already present in the documents table are skipped.
+## Status Dashboard
 
 `scripts/ingest/status.py` summarizes the in-flight FSM. It walks `ingest_state/` and the adjacent `failed/` quarantine dir, counts docs per state, and supports `--verbose` (per-doc rows) and `--json` (machine-readable) modes. Use it to answer "how many docs are still waiting on OpenAI?" without grepping the state JSON.
 
@@ -237,8 +235,6 @@ For corpus-scale runs the enrichment stage can switch from per-chunk synchronous
 4. [app/ingestion/stages/context_enrichment.py](app/ingestion/stages/context_enrichment.py)
 5. [app/ingestion/stages/sections.py](app/ingestion/stages/sections.py)
 6. [app/ingestion/batch_runner.py](app/ingestion/batch_runner.py)
-7. [app/ingestion/migration.py](app/ingestion/migration.py)
-8. [scripts/ingest/ingest_pipeline.py](scripts/ingest/ingest_pipeline.py)
-9. [scripts/ingest/batch_runner.py](scripts/ingest/batch_runner.py)
-10. [scripts/ingest/migrate_identity.py](scripts/ingest/migrate_identity.py)
-11. [scripts/ingest/status.py](scripts/ingest/status.py)
+7. [scripts/ingest/ingest_pipeline.py](scripts/ingest/ingest_pipeline.py)
+8. [scripts/ingest/batch_runner.py](scripts/ingest/batch_runner.py)
+9. [scripts/ingest/status.py](scripts/ingest/status.py)

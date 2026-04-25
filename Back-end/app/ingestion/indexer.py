@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 
 from ingestion.identity.schema import DocumentIdentity
 from retrieval.factory import (
@@ -68,6 +69,20 @@ def _entities_as_json(raw) -> str:
         return "{}"
 
 
+def _source_key_for(json_path: str, raw_data: list[dict], document_identity: DocumentIdentity | None) -> str:
+    if document_identity is not None and document_identity.canonical_source_id:
+        return document_identity.canonical_source_id
+    source_hint = ""
+    for element in raw_data:
+        metadata = element.get("metadata", {}) or {}
+        source_hint = metadata.get("filename") or element.get("source") or ""
+        if source_hint:
+            break
+    if not source_hint:
+        source_hint = os.path.basename(json_path)
+    return hashlib.sha256(source_hint.encode("utf-8")).hexdigest()[:16]
+
+
 class IngestionIndexer:
     def __init__(self, store, metadata_store, embedding_provider, *, documents_store=None):
         self.store = store
@@ -87,6 +102,7 @@ class IngestionIndexer:
 
         source_display = document_identity.canonical_title if document_identity else None
         canonical_source_id = document_identity.canonical_source_id if document_identity else ""
+        source_key = _source_key_for(json_path, raw_data, document_identity)
 
         for idx, element in enumerate(raw_data):
             metadata = element.get("metadata", {}) or {}
@@ -97,7 +113,7 @@ class IngestionIndexer:
             chunk_source = source_display if source_display else metadata.get("filename", "Unknown")
 
             row = {
-                "id": f"vec_{idx}",
+                "id": f"vec_{source_key}_{idx:06d}",
                 "text": display_text,
                 "search_text": search_text,
                 "page": metadata.get("page_number", 0),

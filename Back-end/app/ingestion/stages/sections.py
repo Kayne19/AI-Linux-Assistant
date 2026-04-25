@@ -8,8 +8,8 @@ numeric depth, and attaches ``section_path``, ``section_title``, and
 import re
 from typing import Any
 
-from app.ingestion.identity.vocabularies import ChunkType
-from app.ingestion.stages.cleaner import is_code_like
+from ingestion.identity.vocabularies import ChunkType
+from ingestion.stages.cleaner import is_code_like
 
 # ---------------------------------------------------------------------------
 # Heading depth inference

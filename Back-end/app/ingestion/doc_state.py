@@ -41,6 +41,7 @@ class DocState:
     completed_chunks: int = 0
     failed_chunks: int = 0
     cache_metrics: dict = field(default_factory=lambda: {"cached_tokens": 0, "input_tokens": 0, "output_tokens": 0})
+    document_identity: dict | None = None
     error: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

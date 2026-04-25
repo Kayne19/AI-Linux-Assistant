@@ -45,7 +45,6 @@ Execute in this order. For each task: read the relevant `§` section of `docs/ma
 | T10 | Pipeline FSM + batch runner (new FSM states, durable `ingest_state/<id>/`, `app/ingestion/batch_runner.py`, `scripts/ingest/batch_runner.py`) | T4, T5, T6, T7, T9 | §4 |
 | T11 | Indexer schema update — chunks table gets new fields + new `documents` LanceDB table; `source` becomes `canonical_title`; bump `index_metadata` version | T1, T4, T6 | §2 |
 | T12 | Retrieval scope pre-narrowing + fallback (`retrieval/scope.py`; modify `search_pipeline.py`, `store.py`, `formatter.py`, `config.py`; emit `retrieval_scope_selected`) | T11 | §6 |
-| T13 | Migration script (`scripts/ingest/migrate_identity.py` with `--dry-run`) | T4, T11 | §7 |
 | T14 | Status dashboard + doc updates (`scripts/ingest/status.py`; update `INGESTION.md`, `RETRIEVAL.md`) | all prior | §8 |
 
 Critical dependency chain: T3 → T4 → T11 → T12. Do not implement tasks in parallel on the same worktree; stay sequential.
@@ -93,7 +92,7 @@ Whoever executes these tasks — as a subagent, as a separate assistant session,
 - **Plan:** committed at `docs/mass-ingestion-plan.md` in this worktree.
 - **Ignored directories:** `.worktrees/` and `plans/` are in `.gitignore`. Don't try to commit files under those paths — `docs/` is the right place for persistent notes.
 - **Existing routing registry:** `Back-end/app/orchestration/routing_domains.json`. The new document-identity registry (introduced in T4) should sit next to it as `Back-end/app/orchestration/routing_documents.json`.
-- **Existing ingested PDFs** (useful for migration verification in T13): `Back-end/data/ingested/` — contains `proxmox-cleaned.pdf`, `Debian_Install_Guide.pdf`, `DockerQuickGuide.pdf`, `The_Linux_Command_Line.pdf`.
+- **Existing ingested PDFs** (useful for fresh re-ingest verification): `Back-end/data/ingested/` — contains `proxmox-cleaned.pdf`, `Debian_Install_Guide.pdf`, `DockerQuickGuide.pdf`, `The_Linux_Command_Line.pdf`.
 - **Existing ingest traces:** `Back-end/ingest_traces/`.
 
 ## Invariants to Preserve Until the Branch Is Ready to Merge

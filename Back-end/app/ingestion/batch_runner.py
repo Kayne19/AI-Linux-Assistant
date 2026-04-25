@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from ingestion.identity.schema import DocumentIdentity
 from ingestion.doc_state import (
     DocState,
     iter_states,
@@ -104,11 +105,26 @@ def _advance_poll(
     state.batch_status = batch_status.status
     state.output_file_id = batch_status.output_file_id
     state.error_file_id = batch_status.error_file_id
+    counts = batch_status.request_counts or {}
+    failed_count = int(counts.get("failed") or 0)
     if batch_status.status == "completed":
+        if batch_status.error_file_id and download_fn is not None:
+            download_fn(
+                batch_status.error_file_id,
+                state_dir(base_dir, state.doc_id) / "batch_error.jsonl",
+            )
+        if failed_count > 0:
+            state.state = FAILED
+            state.failed_chunks = failed_count
+            state.completed_chunks = int(counts.get("completed") or 0)
+            state.error = (
+                f"batch {state.batch_id} completed with partial failures "
+                f"(failed={failed_count}, completed={state.completed_chunks}, total={counts.get('total', 0)})"
+            )
         # Only advance to MERGING when we actually have the output on disk —
         # otherwise the merge will silently apply zero contexts and the doc
         # will look "successful" with an unenriched corpus.
-        if download_fn is None or not batch_status.output_file_id:
+        elif download_fn is None or not batch_status.output_file_id:
             state.state = FAILED
             state.error = (
                 f"batch {state.batch_id} completed but output is unavailable "
@@ -120,6 +136,11 @@ def _advance_poll(
             download_fn(batch_status.output_file_id, dest)
             state.state = MERGING
     elif batch_status.status in {"failed", "expired", "cancelled"}:
+        if batch_status.error_file_id and download_fn is not None:
+            download_fn(
+                batch_status.error_file_id,
+                state_dir(base_dir, state.doc_id) / "batch_error.jsonl",
+            )
         state.state = FAILED
         state.error = f"batch {state.batch_id} terminated with status={batch_status.status}"
     # else: still in flight (validating, in_progress, finalizing) — stay on POLLING
@@ -133,12 +154,22 @@ def _advance_merge(base_dir: Path, state: DocState) -> DocState:
     requests = _load_requests(dir_path)
     elements = _load_elements(dir_path)
     result = enrich_batch_merge(requests, dir_path / "batch_output.jsonl", elements)
-    _save_elements(dir_path, elements)
     state.completed_chunks = result.completed_count
     state.failed_chunks = result.error_count
     for key in state.cache_metrics:
         state.cache_metrics[key] += int(result.cache_metrics.get(key, 0))
-    state.state = FINALIZING
+    expected_chunks = len(requests)
+    if result.error_count or result.completed_count != expected_chunks:
+        state.state = FAILED
+        state.error = (
+            f"batch merge failed for doc_id={state.doc_id}: "
+            f"completed={result.completed_count}, expected={expected_chunks}, "
+            f"errors={result.error_count}"
+        )
+        (dir_path / "merge_errors.json").write_text(json.dumps(result.errors, indent=2))
+    else:
+        _save_elements(dir_path, elements)
+        state.state = FINALIZING
     save_state(base_dir, state)
     return state
 
@@ -159,10 +190,15 @@ def _advance_index(
     base_dir: Path,
     state: DocState,
     *,
-    indexer_fn: Callable[[str], dict],
+    indexer_fn: Callable[[str, DocumentIdentity | None], dict],
 ) -> DocState:
     """Invoke the vector-DB indexer on the final output."""
-    result = indexer_fn(str(_final_output_path(state)))
+    document_identity = (
+        DocumentIdentity.from_dict(state.document_identity)
+        if state.document_identity is not None
+        else None
+    )
+    result = indexer_fn(str(_final_output_path(state)), document_identity=document_identity)
     logger.info("Indexed doc_id=%s rows=%s table=%s", state.doc_id, result.get("rows"), result.get("table_name"))
     state.state = CLEANING
     save_state(base_dir, state)
@@ -190,7 +226,7 @@ def advance_one(
     doc_id: str,
     *,
     batch_client=None,
-    indexer_fn: Callable[[str], dict] | None = None,
+    indexer_fn: Callable[[str, DocumentIdentity | None], dict] | None = None,
     submit_fn: Callable | None = None,
     poll_fn: Callable | None = None,
     download_fn: Callable | None = None,
@@ -209,6 +245,16 @@ def advance_one(
         submit_fn = lambda path, metadata=None: enrich_batch_submit(path, client=batch_client, metadata=metadata)
     if poll_fn is None:
         poll_fn = lambda bid: enrich_batch_poll(bid, client=batch_client)
+    if download_fn is None:
+        def _default_download(file_id, dest):
+            client = batch_client
+            if client is None:
+                from providers.openai_batch import OpenAIBatchClient
+
+                client = OpenAIBatchClient()
+            return client.download_output(file_id, dest)
+
+        download_fn = _default_download
 
     if state.state == AWAITING:
         state.state = SUBMITTING
@@ -239,7 +285,7 @@ def run_once(
     base_dir: Path,
     *,
     batch_client=None,
-    indexer_fn: Callable[[str], dict] | None = None,
+    indexer_fn: Callable[[str, DocumentIdentity | None], dict] | None = None,
     submit_fn: Callable | None = None,
     poll_fn: Callable | None = None,
     download_fn: Callable | None = None,

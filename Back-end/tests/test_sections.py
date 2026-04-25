@@ -2,7 +2,7 @@
 
 import json
 
-from app.ingestion.stages.sections import attach_sections
+from ingestion.stages.sections import attach_sections
 
 
 # ---------------------------------------------------------------------------

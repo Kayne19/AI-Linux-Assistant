@@ -17,6 +17,11 @@ from config.settings import SETTINGS
 from ingestion.audit import AuditLog
 from ingestion.console import print_artifact, print_banner, print_kv, print_progress, print_state, print_summary
 from ingestion.indexer import build_ingestion_indexer
+from ingestion.identity.heuristics import extract_heuristic_signals
+from ingestion.identity.pdf_meta import read_pdf_info
+from ingestion.identity.resolver import resolve_identity
+from ingestion.identity.schema import DocumentIdentity
+from ingestion.identity.sidecar import load_sidecar
 from ingestion.stages.cleaner import clean_elements
 from ingestion.stages.context_enrichment import (
     build_enrichment_requests,
@@ -29,6 +34,7 @@ from ingestion.stages.context_enrichment import (
 )
 from ingestion.stages.pdf_intake import IntakeResult, process_pdf_parallel
 from ingestion.stages.sanitizer import sanitize_pdf
+from ingestion.stages.sections import attach_sections
 from ingestion.doc_state import DocState, save_state, load_state, state_dir
 from ingestion.trace import IngestTraceRecorder
 from orchestration.routing_registry import load_registry, merge_domain_suggestion
@@ -368,12 +374,14 @@ def update_routing_registry(
     provider: str | None = None,
     model: str | None = None,
     *,
+    document_identity: dict | None = None,
     audit: "AuditLog | None" = None,
 ) -> None:
     context_text = context_output.read_text(encoding="utf-8")
     front_excerpt = context_text[:6000]
     tail_excerpt = context_text[-2500:] if len(context_text) > 6000 else ""
-    document_identity = extract_document_identity(pdf_path)
+    if document_identity is None:
+        document_identity = extract_document_identity(pdf_path)
     registry = load_registry()
     if provider is None:
         provider = SETTINGS.registry_updater.provider
@@ -500,6 +508,10 @@ class IngestRunContext:
     doc_id: str | None = None                 # canonical_source_id; stem fallback
     enrichment_requests: list = field(default_factory=list)
     doc_state_path: Path | None = None
+    sidecar: dict | None = None
+    pdf_info: dict[str, Any] = field(default_factory=dict)
+    heuristic_signals: dict[str, Any] = field(default_factory=dict)
+    document_identity: DocumentIdentity | None = None
 
 
 class IngestPipelineRunner:
@@ -526,14 +538,22 @@ class IngestPipelineRunner:
             self._transition(context, IngestState.INITIALIZED)
             self._transition(context, IngestState.VALIDATE_INPUT)
             self._validate_input(context)
+            self._transition(context, IngestState.LOAD_SIDECAR)
+            self._load_sidecar(context)
             self._transition(context, IngestState.INTAKE_RAW)
             self._intake_raw(context)
             self._transition(context, IngestState.EXPORT_TEXT)
             self._export_text(context)
+            self._transition(context, IngestState.EXTRACT_IDENTITY)
+            self._extract_identity(context)
+            self._transition(context, IngestState.RESOLVE_IDENTITY)
+            self._resolve_identity(context)
             self._transition(context, IngestState.UPDATE_REGISTRY)
             self._update_registry(context)
             self._transition(context, IngestState.CLEAN_ELEMENTS)
             self._clean_elements(context)
+            self._transition(context, IngestState.DETECT_SECTIONS)
+            self._detect_sections(context)
             if self.config.batch_mode:
                 self._transition(context, IngestState.ENRICH_PREPARE)
                 self._enrich_prepare(context)
@@ -582,6 +602,59 @@ class IngestPipelineRunner:
     def _validate_input(self, context: IngestRunContext) -> None:
         if not context.pdf_path.exists():
             raise FileNotFoundError(context.pdf_path)
+
+    def _load_sidecar(self, context: IngestRunContext) -> None:
+        context.sidecar = load_sidecar(context.pdf_path)
+        if context.audit is not None:
+            context.audit.record(
+                doc=context.pdf_path.name,
+                phase="identity_sidecar",
+                action="loaded" if context.sidecar else "missing",
+                inputs={"pdf_path": str(context.pdf_path)},
+                chosen=context.sidecar,
+                confidence=None,
+                rationale=None,
+            )
+
+    def _extract_identity(self, context: IngestRunContext) -> None:
+        context.pdf_info = read_pdf_info(context.pdf_path)
+        context.heuristic_signals = extract_heuristic_signals(context.pdf_path)
+        if context.audit is not None:
+            context.audit.record(
+                doc=context.pdf_path.name,
+                phase="identity_extraction",
+                action="deterministic_extract",
+                inputs={"pdf_path": str(context.pdf_path)},
+                chosen={
+                    "pdf_info": context.pdf_info,
+                    "heuristic_signals": context.heuristic_signals,
+                },
+                confidence=None,
+                rationale="sidecar, PDF metadata, and heuristics only; LLM normalization disabled",
+            )
+
+    def _resolve_identity(self, context: IngestRunContext) -> None:
+        identity, _contributions = resolve_identity(
+            pdf_path=context.pdf_path,
+            sidecar=context.sidecar,
+            pdf_info=context.pdf_info,
+            heuristic_signals=context.heuristic_signals,
+            llm_fields={},
+            pipeline_version="1.0.0",
+            audit=context.audit,
+        )
+        errors = identity.validate()
+        if errors:
+            raise ValueError(f"document identity validation failed: {errors}")
+        context.document_identity = identity
+        context.doc_id = identity.canonical_source_id
+        print_summary(
+            "Document identity resolved",
+            [
+                ("canonical_source_id", identity.canonical_source_id),
+                ("canonical_title", identity.canonical_title),
+            ],
+        )
 
     def _quarantine_doc(
         self,
@@ -698,11 +771,19 @@ class IngestPipelineRunner:
         export_full_text(context.pdf_path, context.config.context_output)
 
     def _update_registry(self, context: IngestRunContext) -> None:
+        document_identity = None
+        if context.document_identity is not None:
+            document_identity = {
+                "filename": context.pdf_path.name,
+                "stem": context.pdf_path.stem,
+                **context.document_identity.to_dict(),
+            }
         update_routing_registry(
             context.pdf_path,
             context.config.context_output,
             provider=context.config.registry_provider,
             model=context.config.registry_model,
+            document_identity=document_identity,
             audit=context.audit,
         )
 
@@ -716,6 +797,17 @@ class IngestPipelineRunner:
                 ("raw", len(context.raw_elements)),
                 ("clean", len(context.cleaned_elements)),
                 ("drop_boilerplate", drop_boilerplate),
+                ("artifact", context.config.clean_output.name),
+            ],
+        )
+
+    def _detect_sections(self, context: IngestRunContext) -> None:
+        context.cleaned_elements = attach_sections(context.cleaned_elements)
+        write_json(context.config.clean_output, context.cleaned_elements)
+        print_summary(
+            "Section detection complete",
+            [
+                ("elements", len(context.cleaned_elements)),
                 ("artifact", context.config.clean_output.name),
             ],
         )
@@ -805,6 +897,7 @@ class IngestPipelineRunner:
             source_pdf=str(context.pdf_path.resolve()),
             state=IngestState.AWAITING_ENRICHMENT.value,
             total_chunks=len(context.enrichment_requests),
+            document_identity=context.document_identity.to_dict() if context.document_identity else None,
             artifacts={
                 "raw_output": str(context.config.raw_output),
                 "clean_output": str(context.config.clean_output),
@@ -839,7 +932,10 @@ class IngestPipelineRunner:
         print_summary("Vector DB ingest", [("source", context.config.final_output.name)])
         retrieval_config = load_retrieval_config()
         indexer = build_ingestion_indexer(retrieval_config)
-        result = indexer.ingest_json(str(context.config.final_output))
+        result = indexer.ingest_json(
+            str(context.config.final_output),
+            document_identity=context.document_identity,
+        )
         print_summary(
             "Vector DB ingest complete",
             [
@@ -969,12 +1065,17 @@ def run_pipeline(
         print_artifact("trace", trace.trace_path)
         raise
 
+    trace_status = (
+        "awaiting_enrichment"
+        if context.state_trace and context.state_trace[-1] == IngestState.AWAITING_ENRICHMENT.value
+        else "completed"
+    )
     trace.record_document(
         queue_index=context.queue_index,
         queue_total=context.queue_total,
         source_path=context.pdf_path,
         filename=context.pdf_path.name,
-        status="completed",
+        status=trace_status,
         state_trace=context.state_trace,
         raw_elements=len(context.raw_elements),
         cleaned_elements=len(context.cleaned_elements),
@@ -1127,7 +1228,11 @@ def run_directory_queue(root_dir: Path, config: IngestPipelineConfig) -> None:
                 queue_total=context.queue_total,
                 source_path=context.pdf_path,
                 filename=context.pdf_path.name,
-                status="completed",
+                status=(
+                    "awaiting_enrichment"
+                    if context.state_trace and context.state_trace[-1] == IngestState.AWAITING_ENRICHMENT.value
+                    else "completed"
+                ),
                 state_trace=context.state_trace,
                 raw_elements=len(context.raw_elements),
                 cleaned_elements=len(context.cleaned_elements),

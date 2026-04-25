@@ -112,6 +112,23 @@ def test_ingest_json_legacy_returns_schema_metadata(tmp_path):
     assert result["created_table"] is True
 
 
+def test_ingest_json_legacy_chunk_ids_are_source_stable_and_unique(tmp_path):
+    first = _write_elements(
+        tmp_path,
+        [{"text": "t", "type": "NarrativeText", "metadata": {"filename": "a.pdf", "page_number": 1}}],
+    )
+    second = tmp_path / "elements_b.json"
+    second.write_text(json.dumps([{"text": "t", "type": "NarrativeText", "metadata": {"filename": "b.pdf", "page_number": 1}}]))
+
+    indexer_a = _make_indexer()
+    indexer_b = _make_indexer()
+    indexer_a.ingest_json(str(first))
+    indexer_b.ingest_json(str(second))
+
+    assert indexer_a.store.rows[0]["id"] != indexer_b.store.rows[0]["id"]
+    assert indexer_a.store.rows[0]["id"].startswith("vec_")
+
+
 # ---------------------------------------------------------------------------
 # With DocumentIdentity — new schema
 # ---------------------------------------------------------------------------
@@ -171,6 +188,7 @@ def test_ingest_json_with_identity_sets_canonical_source_and_title(tmp_path):
     result = indexer.ingest_json(str(path), document_identity=identity)
 
     row = indexer.store.rows[0]
+    assert row["id"] == "vec_debian-install-guide-12_000000"
     assert row["source"] == "Debian Installation Guide"
     assert row["canonical_source_id"] == "debian-install-guide-12"
     assert row["section_path"] == ["Chapter 3", "3.2 Disk"]

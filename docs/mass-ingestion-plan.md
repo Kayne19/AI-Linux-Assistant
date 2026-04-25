@@ -95,7 +95,7 @@ The existing `IngestTraceRecorder` stays, but audit lines are in a separate file
 | `ingest_source_type` | enum | yes | `pdf_operator`, `pdf_crawl`, `html`, `manpage`, `markdown` |
 | `operator_override_present` | bool | — | True iff sidecar YAML supplied any field |
 | `ingested_at` | ISO ts | — | Set at FINALIZE |
-| `pipeline_version` | string | — | For migrations |
+| `pipeline_version` | string | — | For index compatibility/auditing |
 
 Enums live in `Back-end/app/ingestion/identity/vocabularies.py`. The resolver **rejects** freeform values on enum fields (falls back to closest valid value or `"unknown"` with an audit-log entry). Adding a new enum value is a deliberate code change, not an ingest-time decision — this is the taxonomy-explosion defense.
 
@@ -255,19 +255,9 @@ Retrieval now has a structured document table to consult. Add a **scope selectio
 
 ---
 
-## 7. Migration for Already-Ingested Documents
+## 7. Fresh Re-Ingest Boundary
 
-- New script: `Back-end/scripts/ingest/migrate_identity.py`
-  - Iterate the existing LanceDB `chunks` table, group rows by `source` (filename).
-  - For each source with the original PDF still in `data/ingested/`, run the new identity resolver end-to-end (sidecar → PDF meta → TOC → LLM) and produce a `DocumentIdentity`.
-  - Write the doc row to the new `documents` table.
-  - Backfill chunk-level fields by running `detect_sections` over the cleaned-elements JSON in `ingest_traces/` if present; otherwise fall back to empty `section_path`, `page_start=page`, `page_end=page`, and chunk_type inferred from `type`.
-  - For sources where the PDF is gone, stub `DocumentIdentity` from filename + a single LLM normalization pass, mark `operator_override_present=false`, and audit-log the stubbing.
-- Migration is idempotent: re-runs only touch docs missing from the new table.
-- A safety flag `--dry-run` prints the proposed identities without writing.
-
-### Files
-- New: `Back-end/scripts/ingest/migrate_identity.py`
+Existing legacy-indexed documents are not updated in place. The supported path for populating `DocumentIdentity`, document-table rows, and section metadata is a fresh ingestion run from the source PDF and optional sidecar. This keeps the merge focused on correct forward ingestion and avoids maintaining a one-off legacy update path whose output would be weaker than a full re-ingest.
 
 ---
 
@@ -293,7 +283,7 @@ End-to-end verification for this plan:
    - `test_batch_runner.py` — FSM advances correctly across AWAITING_ENRICHMENT → ENRICH_MERGE given a mocked OpenAI batch response.
    - `test_scope_selection.py` — scope candidate ranking + fallback widening given synthetic doc metadata.
    - `test_indexer_schema.py` — new chunk/doc rows round-trip in a temp LanceDB table.
-   - `test_migration.py` — migration script produces identities for existing sources idempotently.
+   - legacy update removal check — no old update CLI, module, or tests remain.
 
 2. **Integration smoke**:
    - Put two PDFs in `Back-end/data/to_ingest/` (one with a `.meta.yaml` sidecar, one without).
@@ -306,10 +296,7 @@ End-to-end verification for this plan:
    - Inspect `ingest_traces/audit_<run>.jsonl` and verify every auto-decision was logged with rationale and confidence.
 
 3. **Router eval regression**:
-   - `cd Back-end && python scripts/eval/evaluate_router.py` — overall accuracy must not regress vs the current baseline after migration.
-
-4. **Migration sanity**:
-   - `python scripts/ingest/migrate_identity.py --dry-run` — prints identities for the four already-ingested PDFs; then re-run without `--dry-run`; then run a query that would previously hit one of them and confirm the new citation form appears.
+   - `cd Back-end && python scripts/eval/evaluate_router.py` — overall accuracy must not regress after fresh re-ingestion.
 
 ---
 
@@ -324,14 +311,12 @@ End-to-end verification for this plan:
 - `Back-end/app/providers/openai_batch.py`
 - `Back-end/app/retrieval/scope.py`
 - `Back-end/scripts/ingest/batch_runner.py`
-- `Back-end/scripts/ingest/migrate_identity.py`
 - `Back-end/scripts/ingest/status.py`
 - `Back-end/tests/test_identity_resolver.py`
 - `Back-end/tests/test_sections.py`
 - `Back-end/tests/test_batch_runner.py`
 - `Back-end/tests/test_scope_selection.py`
 - `Back-end/tests/test_indexer_schema.py`
-- `Back-end/tests/test_migration.py`
 
 **Modify**
 - `Back-end/app/ingestion/pipeline.py` (new FSM states, autonomous registry, per-doc quarantine, mass-mode flag)

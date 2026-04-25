@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ingestion.pipeline import (
+    IngestState,
     IngestPipelineConfig,
     IngestPipelineRunner,
     IngestRunContext,
@@ -79,6 +80,32 @@ def _full_coverage_result() -> IntakeResult:
         failed_batches=[],
         page_coverage_pct=1.0,
     )
+
+
+def _long_coverage_result() -> IntakeResult:
+    return IntakeResult(
+        elements=[
+            {"type": "Title", "text": "Chapter 1 Setup", "metadata": {"page_number": 1}},
+            {
+                "type": "NarrativeText",
+                "text": "Install packages and configure the service. " * 4,
+                "metadata": {"page_number": 1, "filename": "manual.pdf"},
+            },
+        ],
+        total_pages=1,
+        processed_pages=1,
+        failed_batches=[],
+        page_coverage_pct=1.0,
+    )
+
+
+class _FakeIndexer:
+    def __init__(self):
+        self.calls = []
+
+    def ingest_json(self, path, *, document_identity=None):
+        self.calls.append((path, document_identity))
+        return {"rows": 2, "table_name": "chunks", "created_table": False}
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +279,69 @@ class TestSufficientCoverageNoQuarantine:
             runner._intake_raw(context)
 
         assert context.raw_elements == _full_coverage_result().elements
+
+
+class TestPipelineIdentitySections:
+    def test_sync_run_resolves_identity_sections_and_indexes_with_identity(self, tmp_path):
+        pdf = _make_pdf(tmp_path, stem="manual")
+        config = _minimal_config(tmp_path, min_page_coverage=0.9)
+        fake_indexer = _FakeIndexer()
+
+        def fake_enrich_elements(json_path, context_text_path, worker, model, cache_config):
+            final = Path(json_path).with_name(f"{Path(json_path).stem}_final.json")
+            final.write_text(Path(json_path).read_text())
+
+        runner = IngestPipelineRunner.__new__(IngestPipelineRunner)
+        runner.config = config
+        runner.enrichment_worker = MagicMock()
+
+        with (
+            patch("ingestion.pipeline.load_sidecar", return_value={"canonical_title": "Operator Manual", "source_family": "debian"}),
+            patch("ingestion.pipeline.process_pdf_parallel", return_value=_long_coverage_result()),
+            patch("ingestion.pipeline.export_full_text", side_effect=lambda _pdf, out: out.write_text("Operator Manual context")),
+            patch("ingestion.pipeline.update_routing_registry"),
+            patch("ingestion.pipeline.enrich_elements", side_effect=fake_enrich_elements),
+            patch("ingestion.pipeline.load_retrieval_config", return_value=MagicMock()),
+            patch("ingestion.pipeline.build_ingestion_indexer", return_value=fake_indexer),
+        ):
+            context = runner.run(pdf)
+
+        assert IngestState.LOAD_SIDECAR.value in context.state_trace
+        assert IngestState.EXTRACT_IDENTITY.value in context.state_trace
+        assert IngestState.RESOLVE_IDENTITY.value in context.state_trace
+        assert IngestState.DETECT_SECTIONS.value in context.state_trace
+        assert context.document_identity is not None
+        assert context.document_identity.canonical_title == "Operator Manual"
+        assert fake_indexer.calls[0][1] is context.document_identity
+
+    def test_batch_park_persists_identity_and_canonical_doc_id(self, tmp_path):
+        pdf = _make_pdf(tmp_path, stem="manual")
+        config = _minimal_config(
+            tmp_path,
+            batch_mode=True,
+            ingest_state_dir=tmp_path / "ingest_state",
+            min_page_coverage=0.9,
+        )
+
+        runner = IngestPipelineRunner.__new__(IngestPipelineRunner)
+        runner.config = config
+        runner.enrichment_worker = MagicMock()
+
+        with (
+            patch("ingestion.pipeline.load_sidecar", return_value={"canonical_title": "Batch Manual", "source_family": "debian"}),
+            patch("ingestion.pipeline.process_pdf_parallel", return_value=_long_coverage_result()),
+            patch("ingestion.pipeline.export_full_text", side_effect=lambda _pdf, out: out.write_text("Batch Manual context " * 20)),
+            patch("ingestion.pipeline.update_routing_registry"),
+        ):
+            context = runner.run(pdf)
+
+        assert context.state_trace[-1] == IngestState.AWAITING_ENRICHMENT.value
+        assert context.document_identity is not None
+        assert context.doc_id == context.document_identity.canonical_source_id
+        state_path = config.ingest_state_dir / context.doc_id / "state.json"
+        data = json.loads(state_path.read_text())
+        assert data["doc_id"] == context.document_identity.canonical_source_id
+        assert data["document_identity"]["canonical_title"] == "Batch Manual"
 
 
 # ---------------------------------------------------------------------------

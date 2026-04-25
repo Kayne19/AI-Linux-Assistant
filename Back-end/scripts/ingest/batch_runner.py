@@ -32,8 +32,8 @@ def _build_indexer_fn():
     retrieval_config = load_retrieval_config()
     indexer = build_ingestion_indexer(retrieval_config)
 
-    def _ingest(path: str) -> dict:
-        return indexer.ingest_json(path)
+    def _ingest(path: str, document_identity=None) -> dict:
+        return indexer.ingest_json(path, document_identity=document_identity)
 
     return _ingest
 

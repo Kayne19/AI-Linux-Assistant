@@ -26,6 +26,7 @@ from ingestion.batch_runner import (
     run_once,
 )
 from ingestion.doc_state import DocState, iter_states, load_state, save_state
+from ingestion.identity.schema import DocumentIdentity
 from ingestion.stages.context_enrichment import EnrichmentRequest, enrich_batch_prepare
 
 
@@ -124,6 +125,14 @@ def _prime_doc(
     return base_dir, state, requests
 
 
+def _identity() -> DocumentIdentity:
+    return DocumentIdentity(
+        canonical_source_id="testdoc-canonical",
+        canonical_title="Test Doc",
+        source_family="debian",
+    )
+
+
 def _write_batch_results(dir_path: Path, requests: list[EnrichmentRequest]) -> None:
     lines = []
     for request in requests:
@@ -203,7 +212,10 @@ def test_advance_one_submits_polls_merges_finalizes_indexes_cleans(tmp_path):
         _write_batch_results(dest.parent, requests)
 
     indexer_calls = {"paths": []}
-    indexer_fn = lambda path: (indexer_calls["paths"].append(path) or {"rows": 2, "table_name": "t", "created_table": False})
+    indexer_fn = lambda path, document_identity=None: (
+        indexer_calls["paths"].append((path, document_identity))
+        or {"rows": 2, "table_name": "t", "created_table": False}
+    )
 
     new_state = advance_one(
         base_dir,
@@ -221,7 +233,43 @@ def test_advance_one_submits_polls_merges_finalizes_indexes_cleans(tmp_path):
     assert new_state.failed_chunks == 0
     # Indexer was called with the final_output path before CLEANUP_ARTIFACTS
     # unlinked it.
-    assert indexer_calls["paths"] == [new_state.artifacts["final_output"]]
+    assert indexer_calls["paths"] == [(new_state.artifacts["final_output"], None)]
+
+
+def test_advance_one_uses_default_batch_client_downloader(tmp_path):
+    base_dir, _state, requests = _prime_doc(tmp_path)
+
+    submit_fn = lambda path, metadata=None: _FakeSubmission(
+        batch_id="batch_1", input_file_id="file_1", status="validating"
+    )
+    poll_fn = lambda bid: _FakeStatus(
+        batch_id=bid,
+        status="completed",
+        output_file_id="output_1",
+        error_file_id=None,
+        request_counts={"total": 2, "completed": 2, "failed": 0},
+    )
+
+    class _FakeBatchClient:
+        def __init__(self):
+            self.downloads = []
+
+        def download_output(self, file_id, dest):
+            self.downloads.append((file_id, Path(dest).name))
+            _write_batch_results(Path(dest).parent, requests)
+
+    client = _FakeBatchClient()
+    state = advance_one(
+        base_dir,
+        "testdoc",
+        batch_client=client,
+        submit_fn=submit_fn,
+        poll_fn=poll_fn,
+        indexer_fn=lambda path, document_identity=None: {"rows": 2, "table_name": "t", "created_table": False},
+    )
+
+    assert state.state == COMPLETED
+    assert client.downloads == [("output_1", "batch_output.jsonl")]
 
 
 def test_advance_one_poll_stays_when_in_progress(tmp_path):
@@ -278,13 +326,60 @@ def test_advance_one_poll_marks_failed_on_terminal_error(tmp_path):
         batch_id=bid,
         status="failed",
         output_file_id=None,
-        error_file_id="err_1",
+        error_file_id=None,
         request_counts={"total": 2, "completed": 0, "failed": 2},
     )
 
     state = advance_one(base_dir, "testdoc", submit_fn=submit_fn, poll_fn=poll_fn)
     assert state.state == FAILED
     assert "failed" in (state.error or "")
+
+
+def test_advance_one_downloads_batch_error_file_on_terminal_error(tmp_path):
+    base_dir, _state, _requests = _prime_doc(tmp_path)
+
+    submit_fn = lambda path, metadata=None: _FakeSubmission(
+        batch_id="batch_1", input_file_id="file_1", status="validating"
+    )
+    poll_fn = lambda bid: _FakeStatus(
+        batch_id=bid,
+        status="failed",
+        output_file_id=None,
+        error_file_id="err_1",
+        request_counts={"total": 2, "completed": 0, "failed": 2},
+    )
+
+    def download_fn(file_id, dest):
+        Path(dest).write_text('{"error":"bad"}\n')
+
+    state = advance_one(base_dir, "testdoc", submit_fn=submit_fn, poll_fn=poll_fn, download_fn=download_fn)
+    assert state.state == FAILED
+    assert (base_dir / "testdoc" / "batch_error.jsonl").exists()
+
+
+def test_advance_one_marks_completed_batch_with_partial_failures_failed(tmp_path):
+    base_dir, _state, _requests = _prime_doc(tmp_path)
+
+    submit_fn = lambda path, metadata=None: _FakeSubmission(
+        batch_id="batch_1", input_file_id="file_1", status="validating"
+    )
+    poll_fn = lambda bid: _FakeStatus(
+        batch_id=bid,
+        status="completed",
+        output_file_id="out_1",
+        error_file_id="err_1",
+        request_counts={"total": 2, "completed": 1, "failed": 1},
+    )
+    downloads = []
+
+    def download_fn(file_id, dest):
+        downloads.append((file_id, Path(dest).name))
+        Path(dest).write_text("")
+
+    state = advance_one(base_dir, "testdoc", submit_fn=submit_fn, poll_fn=poll_fn, download_fn=download_fn)
+    assert state.state == FAILED
+    assert "partial failures" in (state.error or "")
+    assert downloads == [("err_1", "batch_error.jsonl")]
 
 
 def test_advance_one_skips_missing_doc(tmp_path):
@@ -361,7 +456,7 @@ def test_advance_one_records_state_transitions_in_trace(tmp_path):
         request_counts={"total": 2, "completed": 2, "failed": 0},
     )
     download_fn = lambda file_id, dest: _write_batch_results(dest.parent, requests)
-    indexer_fn = lambda path: {"rows": 2, "table_name": "t", "created_table": False}
+    indexer_fn = lambda path, document_identity=None: {"rows": 2, "table_name": "t", "created_table": False}
 
     advance_one(
         base_dir, "testdoc",
@@ -375,3 +470,65 @@ def test_advance_one_records_state_transitions_in_trace(tmp_path):
     assert final.cache_metrics["input_tokens"] == 10
     assert final.cache_metrics["output_tokens"] == 6
     assert final.cache_metrics["cached_tokens"] == 2
+
+
+def test_advance_one_fails_on_missing_output_rows(tmp_path):
+    base_dir, _state, requests = _prime_doc(tmp_path)
+
+    submit_fn = lambda path, metadata=None: _FakeSubmission(
+        batch_id="batch_1", input_file_id="file_1", status="validating"
+    )
+    poll_fn = lambda bid: _FakeStatus(
+        batch_id=bid,
+        status="completed",
+        output_file_id="out_1",
+        error_file_id=None,
+        request_counts={"total": 2, "completed": 2, "failed": 0},
+    )
+
+    def download_fn(file_id, dest):
+        line = {
+            "custom_id": requests[0].custom_id,
+            "response": {"status_code": 200, "body": {"output_text": "only one"}},
+        }
+        Path(dest).write_text(json.dumps(line))
+
+    state = advance_one(base_dir, "testdoc", submit_fn=submit_fn, poll_fn=poll_fn, download_fn=download_fn)
+    assert state.state == FAILED
+    assert "completed=1, expected=2" in (state.error or "")
+    assert (base_dir / "testdoc" / "merge_errors.json").exists()
+
+
+def test_advance_one_passes_document_identity_to_indexer(tmp_path):
+    base_dir, state, requests = _prime_doc(tmp_path)
+    identity = _identity()
+    state.document_identity = identity.to_dict()
+    save_state(base_dir, state)
+
+    submit_fn = lambda path, metadata=None: _FakeSubmission(
+        batch_id="batch_1", input_file_id="file_1", status="validating"
+    )
+    poll_fn = lambda bid: _FakeStatus(
+        batch_id=bid,
+        status="completed",
+        output_file_id="out_1",
+        error_file_id=None,
+        request_counts={"total": 2, "completed": 2, "failed": 0},
+    )
+    seen = {}
+
+    def indexer_fn(path, document_identity=None):
+        seen["identity"] = document_identity
+        return {"rows": 2, "table_name": "t", "created_table": False}
+
+    advance_one(
+        base_dir,
+        "testdoc",
+        submit_fn=submit_fn,
+        poll_fn=poll_fn,
+        download_fn=lambda file_id, dest: _write_batch_results(Path(dest).parent, requests),
+        indexer_fn=indexer_fn,
+    )
+
+    assert isinstance(seen["identity"], DocumentIdentity)
+    assert seen["identity"].canonical_source_id == "testdoc-canonical"
