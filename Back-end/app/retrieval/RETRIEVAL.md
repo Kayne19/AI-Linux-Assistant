@@ -161,15 +161,30 @@ Runtime config rule:
 - compatibility overrides are runtime composition only, not ingestion/indexing behavior
 - admin-tunable retrieval settings are runtime-only and must not mutate ingestion/index metadata policy
 
+## Document Scope Pre-Narrowing
+
+The corpus now carries a structured `documents` table populated by ingestion (`canonical_source_id`, `canonical_title`, `source_family`, `vendor_or_project`, `os_family`, `init_systems`, `package_managers`, `major_subsystems`, `trust_tier`, `freshness_status`, …). Before the chunk-level hybrid search runs, retrieval narrows by document family so a Debian install guide does not contaminate an Arch wiki query and vice-versa.
+
+The selector lives in [app/retrieval/scope.py](app/retrieval/scope.py):
+
+- `build_hint(query, router_hint)` merges router hints with query-entity extraction (e.g. `apt-get` → `apt`, `systemctl` → `systemd`, `docker` → `containers`). Router hints win on scalar fields; list fields union.
+- `select_candidate_docs(hint, documents)` ranks candidates by tier-weighted field match plus trust and freshness. `explicit_doc_ids` short-circuits ranking when the router pins a specific document.
+- `widen_hint(hint, step)` drops constraints in the documented order — `package_managers` → `init_systems` → `major_subsystems` → `os_family` → `source_family` — preserving `explicit_doc_ids`.
+- `should_widen(candidates, …)` gates retry on `scope_min_hit_count` and `scope_min_top_score` (see `RetrievalConfig`).
+
+The chunk-level search runs against `LanceDBStore.search_hybrid_scoped(...)`, which adds a `canonical_source_id IN (...)` predicate. Empty candidate lists fall through to the unscoped hybrid search so queries against legacy chunks (no documents row) still return results. SQL-injection-safe escaping is handled inside the store.
+
 ## Runtime Flow
 
 At runtime, the flow is:
 
 1. Router decides retrieval is needed.
 2. Search pipeline checks index compatibility.
-3. Query is embedded.
-4. Hybrid search runs against LanceDB.
-5. Candidates are reranked.
+3. Scope hint is built from query + router hints; candidate documents are picked from the `documents` table.
+4. Query is embedded.
+5. Hybrid search runs against LanceDB, scoped to the candidate `canonical_source_id` set when one exists.
+6. If the scoped result is too small or weak, the hint is widened by one step and the search retries (capped by `scope_max_widenings`).
+7. Candidates are reranked.
 6. Source boosting selects anchor chunks.
 7. Each anchor builds a preserved same-source bundle:
    - page-based anchors fetch a direct page window from the store
@@ -291,5 +306,6 @@ If you modify retrieval, preserve these invariants:
 2. [app/retrieval/factory.py](app/retrieval/factory.py)
 3. [app/retrieval/search_pipeline.py](app/retrieval/search_pipeline.py)
 4. [app/retrieval/store.py](app/retrieval/store.py)
-5. [app/retrieval/index_metadata.py](app/retrieval/index_metadata.py)
-6. [app/ingestion/indexer.py](app/ingestion/indexer.py)
+5. [app/retrieval/scope.py](app/retrieval/scope.py)
+6. [app/retrieval/index_metadata.py](app/retrieval/index_metadata.py)
+7. [app/ingestion/indexer.py](app/ingestion/indexer.py)
