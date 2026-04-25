@@ -98,6 +98,7 @@ Owns LanceDB storage I/O:
 - add rows
 - rebuild FTS index
 - run hybrid search
+- run scoped hybrid search and canonical page-window fetches
 - sample rows for source profiling
 
 It does not own ranking policy.
@@ -122,7 +123,7 @@ Owns runtime retrieval behavior:
 - optional source filtering
 - reranking for anchor selection
 - source-profile boosting
-- direct same-source page-window fetches around selected anchors
+- direct same-document page-window fetches around selected anchors
 - bundle/block dedupe before formatting
 - merge retrieved chunks
 - format prompt-ready context
@@ -161,7 +162,7 @@ Runtime config rule:
 - compatibility overrides are runtime composition only, not ingestion/indexing behavior
 - admin-tunable retrieval settings are runtime-only and must not mutate ingestion/index metadata policy
 
-## Document Scope Pre-Narrowing (module ready, runtime wiring pending)
+## Document Scope Pre-Narrowing
 
 The corpus now carries a structured `documents` table populated by ingestion (`canonical_source_id`, `canonical_title`, `source_family`, `vendor_or_project`, `os_family`, `init_systems`, `package_managers`, `major_subsystems`, `trust_tier`, `freshness_status`, …). The intent is to narrow by document family before hybrid search so a Debian install guide does not contaminate an Arch wiki query and vice-versa.
 
@@ -174,7 +175,41 @@ The selector module lives in [app/retrieval/scope.py](app/retrieval/scope.py) an
 
 The store-side hook is also in place: `LanceDBStore.search_hybrid_scoped(...)` adds a `canonical_source_id IN (...)` predicate with single-quote-escaped values, falling back to the unscoped hybrid search when the candidate list is empty.
 
-**Runtime wiring is the remaining piece.** `search_pipeline.py` does not yet call `build_hint` / `select_candidate_docs` / `search_hybrid_scoped` — that integration will land in a follow-up. Until then, retrieval still runs the full unscoped hybrid search regardless of document family.
+### Scope Selection Runtime
+
+Runtime retrieval loads the `documents` table once per `RetrievalSearchPipeline` instance and applies document scope before chunk-level hybrid search:
+
+1. `build_hint(query, router_hint, explicit_doc_ids)` merges router hints, query-derived scope signals, and optional canonical document pins.
+2. `select_candidate_docs(hint, documents)` ranks document candidates by matched fields plus trust and freshness.
+3. If candidate quality is weak, the widening loop calls `widen_hint(hint, step)` and re-ranks until the configured limit is reached.
+4. `search_hybrid_scoped(query_vec, query, initial_fetch, candidate_doc_ids)` searches only chunks whose `canonical_source_id` is in the selected document set.
+
+The widening loop uses three config knobs from `RetrievalConfig`:
+
+- `scope_min_hit_count`
+- `scope_min_top_score`
+- `scope_max_widenings`
+
+The widening ladder drops constraints in this order: `package_managers`, `init_systems`, `major_subsystems`, `os_family`, `source_family`. Explicit document pins are preserved and do not widen away.
+
+The pipeline emits `retrieval_scope_selected` before chunk search:
+
+- `candidate_doc_ids`
+- `candidate_count`
+- `winning_filter` (`os_family`, `source_family`, `package_managers`, `init_systems`, `major_subsystems`, `explicit_doc_ids`)
+- `tier_rankings` with `canonical_source_id`, `canonical_title`, rounded `score`, and `matched_fields`
+- `widenings_taken`
+- `documents_total`
+- `router_hint_present`
+
+### LLM-Facing Tool Surface
+
+The router may pass tool-provided scope into retrieval as:
+
+- `router_hint` — a dict of scope axes such as `os_family`, `source_family`, `package_managers`, `init_systems`, and `major_subsystems`; accepted values are aligned with [app/ingestion/identity/vocabularies.py](app/ingestion/identity/vocabularies.py)
+- `explicit_doc_ids` — canonical document IDs, passed through to `ScopeHint.explicit_doc_ids`
+
+The public tool schema surfaces these as `scope_hints` and `canonical_source_ids` on `search_rag_database`. Retrieval treats them as pre-search narrowing signals only; evidence usefulness, gating, and coverage ownership remain with the router/evidence pool.
 
 ## Runtime Flow
 
@@ -183,18 +218,19 @@ At runtime, the flow is:
 1. Router decides retrieval is needed.
 2. Search pipeline checks index compatibility.
 3. Query is embedded.
-4. Hybrid search runs against LanceDB.
-5. Candidates are reranked.
-6. Source boosting selects anchor chunks.
-7. Each anchor builds a preserved same-source bundle:
-   - page-based anchors fetch a direct page window from the store
+4. The documents table is scoped and widened as needed.
+5. Hybrid search runs against LanceDB with the selected `canonical_source_id` set.
+6. Candidates are reranked.
+7. Source boosting selects anchor chunks.
+8. Each anchor builds a preserved same-document bundle:
+   - page-based anchors fetch a direct `canonical_source_id` + `page_start`/`page_end` overlap window from the store
    - page-less rows become singleton non-expandable bundles
-8. Overlapping same-source bundles are resolved in anchor-rank order:
+9. Overlapping same-document bundles are resolved in anchor-rank order:
    - earlier bundles keep overlapping rows/pages
    - later bundles only contribute unseen rows
-9. `max_expanded` is enforced at bundle boundaries, never by trimming neighbors out of a chosen bundle.
-10. Results are merged and formatted into prompt-ready context.
-11. Responder receives that context.
+10. `max_expanded` is enforced at bundle boundaries, never by trimming neighbors out of a chosen bundle.
+11. Results are merged and formatted into prompt-ready context with section/page-range citation labels.
+12. Responder receives that context.
 
 ## Retrieval Keys
 
