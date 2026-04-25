@@ -4,6 +4,8 @@ This document defines the architectural rules that keep the backend coherent as 
 
 It is not a general code style guide. It is a control-boundary guide.
 
+Hard-coded policy, scoring, fallback, and threshold logic is tracked in [HEURISTICS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/HEURISTICS.md). If a change adds or modifies heuristic behavior, update that inventory in the same pass.
+
 ## Purpose
 
 The backend is designed to be:
