@@ -42,6 +42,7 @@ def build_index_metadata_store(config: RetrievalConfig):
 def build_search_pipeline(config: RetrievalConfig, embedding_provider=None, reranker_provider=None, event_listener=None):
     return RetrievalSearchPipeline(
         store=build_store(config),
+        documents_store=build_documents_store(config),
         metadata_store=build_index_metadata_store(config),
         embedding_provider=build_embedding_provider(config, override=embedding_provider),
         reranker_provider=build_reranker_provider(config, override=reranker_provider),
@@ -66,6 +67,7 @@ def build_runtime_components(
     return {
         "config": config,
         "store": build_store(config),
+        "documents_store": build_documents_store(config),
         "metadata_store": build_index_metadata_store(config),
         "embedding_provider": resolved_embedding_provider,
         "reranker_provider": resolved_reranker_provider,

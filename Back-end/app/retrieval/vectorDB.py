@@ -74,9 +74,11 @@ class VectorDB:
         self.embedding_provider = components["embedding_provider"]
         self.reranker_provider = components["reranker_provider"]
         self._store = components["store"]
+        self._documents_store = components["documents_store"]
         self._metadata_store = components["metadata_store"]
         self._search_pipeline = RetrievalSearchPipeline(
             store=self._store,
+            documents_store=self._documents_store,
             metadata_store=self._metadata_store,
             embedding_provider=self.embedding_provider,
             reranker_provider=self.reranker_provider,
@@ -133,3 +135,23 @@ class VectorDB:
 
     def retrieve_context_result(self, query, sources, **kwargs):
         return self._search_pipeline.retrieve_context_result(query, sources, **kwargs)
+
+    @property
+    def documents_store(self):
+        return self._documents_store
+
+    def load_documents(self):
+        return self._documents_store.load_documents()
+
+    def known_canonical_doc_ids(self):
+        try:
+            rows = self.load_documents()
+        except Exception:
+            return []
+        return sorted(
+            {
+                str(row.get("canonical_source_id"))
+                for row in rows
+                if isinstance(row, dict) and row.get("canonical_source_id")
+            }
+        )

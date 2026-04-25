@@ -3,6 +3,7 @@ import re
 from collections import Counter, defaultdict
 
 from orchestration.routing_registry import get_aliases_for_label
+from retrieval.config import load_retrieval_config
 from retrieval.formatter import (
     build_block_key,
     build_bundle_key,
@@ -13,6 +14,7 @@ from retrieval.formatter import (
     merge_context_chunks,
     serialize_context_blocks,
 )
+from retrieval.scope import build_hint, select_candidate_docs, should_widen, widen_hint
 from utils.debug_utils import debug_print
 
 
@@ -25,10 +27,27 @@ def _build_region_key(source, page_start=None, page_end=None, row_key=None):
     return f"region:{source}:singleton:unknown"
 
 
+def _doc_source_key(doc):
+    return doc.get("canonical_source_id") or doc.get("source") or "Unknown"
+
+
+def _doc_display_source(doc):
+    return doc.get("canonical_title") or doc.get("source") or _doc_source_key(doc)
+
+
+def _doc_page_start(doc):
+    return coerce_page_number(doc.get("page_start")) or coerce_page_number(doc.get("page"))
+
+
+def _doc_page_end(doc):
+    return coerce_page_number(doc.get("page_end")) or _doc_page_start(doc)
+
+
 class RetrievalSearchPipeline:
     def __init__(
         self,
         store,
+        documents_store,
         metadata_store,
         embedding_provider,
         reranker_provider,
@@ -40,6 +59,7 @@ class RetrievalSearchPipeline:
         source_profile_sample=5000,
     ):
         self.store = store
+        self.documents_store = documents_store
         self.metadata_store = metadata_store
         self.embedding_provider = embedding_provider
         self.reranker_provider = reranker_provider
@@ -52,10 +72,22 @@ class RetrievalSearchPipeline:
         self._source_profiles_ready = False
         self._source_idf = {}
         self._source_top_tokens = {}
+        self._documents_cache = None
+        self._scope_config_cache = None
 
     def _emit_event(self, event_type, payload):
         if self.event_listener is not None:
             self.event_listener(event_type, payload)
+
+    def _load_documents(self):
+        if self._documents_cache is None:
+            self._documents_cache = list(self.documents_store.load_documents())
+        return self._documents_cache
+
+    def _scope_config(self):
+        if self._scope_config_cache is None:
+            self._scope_config_cache = load_retrieval_config()
+        return self._scope_config_cache
 
     def _tokenize(self, text):
         words = re.split(r"[^a-zA-Z0-9]+", text.lower())
@@ -214,14 +246,20 @@ class RetrievalSearchPipeline:
         return by_source
 
     def _doc_is_excluded(self, doc, excluded_page_windows_by_source, excluded_block_keys):
-        source = doc.get("source", "Unknown")
-        page = coerce_page_number(doc.get("page"))
-        if page is not None:
-            for page_start, page_end in excluded_page_windows_by_source.get(source, []):
-                if page_start <= page <= page_end:
+        source_key = _doc_source_key(doc)
+        display_source = _doc_display_source(doc)
+        page_start = _doc_page_start(doc)
+        page_end = _doc_page_end(doc)
+        if page_start is not None and page_end is not None:
+            candidate_windows = (
+                excluded_page_windows_by_source.get(source_key, [])
+                + excluded_page_windows_by_source.get(display_source, [])
+            )
+            for excluded_start, excluded_end in candidate_windows:
+                if page_start <= excluded_end and page_end >= excluded_start:
                     return True
             return False
-        singleton_block_key = build_block_key(source, row_keys=[build_row_key(doc)])
+        singleton_block_key = build_block_key(source_key, row_keys=[build_row_key(doc)])
         return singleton_block_key in excluded_block_keys
 
     def _dedupe_docs(self, docs):
@@ -237,17 +275,22 @@ class RetrievalSearchPipeline:
         return deduped
 
     def _build_anchor_bundle(self, anchor_doc, bundle_rank):
-        source = anchor_doc.get("source", "Unknown")
+        source_key = _doc_source_key(anchor_doc)
+        display_source = _doc_display_source(anchor_doc)
         anchor_row_key = build_row_key(anchor_doc)
-        anchor_page = coerce_page_number(anchor_doc.get("page"))
+        anchor_page_start = _doc_page_start(anchor_doc)
+        anchor_page_end = _doc_page_end(anchor_doc)
+        anchor_page = anchor_page_start
         anchor_score = float(anchor_doc.get("rerank_score", 0.0))
 
-        if anchor_page is None:
-            bundle_key = build_bundle_key(source, anchor_row_key)
+        if anchor_page_start is None or anchor_page_end is None:
+            bundle_key = build_bundle_key(source_key, anchor_row_key)
             anchor_bundle_docs = [anchor_doc]
             return {
                 "bundle_key": bundle_key,
                 "bundle_rank": bundle_rank,
+                "source_key": source_key,
+                "display_source": display_source,
                 "anchor_row_key": anchor_row_key,
                 "anchor_page": None,
                 "anchor_score": anchor_score,
@@ -260,34 +303,44 @@ class RetrievalSearchPipeline:
             }
 
         page_start = max(1, anchor_page - self.neighbor_pages)
-        page_end = max(anchor_page, anchor_page + self.neighbor_pages)
-        fetched_docs = [
-            self._clone_doc(doc)
-            for doc in self.store.fetch_source_page_window(
-                source,
+        page_end = max(anchor_page_end, anchor_page_end + self.neighbor_pages)
+        fetch_limit = max(1000, self.max_expanded * 20)
+        if anchor_doc.get("canonical_source_id") and hasattr(self.store, "fetch_canonical_page_window"):
+            fetched_raw = self.store.fetch_canonical_page_window(
+                anchor_doc.get("canonical_source_id"),
                 page_start,
                 page_end,
-                limit=max(1000, self.max_expanded * 20),
+                limit=fetch_limit,
             )
-        ]
+        else:
+            fetched_raw = self.store.fetch_source_page_window(
+                display_source,
+                page_start,
+                page_end,
+                limit=fetch_limit,
+            )
+        fetched_docs = [self._clone_doc(doc) for doc in fetched_raw]
         if not any(build_row_key(doc) == anchor_row_key for doc in fetched_docs):
             fetched_docs.append(anchor_doc)
 
-        bundle_key = build_bundle_key(source, anchor_row_key, page_start, page_end)
+        bundle_key = build_bundle_key(source_key, anchor_row_key, page_start, page_end)
         fetched_neighbor_pages = sorted(
             {
                 page
-                for page in (coerce_page_number(doc.get("page")) for doc in fetched_docs)
-                if page is not None and page != anchor_page
+                for doc in fetched_docs
+                for page in range(_doc_page_start(doc) or 0, (_doc_page_end(doc) or 0) + 1)
+                if page >= 1 and not (anchor_page_start <= page <= anchor_page_end)
             }
         )
         return {
             "bundle_key": bundle_key,
             "bundle_rank": bundle_rank,
+            "source_key": source_key,
+            "display_source": display_source,
             "anchor_row_key": anchor_row_key,
             "anchor_page": anchor_page,
             "anchor_score": anchor_score,
-            "requested_page_window_key": build_page_window_key(source, page_start, page_end),
+            "requested_page_window_key": build_page_window_key(source_key, page_start, page_end),
             "requested_page_start": page_start,
             "requested_page_end": page_end,
             "fetched_neighbor_pages": fetched_neighbor_pages,
@@ -303,6 +356,8 @@ class RetrievalSearchPipeline:
         excluded_block_keys=None,
         covered_region_keys=None,
         requested_evidence_goal=None,
+        router_hint=None,
+        explicit_doc_ids=None,
     ):
         excluded_block_keys = set(excluded_block_keys or [])
         excluded_page_windows = list(excluded_page_windows or [])
@@ -325,10 +380,66 @@ class RetrievalSearchPipeline:
         )
         self.metadata_store.ensure_embedding_compatibility(self.embedding_provider, require_metadata=False)
         query_vec = self.embedding_provider.embed_query(query)
-        candidates = self.store.search_hybrid(query_vec, query, self.initial_fetch)
+        documents = self._load_documents()
+        hint = build_hint(
+            query=query,
+            router_hint=router_hint,
+            explicit_doc_ids=tuple(explicit_doc_ids or ()),
+        )
+        scope_config = self._scope_config()
+        chosen_candidates = select_candidate_docs(hint, documents)
+        widenings_taken = 0
+
+        while (
+            not hint.explicit_doc_ids
+            and
+            should_widen(
+                chosen_candidates,
+                min_hit_count=scope_config.scope_min_hit_count,
+                min_top_score=scope_config.scope_min_top_score,
+            )
+            and widenings_taken < scope_config.scope_max_widenings
+        ):
+            widenings_taken += 1
+            hint = widen_hint(hint, step=widenings_taken)
+            chosen_candidates = select_candidate_docs(hint, documents)
+
+        candidate_ids = [candidate.canonical_source_id for candidate in chosen_candidates]
+        self._emit_event(
+            "retrieval_scope_selected",
+            {
+                "candidate_doc_ids": candidate_ids,
+                "candidate_count": len(candidate_ids),
+                "winning_filter": {
+                    "os_family": hint.os_family,
+                    "source_family": hint.source_family,
+                    "package_managers": list(hint.package_managers),
+                    "init_systems": list(hint.init_systems),
+                    "major_subsystems": list(hint.major_subsystems),
+                    "explicit_doc_ids": list(hint.explicit_doc_ids),
+                },
+                "tier_rankings": [
+                    {
+                        "canonical_source_id": candidate.canonical_source_id,
+                        "canonical_title": candidate.canonical_title,
+                        "score": round(candidate.score, 3),
+                        "matched_fields": candidate.matched_fields,
+                    }
+                    for candidate in chosen_candidates[:10]
+                ],
+                "widenings_taken": widenings_taken,
+                "documents_total": len(documents),
+                "router_hint_present": router_hint is not None,
+            },
+        )
+        candidates = self.store.search_hybrid_scoped(query_vec, query, self.initial_fetch, candidate_ids)
         self._emit_event(
             "retrieval_candidates_found",
-            {"count": len(candidates), "initial_fetch": self.initial_fetch},
+            {
+                "count": len(candidates),
+                "initial_fetch": self.initial_fetch,
+                "scoped_candidate_doc_count": len(candidate_ids),
+            },
         )
 
         if sources:
@@ -349,7 +460,7 @@ class RetrievalSearchPipeline:
         anchors = ranked_results[: self.final_top_k]
         anchor_pages = [
             page
-            for page in (coerce_page_number(doc.get("page")) for doc in anchors)
+            for page in (_doc_page_start(doc) for doc in anchors)
             if page is not None
         ]
         self._emit_event(
@@ -376,7 +487,7 @@ class RetrievalSearchPipeline:
         for bundle_rank, anchor in enumerate(anchors):
             anchor_doc = self._clone_doc(anchor)
             bundle = self._build_anchor_bundle(anchor_doc, bundle_rank)
-            source = anchor_doc.get("source", "Unknown")
+            source = bundle["source_key"]
             for page in bundle["fetched_neighbor_pages"]:
                 fetched_neighbor_pages_by_source[source].add(page)
 
@@ -386,9 +497,10 @@ class RetrievalSearchPipeline:
                 if self._doc_is_excluded(raw_doc, excluded_windows_by_source, excluded_block_keys):
                     excluded_seen_count += 1
                     # Record the region key so the pool can classify this as overlap/reused
-                    page = coerce_page_number(raw_doc.get("page"))
-                    if page is not None:
-                        rk = _build_region_key(source, page, page)
+                    page_start = _doc_page_start(raw_doc)
+                    page_end = _doc_page_end(raw_doc)
+                    if page_start is not None and page_end is not None:
+                        rk = _build_region_key(source, page_start, page_end)
                     else:
                         rk = _build_region_key(source, row_key=row_key)
                     if rk not in _excluded_region_key_set:
@@ -401,6 +513,7 @@ class RetrievalSearchPipeline:
                 bundle_doc["row_key"] = row_key
                 bundle_doc["bundle_key"] = bundle["bundle_key"]
                 bundle_doc["bundle_rank"] = bundle["bundle_rank"]
+                bundle_doc["source_key"] = source
                 bundle_doc["anchor_row_key"] = bundle["anchor_row_key"]
                 bundle_doc["anchor_page"] = bundle["anchor_page"]
                 bundle_doc["requested_page_window_key"] = bundle["requested_page_window_key"]
@@ -418,8 +531,9 @@ class RetrievalSearchPipeline:
             delivered_pages = sorted(
                 {
                     page
-                    for page in (coerce_page_number(doc.get("page")) for doc in bundle_docs)
-                    if page is not None
+                    for doc in bundle_docs
+                    for page in range(_doc_page_start(doc) or 0, (_doc_page_end(doc) or 0) + 1)
+                    if page >= 1
                 }
             )
             delivered_page_window_key = build_page_window_key(

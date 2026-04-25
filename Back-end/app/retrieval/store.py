@@ -71,6 +71,23 @@ class LanceDBStore:
         search = search.limit(10000 if limit is None else int(limit))
         return search.to_list()
 
+    def fetch_canonical_page_window(
+        self,
+        canonical_source_id: str,
+        page_start: int,
+        page_end: int,
+        limit: int | None = None,
+    ):
+        escaped_source_id = (canonical_source_id or "").replace("'", "''")
+        query = (
+            f"canonical_source_id = '{escaped_source_id}' "
+            f"AND page_start <= {int(page_end)} "
+            f"AND page_end >= {int(page_start)}"
+        )
+        search = self.open_table().search().where(query)
+        search = search.limit(10000 if limit is None else int(limit))
+        return search.to_list()
+
     def add_rows(self, rows):
         db = self.connect()
         if self.table_exists():
