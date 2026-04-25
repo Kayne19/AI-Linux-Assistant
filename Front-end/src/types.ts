@@ -153,6 +153,15 @@ export type RetrievedContextBlock = {
   pages: number[];
   page_label: string;
   text: string;
+  section_path?: string[] | null;
+  section_title?: string | null;
+  chunk_type?: string | null;
+  local_subsystems?: string[] | null;
+  entities?: Record<string, string[]> | null;
+  canonical_source_id?: string | null;
+  page_start?: number | null;
+  page_end?: number | null;
+  citation_label?: string | null;
 };
 
 export type NormalizedInputs = {
