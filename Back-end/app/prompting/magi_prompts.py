@@ -431,7 +431,7 @@ ROLE_REMINDERS = {
 MAGI_NET_NEW_INSTRUCTION = (
     "When using tools: prefer net-new evidence regions not yet covered this run. "
     "Revisit covered regions only for contradiction checks, alternate-source confirmation, expand_beyond_covered_region, or fill_named_unresolved_gap. "
-    "For broad procedural asks, refine requested_evidence_goal before repeating retrieval on the same scope."
+    "For broad procedural asks, refine evidence_gap before repeating retrieval on the same scope."
 )
 
 EVIDENCE_POOL_SUMMARY_SECTION_LABEL = "EVIDENCE POOL SUMMARY:"

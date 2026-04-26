@@ -203,7 +203,6 @@ class QueryRecord:
     evidence_gap: str = ""
     evidence_gap_key: str = ""
     repeat_reason: str = ""
-    requested_evidence_goal: str = ""
     usefulness: str = ""
     usefulness_history_index: int = -1
     usefulness_reason: str = ""
@@ -265,26 +264,6 @@ GATE_ALLOW = "allow"
 GATE_ALLOW_NET_NEW_ONLY = "allow_net_new_only"
 GATE_REQUIRE_REASON = "require_reason"
 GATE_BLOCK = "block"
-
-# Evidence goal constants and normalization (used by router for requested_evidence_goal field)
-GENERIC_EVIDENCE_GOALS = frozenset({
-    "install_component",
-    "configure_access",
-    "verify_state",
-    "troubleshoot_failure",
-    "identify_prerequisites",
-    "create_target",
-    "expand_covered_region",
-    "fill_unresolved_gap",
-    "confirm_contradiction",
-    "gather_alternate_source",
-})
-
-
-def normalize_evidence_goal(goal: str) -> str:
-    """Return the goal string if it is a recognized evidence goal, else empty string."""
-    normalized = _normalize_text(goal).replace(" ", "_")
-    return normalized if normalized in GENERIC_EVIDENCE_GOALS else ""
 
 SOFT_EXHAUSTION_LOW_VALUE_THRESHOLD = 2
 HARD_EXHAUSTION_ZERO_THRESHOLD = 3
@@ -473,7 +452,6 @@ class EvidencePool:
         gap_type: str = "",
         evidence_gap: str = "",
         repeat_reason: str = "",
-        requested_evidence_goal: str = "",
     ) -> QueryRecord:
         normalized = _normalize_text(raw_query)
         scope = self._scope(
@@ -504,7 +482,6 @@ class EvidencePool:
             evidence_gap=scope.evidence_gap,
             evidence_gap_key=scope.evidence_gap_key,
             repeat_reason=normalize_repeat_reason(repeat_reason),
-            requested_evidence_goal=requested_evidence_goal or "",
         )
         self._known_query_fingerprints.add(qfp)
         self.query_records.append(record)
@@ -622,7 +599,6 @@ class EvidencePool:
         unresolved_issue: str = "",
         gap_type: str = "",
         strict_repeat_reason: bool = False,
-        requested_evidence_goal: str = "",
     ) -> GateDecision:
         normalized = _normalize_text(raw_query)
         scope = self._scope(
@@ -797,4 +773,3 @@ class EvidencePool:
 
     def last_query_scope_key(self) -> str:
         return self.query_records[-1].scope_key if self.query_records else ""
-

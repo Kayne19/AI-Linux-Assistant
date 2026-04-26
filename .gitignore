@@ -29,6 +29,12 @@ Back-end/tui_logs/
 # Raw/ingested document data (PDFs etc.)
 Back-end/data/ingested/
 Back-end/data/old/
+Back-end/data/current*_mass_ingest/
+
+# Generated ingestion traces and LanceDB backups
+Back-end/ingest_traces/audit_*.jsonl
+Back-end/ingest_traces/ingest_run_*.json
+lancedb_data_backup_*/
 
 # Planning and agent instructions (local only)
 plans/

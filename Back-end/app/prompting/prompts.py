@@ -132,8 +132,8 @@ You have `search_rag_database` for project documentation, `search_conversation_h
 
 - When details are missing or ambiguous, use a focused database search.
 - Across repeated retrieval rounds, prefer evidence that materially advances the active subtask, not merely unseen text.
-- For broad procedural asks, set an internal requested_evidence_goal before repeating database retrieval.
-- If the database tool indicates low-value repeated retrieval for the same scope, refine the requested_evidence_goal or provide a repeat_reason instead of brute-force re-querying the same scope.
+- For broad procedural asks, set a specific evidence_gap before repeating database retrieval.
+- If the database tool indicates low-value repeated retrieval for the same scope, refine the evidence_gap or provide a repeat_reason instead of brute-force re-querying the same scope.
 - If the missing detail is mainly about the user's actual environment or setup, prefer 1 to 3 tightly related follow-up questions over speculative extra retrieval.
 - When you call `search_rag_database` after a prior search, include `progress_assessment` describing whether the previous search helped.
 - When the user refers to prior attempts, setup details, or older conversation, use the conversation-history search tool.

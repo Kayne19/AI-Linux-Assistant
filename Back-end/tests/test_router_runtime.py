@@ -541,7 +541,7 @@ def test_router_tool_search_emits_prompt_facing_retrieval_blocks_for_tool_result
     assert payload["gate_action"] == "allow"
     assert payload["search_outcome"] == "no_new_evidence"
     assert payload["usefulness"] == ""
-    assert payload["scope_key"] == "debian::install_package"
+    assert payload["scope_key"] == "debian::install_component"
     assert payload["caller_role"] == ""
     assert payload["caller_phase"] == ""
     assert payload["caller_round"] == 0
@@ -784,11 +784,11 @@ def test_router_tool_search_soft_require_reason_is_visible_for_normal_chatbot():
 
     first = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "repeat me", "relevant_documents": ["debian"]},
+        {"query": "repeat me", "relevant_documents": ["debian"], "evidence_gap": "repeat me"},
     )
     second = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "repeat me", "relevant_documents": ["debian"]},
+        {"query": "repeat me", "relevant_documents": ["debian"], "evidence_gap": "repeat me"},
     )
 
     # After two identical searches the scope is known and the cache hits.
@@ -842,11 +842,16 @@ def test_router_tool_search_different_queries_both_reach_database():
 
     router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "how to install docker", "relevant_documents": ["debian"]},
+        {"query": "how to install docker", "relevant_documents": ["debian"], "evidence_gap": "install docker"},
     )
     router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "verify docker running", "relevant_documents": ["debian"], "progress_assessment": "partial_progress"},
+        {
+            "query": "verify docker running",
+            "relevant_documents": ["debian"],
+            "evidence_gap": "verify docker running",
+            "progress_assessment": "partial_progress",
+        },
     )
 
     # Both queries must reach the database
@@ -1421,7 +1426,7 @@ def test_router_responder_and_magi_share_handle_responder_tool_call():
     # search_rag_database routes to the database
     rag_result = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "install docker", "relevant_documents": ["debian"]},
+        {"query": "install docker", "relevant_documents": ["debian"], "evidence_gap": "install docker"},
     )
     assert "some docs" in rag_result
     assert db.calls == ["install docker"]

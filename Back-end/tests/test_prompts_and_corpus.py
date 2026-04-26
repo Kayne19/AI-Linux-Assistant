@@ -37,8 +37,7 @@ def test_chatbot_prompt_uses_updated_grounded_response_shape():
     assert "Ask for the most discriminating missing detail" in CHATBOT_SYSTEM_PROMPT
     assert "prefer conversation-history and structured-memory tools before fresh database retrieval" in CHATBOT_SYSTEM_PROMPT
     assert "prefer evidence that materially advances the active subtask" in CHATBOT_SYSTEM_PROMPT
-    # Tool-loop style: model sets requested_evidence_goal, not evidence_gap
-    assert "set an internal requested_evidence_goal before repeating database retrieval" in CHATBOT_SYSTEM_PROMPT
+    assert "set a specific evidence_gap before repeating database retrieval" in CHATBOT_SYSTEM_PROMPT
     assert "provide a repeat_reason instead of brute-force re-querying the same scope" in CHATBOT_SYSTEM_PROMPT
     # progress_assessment is now the model's self-evaluation mechanism
     assert "include `progress_assessment` describing whether the previous search helped" in CHATBOT_SYSTEM_PROMPT
