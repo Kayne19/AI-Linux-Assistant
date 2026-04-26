@@ -38,7 +38,7 @@
   },
   "judge": {
     "provider": "openai",
-    "model": "gpt-5.4-mini",
+    "model": "gpt-5.4-nano",
     "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
     "request_timeout_seconds": 90
   },

@@ -258,16 +258,16 @@ def _judge_from_config(config: dict[str, Any]):
 
 
 _DEFAULT_JUDGE_PAIRWISE = {
-    "provider": "anthropic",
-    "model": "claude-haiku-4-5-20251001",
-    "api_key": "env:ANTHROPIC_API_KEY",
+    "provider": "openai",
+    "model": "gpt-5.4-nano",
+    "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
     "request_timeout_seconds": 90,
 }
 
 _DEFAULT_JUDGE_ABSOLUTE = {
-    "provider": "anthropic",
-    "model": "claude-sonnet-4-6",
-    "api_key": "env:ANTHROPIC_API_KEY",
+    "provider": "openai",
+    "model": "gpt-5.4-nano",
+    "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
     "request_timeout_seconds": 120,
 }
 

@@ -65,24 +65,23 @@ def test_single_judge_back_compat() -> None:
 
 
 def test_no_judges_config_absolute_default() -> None:
-    """Empty config falls back to strong default for absolute mode."""
-    os.environ["ANTHROPIC_API_KEY"] = "env-key"
+    """Empty config falls back to nano default for absolute mode."""
+    os.environ["EVAL_HARNESS_JUDGE_API_KEY"] = "env-key"
     config: dict = {}
     judges, weights = _judges_from_config(config, mode="absolute")
     assert len(judges) == 1
-    assert isinstance(judges[0], AnthropicBlindJudge)
-    # Default model for absolute is claude-sonnet-4-6.
-    assert judges[0].config.model == "claude-sonnet-4-6"
+    assert isinstance(judges[0], OpenAIResponsesBlindJudge)
+    assert judges[0].config.model == "gpt-5.4-nano"
 
 
 def test_no_judges_config_pairwise_default() -> None:
-    """Empty config falls back to Haiku default for pairwise mode."""
-    os.environ["ANTHROPIC_API_KEY"] = "env-key"
+    """Empty config falls back to nano default for pairwise mode."""
+    os.environ["EVAL_HARNESS_JUDGE_API_KEY"] = "env-key"
     config: dict = {}
     judges, weights = _judges_from_config(config, mode="pairwise")
     assert len(judges) == 1
-    assert isinstance(judges[0], AnthropicBlindJudge)
-    assert judges[0].config.model == "claude-haiku-4-5-20251001"
+    assert isinstance(judges[0], OpenAIResponsesBlindJudge)
+    assert judges[0].config.model == "gpt-5.4-nano"
 
 
 def test_judges_list_takes_priority_over_judge_block() -> None:
