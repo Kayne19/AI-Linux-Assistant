@@ -81,7 +81,7 @@ The stream currently sends JSON payloads shaped like:
 - Magi phase and role events
 - structured-output fallback warnings such as `structured_output_warning`
 - paused-run control events such as `magi_pause_requested`, `magi_intervention_added`, and `magi_resumed`
-- evidence pool events: `evidence_pool_update` (emitted after every retrieval, contains coverage summary) and `retrieval_gated` (emitted when a MAGI scope is exhausted and a retrieval is blocked)
+- evidence pool events: `evidence_pool_update` (emitted after every retrieval, contains coverage summary) and `retrieval_signal` (emitted when a former gate condition such as exhausted same-scope retrieval is reported without blocking the retrieval)
 
 `paused` reports a MAGI run that stopped at a durable discussion checkpoint and can later be resumed with the same `run_id`.
 

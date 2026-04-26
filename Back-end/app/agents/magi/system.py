@@ -38,7 +38,6 @@ class MagiSystem:
         event_listener=None,
         cancel_check=None,
         pause_check=None,
-        historian_web_search_decider=None,
     ):
         self.eager = eager
         self.skeptic = skeptic
@@ -52,7 +51,6 @@ class MagiSystem:
         self.cancel_check = cancel_check
         self.pause_check = pause_check
         self.last_pause_state = {}
-        self.historian_web_search_decider = historian_web_search_decider
 
     def _set_state(self, state, payload=None):
         if self.state_listener is not None:
@@ -90,17 +88,6 @@ class MagiSystem:
 
     def _check_cancel(self, checkpoint):
         invoke_cancel_check(self.cancel_check, checkpoint)
-
-    def _should_enable_historian_web_search(self, *, phase, round_number, unresolved_issue):
-        if not callable(self.historian_web_search_decider):
-            return False
-        return bool(
-            self.historian_web_search_decider(
-                phase=phase,
-                round_number=round_number,
-                unresolved_issue=unresolved_issue,
-            )
-        )
 
     def _maybe_pause(self, checkpoint, pause_state_factory):
         self._check_cancel(f"before_pause_checkpoint:{checkpoint}")
@@ -400,11 +387,7 @@ class MagiSystem:
                 user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text,
                 event_listener=self._make_role_streamer_listener(role_name, "opening_arguments"),
                 evidence_pool_summary=evidence_pool_summary,
-                enable_web_search=(role_name == "historian" and self._should_enable_historian_web_search(
-                    phase="opening_arguments",
-                    round_number=0,
-                    unresolved_issue="",
-                )),
+                enable_web_search=(role_name == "historian"),
             )
             position_text = parsed.get("position", "")
             self._emit_role_text(role_name, "opening_arguments", position_text)
@@ -577,11 +560,7 @@ class MagiSystem:
                     user_intervention_block=self._discussion_prompt_intervention_block(interventions),
                     event_listener=self._make_role_streamer_listener(role_name, "discussion", round_num),
                     evidence_pool_summary=evidence_pool_summary,
-                    enable_web_search=(role_name == "historian" and self._should_enable_historian_web_search(
-                        phase="discussion",
-                        round_number=round_num,
-                        unresolved_issue=unresolved_issue,
-                    )),
+                    enable_web_search=(role_name == "historian"),
                 )
                 position_text = parsed.get("position", "")
                 new_info = parsed.get("new_information", False)

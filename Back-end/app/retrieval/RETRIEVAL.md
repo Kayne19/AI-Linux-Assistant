@@ -130,11 +130,11 @@ Owns runtime retrieval behavior:
 
 It also emits retrieval events so the rest of the system can observe what retrieval did.
 
-Current goal-hint rule:
+Current evidence-gap rule:
 
-- runtime retrieval may accept an optional `requested_evidence_goal`
-- that hint is router-provided, internal, and backward-compatible
-- it may influence rerank/anchor choice in a bounded way
+- runtime retrieval may accept optional `evidence_gap` text
+- that gap is router-provided and describes the missing evidence the search should find
+- it may influence rerank/anchor choice through a composite rerank query and a bounded lexical gap-alignment boost
 - it does not move scope, usefulness, or gating policy into retrieval
 
 ### `app/retrieval/formatter.py`
@@ -262,7 +262,7 @@ The router's `EvidencePool` passes per-call exclusion and coverage inputs to the
 - `excluded_page_windows` — list of `{"key", "source", "page_start", "page_end"}` dicts; the pipeline skips bundles whose page window overlaps these
 - `excluded_block_keys` — list of block key strings; used to exclude singleton blocks already covered
 - `covered_region_keys` — list of region key strings (informational; echoed back in metadata for pool reconciliation)
-- `requested_evidence_goal` — optional internal goal hint used only to bias anchor selection within the retrieval pipeline
+- `evidence_gap` — optional text describing the missing evidence, used only to bias anchor selection within the retrieval pipeline
 
 ### Retrieval Metadata (returned by `retrieve_context_result`)
 
@@ -272,7 +272,7 @@ In addition to existing fields, the pipeline now returns:
 - `excluded_region_keys_seen` — region keys that were requested but skipped because they were in `excluded_page_windows` / `excluded_block_keys`
 - `net_new_region_count` — count of delivered regions not already in the covered set
 - `covered_region_keys_input` — echo of the `covered_region_keys` input (for pool reconciliation)
-- `requested_evidence_goal` — echo of the goal hint used for this retrieval call
+- `evidence_gap` — echo of the evidence gap used for this retrieval call
 
 Current overlap rule:
 
@@ -296,7 +296,7 @@ The runtime search pipeline emits events such as:
 The router/evidence pool emits additional events:
 
 - `evidence_pool_update` — emitted after every retrieval (fresh or cached) with pool summary state: `query_count`, `evidence_count`, `covered_region_count`, `soft_exhausted_scope_keys`, `hard_exhausted_scope_keys`, `last_outcome`, `last_usefulness`
-- `retrieval_gated` — emitted when router-owned scope gating stops a repeated retrieval; includes gate action, exhaustion level, scope key, and caller context
+- `retrieval_signal` — emitted when router-owned scope signaling reports a repeated or exhausted retrieval state; includes gate action, exhaustion level, scope key, and caller context without stopping the retrieval
 
 Current observability fields on retrieval pipeline events include:
 
@@ -305,7 +305,7 @@ Current observability fields on retrieval pipeline events include:
 - delivered bundle count
 - excluded-seen count
 - skipped bundle count
-- requested evidence goal
+- evidence gap
 
 These events are used for observability and live frontend status updates.
 

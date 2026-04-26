@@ -9,12 +9,8 @@ from prompting.prompts import CHATBOT_SYSTEM_PROMPT
 class ResponseState(Enum):
     PREPARE_REQUEST = auto()
     REQUEST_MODEL = auto()
-    DECIDE_NEXT_STEP = auto()
-    WEB_SEARCH = auto()
     PROCESS_TOOL_CALLS = auto()
-    EVALUATE_TOOL_RESULT = auto()
     SUBMIT_TOOL_RESULTS = auto()
-    FINALIZE_RESPONSE = auto()
     COMPLETE = auto()
     ERROR = auto()
 
@@ -49,8 +45,6 @@ class ResponseAgent:
     def _handle_worker_event(self, event_type, payload):
         if event_type == "request_submitted":
             self._set_state(ResponseState.REQUEST_MODEL, payload)
-        elif event_type == "web_search_used":
-            self._set_state(ResponseState.WEB_SEARCH, payload)
         elif event_type == "tool_calls_received":
             self._set_state(ResponseState.PROCESS_TOOL_CALLS, payload)
         elif event_type == "tool_results_submitted":
@@ -71,11 +65,6 @@ class ResponseAgent:
     def emit_final_text(self, response_text):
         if response_text and self.event_listener is not None:
             self.event_listener("text_delta", {"delta": response_text})
-
-    def supports_router_protocol(self):
-        return callable(getattr(self.worker, "start_text_step", None)) and callable(
-            getattr(self.worker, "continue_text_step", None)
-        )
 
     def _build_turn_content(
         self,
@@ -100,75 +89,6 @@ class ResponseAgent:
         USER QUESTION:
         {user_query}
         """
-
-    def start_protocol_step(
-        self,
-        user_query,
-        retrieved_docs,
-        summarized_conversation_history=None,
-        memory_snapshot_text="",
-        *,
-        system_prompt=None,
-        tools=None,
-        enable_web_search=None,
-        round_number=0,
-    ):
-        current_turn_content = self._build_turn_content(
-            user_query,
-            retrieved_docs,
-            summarized_conversation_history,
-            memory_snapshot_text,
-        )
-        self._set_state(ResponseState.PREPARE_REQUEST, {})
-        invoke_cancel_check(self.cancel_check, "before_model_call")
-        prompt = system_prompt or self.chatbot_prompt
-        step_result = call_with_optional_cancel_check(
-            self.worker.start_text_step,
-            cancel_check=self.cancel_check,
-            system_prompt=prompt,
-            user_message=current_turn_content,
-            history=summarized_conversation_history.recent_turns if summarized_conversation_history else [],
-            tools=self.tools if tools is None else tools,
-            enable_web_search=self.enable_native_web_search if enable_web_search is None else enable_web_search,
-            event_listener=self._handle_worker_event,
-            cache_config={
-                "enabled": True,
-                "scope": "chat_responder",
-            },
-            round_number=round_number,
-        )
-        invoke_cancel_check(self.cancel_check, "after_model_call")
-        return step_result
-
-    def continue_protocol_step(
-        self,
-        session_state,
-        tool_results,
-        *,
-        system_prompt=None,
-        tools=None,
-        enable_web_search=None,
-        round_number=1,
-    ):
-        invoke_cancel_check(self.cancel_check, "before_model_call")
-        prompt = system_prompt or self.chatbot_prompt
-        step_result = call_with_optional_cancel_check(
-            self.worker.continue_text_step,
-            cancel_check=self.cancel_check,
-            system_prompt=prompt,
-            session_state=session_state,
-            tool_results=tool_results,
-            tools=self.tools if tools is None else tools,
-            enable_web_search=self.enable_native_web_search if enable_web_search is None else enable_web_search,
-            event_listener=self._handle_worker_event,
-            cache_config={
-                "enabled": True,
-                "scope": "chat_responder",
-            },
-            round_number=round_number,
-        )
-        invoke_cancel_check(self.cancel_check, "after_model_call")
-        return step_result
 
     def call_api(
         self,

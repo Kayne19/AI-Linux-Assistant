@@ -159,16 +159,16 @@ class RetrievalSearchPipeline:
             boosts[src] = score / (len(query_tokens) + 1.0)
         return boosts
 
-    def _goal_alignment_boost(self, requested_evidence_goal, doc):
-        goal_tokens = set(self._tokenize(requested_evidence_goal or ""))
-        if not goal_tokens:
+    def _gap_alignment_boost(self, evidence_gap, doc):
+        gap_tokens = set(self._tokenize(evidence_gap or ""))
+        if not gap_tokens:
             return 0.0
         doc_tokens = set(
             self._tokenize(
                 f"{doc.get('search_text', '')} {doc.get('text', '')} {doc.get('source', '')}"
             )
         )
-        overlap = len(goal_tokens & doc_tokens)
+        overlap = len(gap_tokens & doc_tokens)
         if overlap <= 0:
             return 0.0
         return min(0.45, 0.15 * overlap)
@@ -201,14 +201,21 @@ class RetrievalSearchPipeline:
         clone["row_key"] = build_row_key(clone)
         return clone
 
-    def _rank_candidates(self, query, candidates, requested_evidence_goal=""):
+    def _rank_candidates(self, query, candidates, evidence_gap=""):
         debug_print(f"   - Reranking {len(candidates)} chunks...")
+        rerank_query = query
+        if evidence_gap:
+            rerank_query = f"{query}\nEvidence needed: {evidence_gap}"
         self._emit_event(
             "retrieval_reranking",
-            {"count": len(candidates), "requested_evidence_goal": requested_evidence_goal or ""},
+            {
+                "count": len(candidates),
+                "evidence_gap": evidence_gap or "",
+                "rerank_query": rerank_query,
+            },
         )
         rerank_documents = [doc["search_text"] for doc in candidates]
-        scores = self.reranker_provider.rerank(query, rerank_documents)
+        scores = self.reranker_provider.rerank(rerank_query, rerank_documents)
         ranked = []
         for index, doc in enumerate(candidates):
             ranked_doc = self._clone_doc(doc)
@@ -224,12 +231,12 @@ class RetrievalSearchPipeline:
             "retrieval_source_boosting",
             {
                 "sources": len(boosts),
-                "requested_evidence_goal": requested_evidence_goal or "",
+                "evidence_gap": evidence_gap or "",
             },
         )
         for doc in ranked_results:
             doc["rerank_score"] += 0.2 * boosts.get(doc.get("source", "Unknown"), 0.0)
-            doc["rerank_score"] += self._goal_alignment_boost(requested_evidence_goal, doc)
+            doc["rerank_score"] += self._gap_alignment_boost(evidence_gap, doc)
         return sorted(ranked_results, key=lambda item: item["rerank_score"], reverse=True)
 
     def _excluded_page_windows_by_source(self, excluded_page_windows):
@@ -355,7 +362,7 @@ class RetrievalSearchPipeline:
         excluded_page_windows=None,
         excluded_block_keys=None,
         covered_region_keys=None,
-        requested_evidence_goal=None,
+        evidence_gap=None,
         router_hint=None,
         explicit_doc_ids=None,
     ):
@@ -375,7 +382,7 @@ class RetrievalSearchPipeline:
                 "sources": list(sources or []),
                 "excluded_page_window_count": len(excluded_page_windows),
                 "excluded_block_count": len(excluded_block_keys),
-                "requested_evidence_goal": requested_evidence_goal or "",
+                "evidence_gap": evidence_gap or "",
             },
         )
         self.metadata_store.ensure_embedding_compatibility(self.embedding_provider, require_metadata=False)
@@ -456,7 +463,7 @@ class RetrievalSearchPipeline:
             self._emit_event("retrieval_no_results", {"query": query})
             return self._empty_result()
 
-        ranked_results = self._rank_candidates(query, candidates, requested_evidence_goal=requested_evidence_goal or "")
+        ranked_results = self._rank_candidates(query, candidates, evidence_gap=evidence_gap or "")
         anchors = ranked_results[: self.final_top_k]
         anchor_pages = [
             page
@@ -470,7 +477,7 @@ class RetrievalSearchPipeline:
                 "max_expanded": self.max_expanded,
                 "anchor_count": len(anchors),
                 "anchor_pages": anchor_pages,
-                "requested_evidence_goal": requested_evidence_goal or "",
+                "evidence_gap": evidence_gap or "",
             },
         )
 
@@ -612,7 +619,7 @@ class RetrievalSearchPipeline:
             "excluded_region_keys_seen": excluded_region_keys_seen,
             "net_new_region_count": len(delivered_region_keys),
             "covered_region_keys_input": covered_region_keys_input,
-            "requested_evidence_goal": requested_evidence_goal or "",
+            "evidence_gap": evidence_gap or "",
         }
 
         self._emit_event(
@@ -626,7 +633,7 @@ class RetrievalSearchPipeline:
                 "delivered_bundle_count": retrieval_metadata["delivered_bundle_count"],
                 "excluded_seen_count": retrieval_metadata["excluded_seen_count"],
                 "skipped_bundle_count": retrieval_metadata["skipped_bundle_count"],
-                "requested_evidence_goal": requested_evidence_goal or "",
+                "evidence_gap": evidence_gap or "",
             },
         )
         debug_print(

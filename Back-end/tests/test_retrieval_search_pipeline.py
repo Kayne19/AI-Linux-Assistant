@@ -59,9 +59,10 @@ class FakeEmbeddingProvider:
 class FakeRerankerProvider:
     def __init__(self, score_by_text):
         self.score_by_text = dict(score_by_text)
+        self.queries = []
 
     def rerank(self, query, documents):
-        del query
+        self.queries.append(query)
         return [float(self.score_by_text.get(document, 0.0)) for document in documents]
 
 
@@ -379,7 +380,7 @@ def test_retrieval_covered_region_keys_input_is_echoed_in_metadata():
     assert metadata.get("covered_region_keys_input") == covered_keys
 
 
-def test_retrieval_requested_goal_does_not_crash_goal_alignment_scoring():
+def test_retrieval_evidence_gap_does_not_crash_gap_alignment_scoring():
     candidates = [
         {
             "id": "vec_4",
@@ -413,9 +414,29 @@ def test_retrieval_requested_goal_does_not_crash_goal_alignment_scoring():
     result = pipeline.retrieve_context_result(
         "check installation",
         ["guide"],
-        requested_evidence_goal="verify_state",
+        evidence_gap="verify service state",
     )
 
     metadata = result["retrieval_metadata"]
-    assert metadata["requested_evidence_goal"] == "verify_state"
+    assert metadata["evidence_gap"] == "verify service state"
     assert metadata["delivered_bundle_count"] == 1
+
+
+def test_retrieval_reranks_with_evidence_gap_composite_query():
+    candidates = [
+        {"id": "vec_1", "source": "Guide.pdf", "page": 1, "text": "IP address setup", "search_text": "IP address setup"},
+    ]
+    pipeline, _ = build_pipeline(
+        candidates=candidates,
+        window_rows={
+            ("Guide.pdf", 1, 3): candidates,
+        },
+        score_by_text={"IP address setup": 1.0},
+        final_top_k=1,
+        neighbor_pages=2,
+        max_expanded=10,
+    )
+
+    pipeline.retrieve_context_result("network setup", ["guide"], evidence_gap="The IP address")
+
+    assert pipeline.reranker_provider.queries == ["network setup\nEvidence needed: The IP address"]

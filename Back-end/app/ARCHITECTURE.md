@@ -47,11 +47,11 @@ Current regular-chat rule:
 
 - the normal responder now runs as a router-owned bounded protocol
 - provider adapters return a single model step at a time
-- before any regular-responder retrieval, the router now requires a named responder decision step that chooses `answer_now`, `ask_focused_follow_up_questions`, or `search`
-- search decisions must carry explicit justification fields such as `requested_evidence_goal`, `unresolved_gap`, and `why_current_evidence_is_insufficient`; `gap_type` may further distinguish procedural-doc, environment-fact, and confirmation gaps
+- before any regular-responder retrieval or web lookup, the router now requires a named responder decision step that chooses `answer_now`, `ask_focused_follow_up_questions`, `search`, or `web_lookup`
+- search decisions must carry explicit justification fields such as `evidence_gap`, `unresolved_gap`, and `why_current_evidence_is_insufficient`; `gap_type` may further distinguish procedural-doc, environment-fact, and confirmation gaps
 - after each router-executed responder search, the router requires a responder evaluation step before any further search is considered
-- repeated same-scope responder retrieval now requires a named `repeat_reason`; vague same-scope re-querying is not allowed
-- the router decides whether retrieval remains allowed and when the responder must finalize with tools disabled
+- repeated same-scope responder retrieval emits evidence-pool signals such as `require_reason` or `block`, but these are prompt-level cues rather than hard blockers
+- the router keeps retrieval progressive through coverage exclusions, qualitative evaluation, and the total tool budget; it does not finalize early solely because RAG made no progress
 - Magi remains separately bounded by its explicit deliberation phases and keeps the shared tool-result text contract unchanged
 
 ### 1a. Durable Run State Owns Concurrency Policy
@@ -204,25 +204,25 @@ Key rules:
 - classifier output is a search suggestion, not a hard prohibition
 - control labels like `no_rag` affect router prefetch, not tool-level retrieval rights
 - the router owns turn-scoped retrieval progression state, including duplicate suppression and unseen-only exclusions shared by prefetch and responder tool retrieval
-- the router's per-turn `EvidencePool` is the coordination layer that tracks queries, scopes, usefulness, coverage, exhaustion, and gating decisions — the retrieval search pipeline executes search; the pool records what was found
+- the router's per-turn `EvidencePool` is the coordination layer that tracks queries, scopes, usefulness, coverage, exhaustion, and retrieval-state signals — the retrieval search pipeline executes search; the pool records what was found
 
 Evidence pool responsibilities (router-owned):
 
 - fingerprint-based exact cache for turn-scoped repeat queries
-- derive run-scoped retrieval scopes from labels plus `requested_evidence_goal` / unresolved gap state instead of raw query text alone
+- derive run-scoped retrieval scopes from labels plus normalized `evidence_gap` / unresolved gap state instead of raw query text alone
 - track covered region keys so downstream calls exclude already-delivered pages
 - classify each retrieval outcome: `delivered_new_evidence`, `cache_hit`, `reused_known_evidence`, `no_new_evidence`, `search_exhausted_for_scope`
-- score usefulness of returned evidence as `high`, `medium`, `low`, or `zero`
+- record model-supplied usefulness as `high`, `medium`, `low`, or `zero` relative to the active evidence gap
 - track soft/hard scope exhaustion from repeated low-value outcomes
-- gate repeated same-scope retrieval for both the normal responder and MAGI via `allow`, `allow_net_new_only`, `require_reason`, or `block`
-- support a stricter router-owned repeat-reason requirement for the normal responder mini-protocol without changing MAGI's own role contracts
+- signal repeated same-scope retrieval state for both the normal responder and MAGI via `allow`, `allow_net_new_only`, `require_reason`, or `block`
+- preserve those signals for the normal responder mini-protocol without changing MAGI's own role contracts
 - emit `evidence_pool_update` after every retrieval so the stream can reflect coverage state
 - build a short `EVIDENCE POOL SUMMARY` block injected into MAGI role prompts
 
 Retrieval pipeline responsibilities (search-pipeline-owned):
 
 - embed query, hybrid search, rerank, bundle, format
-- accept optional `requested_evidence_goal` hints for bounded anchor selection
+- accept optional `evidence_gap` text for bounded anchor selection and composite reranking
 - accept `excluded_page_windows`, `excluded_block_keys` from the pool and apply them
 - return `delivered_region_keys`, `excluded_region_keys_seen`, `net_new_region_count` so the pool can update coverage
 

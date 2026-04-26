@@ -16,7 +16,7 @@ class ScopedDatabase:
         excluded_page_windows=None,
         excluded_block_keys=None,
         covered_region_keys=None,
-        requested_evidence_goal=None,
+        evidence_gap=None,
         router_hint=None,
         explicit_doc_ids=(),
     ):
@@ -27,7 +27,7 @@ class ScopedDatabase:
                 "excluded_page_windows": list(excluded_page_windows or ()),
                 "excluded_block_keys": list(excluded_block_keys or ()),
                 "covered_region_keys": set(covered_region_keys or ()),
-                "requested_evidence_goal": requested_evidence_goal,
+                "evidence_gap": evidence_gap,
                 "router_hint": router_hint,
                 "explicit_doc_ids": tuple(explicit_doc_ids or ()),
             }
@@ -85,6 +85,7 @@ def test_scope_hints_reach_direct_responder_tool_retrieval():
         {
             "query": "install with apt",
             "relevant_documents": ["debian"],
+            "evidence_gap": "install with apt",
             "scope_hints": {"os_family": "linux", "package_managers": ["apt"]},
         },
     )
@@ -105,6 +106,7 @@ def test_canonical_source_ids_reach_direct_responder_tool_retrieval():
         {
             "query": "create zfs pool",
             "relevant_documents": ["proxmox"],
+            "evidence_gap": "create zfs pool",
             "canonical_source_ids": ["proxmox-ve-8-admin-guide"],
         },
     )
@@ -121,6 +123,7 @@ def test_invalid_scope_hints_and_unknown_doc_ids_are_filtered():
         {
             "query": "create zfs pool",
             "relevant_documents": ["proxmox"],
+            "evidence_gap": "create zfs pool",
             "scope_hints": {
                 "os_family": "frobnicator",
                 "package_managers": ["bogus", "apt"],
@@ -142,6 +145,7 @@ def test_scope_hints_change_fingerprint_cache_key_for_same_query():
         {
             "query": "same query",
             "relevant_documents": ["debian"],
+            "evidence_gap": "same query",
             "scope_hints": {"package_managers": ["apt"]},
         },
     )
@@ -150,6 +154,7 @@ def test_scope_hints_change_fingerprint_cache_key_for_same_query():
         {
             "query": "same query",
             "relevant_documents": ["debian"],
+            "evidence_gap": "same query",
             "scope_hints": {"init_systems": ["systemd"]},
         },
     )
@@ -159,23 +164,20 @@ def test_scope_hints_change_fingerprint_cache_key_for_same_query():
     assert database.calls[1]["router_hint"] == {"init_systems": ["systemd"]}
 
 
-def test_regular_responder_decision_search_carries_scope_fields():
+def test_regular_responder_tool_call_carries_scope_fields():
+    """scope_hints and canonical_source_ids from search_rag_database tool args reach the database."""
     database = ScopedDatabase(known_ids=["proxmox-ve-8-admin-guide"])
     router = build_router(database)
-    decision = {
+    tool_args = {
         "query": "create zfs pool",
         "relevant_documents": ["proxmox"],
-        "requested_evidence_goal": "configure_access",
-        "repeat_reason": "",
-        "gap_type": "procedural_doc_gap",
-        "unresolved_gap": "need exact Proxmox storage steps",
         "scope_hints": {"source_family": "proxmox", "major_subsystems": ["storage"]},
-        "canonical_source_ids": ("proxmox-ve-8-admin-guide",),
+        "canonical_source_ids": ["proxmox-ve-8-admin-guide"],
     }
 
-    payload, _metadata = router._execute_regular_responder_search(decision)
+    result = router._handle_responder_tool_call("search_rag_database", tool_args)
 
-    assert payload["search_result_text"] == "scoped docs"
+    assert "scoped docs" in result
     assert database.calls[0]["router_hint"] == {
         "source_family": "proxmox",
         "major_subsystems": ["storage"],

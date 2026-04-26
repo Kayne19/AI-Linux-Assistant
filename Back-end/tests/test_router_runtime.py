@@ -18,7 +18,6 @@ from agents.response_agent import ResponseAgent
 from agents.response_agent import ResponseState
 from config.settings import AppSettings, RoleModelSettings
 from agents.summarizers import HistorySummarizer
-from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 
 class FakeDatabase:
@@ -161,65 +160,6 @@ class FakeTitleWorker:
         self.calls.append({"args": args, "kwargs": kwargs})
         return self.response_text
 
-
-class FakeProtocolWorker:
-    def __init__(self, start_result=None, continue_results=None):
-        self.start_result = start_result or ProviderStepResult(output_text="final answer")
-        self.continue_results = list(continue_results or [])
-        self.start_calls = []
-        self.continue_calls = []
-
-    def generate_text(self, *args, **kwargs):
-        return ""
-
-    def start_text_step(
-        self,
-        system_prompt,
-        user_message,
-        history=None,
-        tools=None,
-        enable_web_search=False,
-        event_listener=None,
-        round_number=0,
-        **kwargs,
-    ):
-        del system_prompt, kwargs
-        self.start_calls.append(
-            {
-                "user_message": user_message,
-                "history": list(history or []),
-                "tool_names": [tool.get("name", "unknown_tool") for tool in tools or []],
-                "enable_web_search": enable_web_search,
-                "round_number": round_number,
-            }
-        )
-        if event_listener is not None:
-            event_listener("request_submitted", {"round": round_number})
-        return self.start_result
-
-    def continue_text_step(
-        self,
-        system_prompt,
-        session_state,
-        tool_results,
-        tools=None,
-        enable_web_search=False,
-        event_listener=None,
-        round_number=1,
-        **kwargs,
-    ):
-        del system_prompt, session_state, kwargs
-        self.continue_calls.append(
-            {
-                "tool_results": list(tool_results or []),
-                "tool_names": [tool.get("name", "unknown_tool") for tool in tools or []],
-                "enable_web_search": enable_web_search,
-                "round_number": round_number,
-            }
-        )
-        if event_listener is not None:
-            event_listener("request_submitted", {"round": round_number})
-        return self.continue_results.pop(0)
 
 
 class FakeMemoryExtractor:
@@ -515,7 +455,7 @@ def test_router_tool_search_strips_control_labels_before_retrieval():
 
     result = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "docker install", "relevant_documents": ["no_rag", "docker"]},
+        {"query": "docker install", "relevant_documents": ["no_rag", "docker"], "evidence_gap": "docker install docs"},
     )
 
     assert result == "manual docs"
@@ -537,7 +477,7 @@ def test_router_tool_search_allows_broad_search_when_only_control_labels_are_pre
 
     result = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "obscure package", "relevant_documents": ["no_rag"]},
+        {"query": "obscure package", "relevant_documents": ["no_rag"], "evidence_gap": "obscure package docs"},
     )
 
     assert result == "broad docs"
@@ -578,7 +518,7 @@ def test_router_tool_search_emits_prompt_facing_retrieval_blocks_for_tool_result
 
     result = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "install package", "relevant_documents": ["debian"]},
+        {"query": "install package", "relevant_documents": ["debian"], "evidence_gap": "install component"},
     )
 
     assert result == expected_text
@@ -600,9 +540,8 @@ def test_router_tool_search_emits_prompt_facing_retrieval_blocks_for_tool_result
     assert payload["cached"] is False
     assert payload["gate_action"] == "allow"
     assert payload["search_outcome"] == "no_new_evidence"
-    assert payload["usefulness"] == "zero"
-    assert payload["scope_key"] == "debian::install_component"
-    assert payload["requested_evidence_goal"] == "install_component"
+    assert payload["usefulness"] == ""
+    assert payload["scope_key"] == "debian::install_package"
     assert payload["caller_role"] == ""
     assert payload["caller_phase"] == ""
     assert payload["caller_round"] == 0
@@ -654,11 +593,11 @@ def test_router_tool_search_exact_duplicate_hits_cache_when_seen_state_is_unchan
 
     first = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "repeat me", "relevant_documents": ["debian"]},
+        {"query": "repeat me", "relevant_documents": ["debian"], "evidence_gap": "repeat me"},
     )
     second = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "repeat me", "relevant_documents": ["debian"]},
+        {"query": "repeat me", "relevant_documents": ["debian"], "evidence_gap": "repeat me"},
     )
 
     assert first == ""
@@ -670,10 +609,10 @@ def test_router_tool_search_exact_duplicate_hits_cache_when_seen_state_is_unchan
     assert payload["cached"] is True
     assert payload["gate_action"] == "allow_net_new_only"
     assert payload["search_outcome"] == "cache_hit"
-    assert payload["usefulness"] == "zero"
+    assert payload["usefulness"] == ""
     assert payload["scope_key"] == "debian::repeat_me"
-    assert payload["soft_exhausted_scope_keys"] == ["debian::repeat_me"]
-    assert payload["scope_exhausted"] is True
+    assert payload["soft_exhausted_scope_keys"] == []
+    assert payload["scope_exhausted"] is False
 
 
 def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
@@ -776,7 +715,7 @@ def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
         router._retrieve_context(turn)
         result = router._handle_responder_tool_call(
             "search_rag_database",
-            {"query": "install package", "relevant_documents": ["debian"]},
+            {"query": "install package", "relevant_documents": ["debian"], "evidence_gap": "install package"},
         )
     finally:
         router.current_turn = None
@@ -799,9 +738,9 @@ def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
     assert payload["cached"] is False
     assert payload["gate_action"] == "allow"
     assert payload["search_outcome"] == "no_new_evidence"
-    assert payload["usefulness"] == "zero"
-    assert payload["usefulness_reason"] == "retrieval only revisited already-covered regions"
-    assert payload["scope_key"] == "debian::install_component"
+    assert payload["usefulness"] == ""
+    assert payload["usefulness_reason"] == ""
+    assert payload["scope_key"] == "debian::install_package"
     assert payload["covered_region_count"] == 1
     assert payload["scope_exhausted"] is False
 
@@ -840,6 +779,8 @@ def test_router_tool_search_soft_require_reason_is_visible_for_normal_chatbot():
         memory_store=FakeMemoryStore(),
         memory_extractor=FakeMemoryExtractor(),
     )
+    events = []
+    router.set_event_listener(lambda event_type, payload: events.append((event_type, payload)))
 
     first = router._handle_responder_tool_call(
         "search_rag_database",
@@ -849,21 +790,25 @@ def test_router_tool_search_soft_require_reason_is_visible_for_normal_chatbot():
         "search_rag_database",
         {"query": "repeat me", "relevant_documents": ["debian"]},
     )
-    third = router._handle_responder_tool_call(
-        "search_rag_database",
-        {"query": "repeat me", "relevant_documents": ["debian"]},
-    )
 
+    # After two identical searches the scope is known and the cache hits.
     assert first == ""
     assert second == ""
-    assert "refining the retrieval" in third
-    assert len(database.calls) == 1
+    # Pool should track the queries and emit evidence_pool_update events.
+    pool = router._active_evidence_pool()
+    assert pool.scope_state.scope_query_counts.get("debian::repeat_me", 0) >= 1
+    assert any(
+        event_type == "evidence_pool_update"
+        for event_type, payload in events
+    )
 
 
-def test_router_tool_search_requested_goal_changes_scope_for_same_query():
-    class FakeGoalDatabase(FakeDatabase):
-        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, requested_evidence_goal=None):
-            self.calls.append((query, tuple(sources or []), requested_evidence_goal))
+def test_router_tool_search_different_queries_both_reach_database():
+    """Two distinct search_rag_database calls both reach the database independently."""
+
+    class FakeTrackingDatabase(FakeDatabase):
+        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, evidence_gap=None):
+            self.calls.append((query, tuple(sources or [])))
             return {
                 "context_text": "",
                 "selected_sources": [],
@@ -883,7 +828,7 @@ def test_router_tool_search_requested_goal_changes_scope_for_same_query():
                 },
             }
 
-    database = FakeGoalDatabase()
+    database = FakeTrackingDatabase()
     router = ModelRouter(
         database=database,
         classifier=FakeClassifier(["no_rag"]),
@@ -897,17 +842,18 @@ def test_router_tool_search_requested_goal_changes_scope_for_same_query():
 
     router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "same query", "relevant_documents": ["debian"], "requested_evidence_goal": "install_component"},
+        {"query": "how to install docker", "relevant_documents": ["debian"]},
     )
     router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "same query", "relevant_documents": ["debian"], "requested_evidence_goal": "verify_state"},
+        {"query": "verify docker running", "relevant_documents": ["debian"], "progress_assessment": "partial_progress"},
     )
 
-    assert database.calls == [
-        ("same query", ("debian",), "install_component"),
-        ("same query", ("debian",), "verify_state"),
-    ]
+    # Both queries must reach the database
+    assert len(database.calls) == 2
+    queries_sent = [call[0] for call in database.calls]
+    assert "how to install docker" in queries_sent
+    assert "verify docker running" in queries_sent
 
 
 def test_router_loads_and_persists_session_scoped_chat_history():
@@ -1352,14 +1298,14 @@ class FakeSequentialSearchDatabase:
         self.results = list(results)
         self.calls = []
 
-    def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, requested_evidence_goal=None):
+    def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, evidence_gap=None):
         self.calls.append(
             {
                 "query": query,
                 "sources": tuple(sources or []),
                 "excluded_page_windows": list(excluded_page_windows or []),
                 "excluded_block_keys": list(excluded_block_keys or []),
-                "requested_evidence_goal": requested_evidence_goal,
+                "evidence_gap": evidence_gap,
             }
         )
         if not self.results:
@@ -1410,398 +1356,86 @@ def _retrieval_result_without_evidence():
     }
 
 
-def test_router_regular_responder_same_scope_repeat_requires_repeat_reason():
-    database = FakeSequentialSearchDatabase(
-        [
-            _retrieval_result_with_evidence("install_component troubleshoot_failure Debian package steps", source="Debian.pdf", page=4),
-        ]
-    )
-    protocol_worker = FakeProtocolWorker(
-        start_result=ProviderStepResult(
-            tool_calls=[
-                ProviderToolCall(
-                    name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
-                    arguments={
-                        "action": "search",
-                        "query": "install package steps",
-                        "relevant_documents": ["debian"],
-                        "requested_evidence_goal": "install_component",
-                        "unresolved_gap": "missing package install step",
-                        "gap_type": "procedural_doc_gap",
-                        "why_current_evidence_is_insufficient": "the exact install step is not grounded yet",
-                    },
-                    call_id="call_decide_1",
-                )
-            ],
-            session_state={"session": "start"},
-        ),
-        continue_results=[
-            ProviderStepResult(
-                tool_calls=[
-                    ProviderToolCall(
-                        name=ModelRouter.RESPONDER_EVALUATION_TOOL_NAME,
-                        arguments={
-                            "new_fact_or_evidence": "The result added Debian install steps.",
-                            "reduced_unresolved_gap": "missing package install step",
-                            "progress_assessment": "partial_progress",
-                            "another_search_justified": True,
-                            "remaining_unresolved_gap": "still need the exact variant for this package",
-                        },
-                        call_id="call_eval_1",
-                    )
-                ],
-                session_state={"session": "eval_1"},
-            ),
-            ProviderStepResult(
-                tool_calls=[
-                    ProviderToolCall(
-                        name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
-                        arguments={
-                            "action": "search",
-                            "query": "install package steps",
-                            "relevant_documents": ["debian"],
-                            "requested_evidence_goal": "install_component",
-                            "unresolved_gap": "missing package install step",
-                            "gap_type": "procedural_doc_gap",
-                            "why_current_evidence_is_insufficient": "need one more manual pass for exact variant",
-                        },
-                        call_id="call_decide_2",
-                    )
-                ],
-                session_state={"session": "decide_2"},
-            ),
-            ProviderStepResult(output_text="final answer after forced finalize", session_state={"session": "final"}),
-        ],
-    )
+def test_router_responder_can_call_web_search_via_provider_tool_loop():
+    """Regular responder uses same _handle_responder_tool_call as Magi — unknown tool names fall through gracefully."""
+
+    events = []
+
     router = ModelRouter(
-        database=database,
+        database=FakeDatabase(""),
         classifier=FakeClassifier(["no_rag"]),
-        context_agent=FakeContextAgent("install package"),
+        context_agent=FakeContextAgent(""),
         history_summarizer=FakeHistorySummarizer(),
         context_summarizer=FakeContextSummarizer(summarized=False),
-        responder=protocol_worker,
-        memory_store=None,
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
     )
+    router.set_event_listener(lambda et, pl: events.append((et, pl)))
 
-    turn = router.run_turn("How do I install it?", stream_response=False)
-
-    assert turn.response == "final answer after forced finalize"
-    assert len(database.calls) == 1
-    assert protocol_worker.continue_calls[0]["tool_names"] == [ModelRouter.RESPONDER_EVALUATION_TOOL_NAME]
-    assert protocol_worker.continue_calls[1]["tool_names"] == [ModelRouter.RESPONDER_DECISION_TOOL_NAME]
-    assert protocol_worker.continue_calls[2]["tool_names"] == []
-    assert any(
-        event["type"] == "responder_state"
-        and event["payload"]["state"] == "FINALIZE_RESPONSE"
-        and event["payload"]["details"]["reason"] == "search_justification_collapsed"
-        for event in turn.tool_events
-    )
+    # web_search is handled natively by the provider tool loop — calling
+    # _handle_responder_tool_call with it returns an "unknown tool" error dict,
+    # not a crash.
+    result = router._handle_responder_tool_call("web_search", {"query": "latest kernel release"})
+    assert isinstance(result, dict) and "error" in result
+    assert any(event_type == "tool_error" for event_type, _ in events)
 
 
-def test_router_regular_responder_paraphrased_same_scope_retry_is_still_bounded():
-    database = FakeSequentialSearchDatabase(
-        [
-            _retrieval_result_with_evidence("verify_state troubleshoot_failure Debian service docs", source="Debian.pdf", page=5),
-        ]
-    )
-    protocol_worker = FakeProtocolWorker(
-        start_result=ProviderStepResult(
-            tool_calls=[
-                ProviderToolCall(
-                    name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
-                    arguments={
-                        "action": "search",
-                        "query": "check Debian service docs",
-                        "relevant_documents": ["debian"],
-                        "requested_evidence_goal": "verify_state",
-                        "unresolved_gap": "need the service state check",
-                        "gap_type": "confirmation_gap",
-                        "why_current_evidence_is_insufficient": "the current docs do not confirm the exact state check",
-                    },
-                    call_id="call_decide_1",
-                )
-            ],
-            session_state={"session": "start"},
-        ),
-        continue_results=[
-            ProviderStepResult(
-                tool_calls=[
-                    ProviderToolCall(
-                        name=ModelRouter.RESPONDER_EVALUATION_TOOL_NAME,
-                        arguments={
-                            "new_fact_or_evidence": "The result added Debian service verification material.",
-                            "reduced_unresolved_gap": "need the service state check",
-                            "progress_assessment": "partial_progress",
-                            "another_search_justified": True,
-                            "remaining_unresolved_gap": "still need one confirming variant",
-                        },
-                        call_id="call_eval_1",
-                    )
-                ],
-                session_state={"session": "eval_1"},
-            ),
-            ProviderStepResult(
-                tool_calls=[
-                    ProviderToolCall(
-                        name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
-                        arguments={
-                            "action": "search",
-                            "query": "how do I confirm the service is up on Debian",
-                            "relevant_documents": ["debian"],
-                            "requested_evidence_goal": "verify_state",
-                            "unresolved_gap": "need the service state check",
-                            "gap_type": "confirmation_gap",
-                            "why_current_evidence_is_insufficient": "I want a confirming variant from the same scope",
-                        },
-                        call_id="call_decide_2",
-                    )
-                ],
-                session_state={"session": "decide_2"},
-            ),
-            ProviderStepResult(output_text="final answer after bounded paraphrase retry", session_state={"session": "final"}),
-        ],
-    )
+def test_router_responder_and_magi_share_handle_responder_tool_call():
+    """search_rag_database and search_conversation_history both route through _handle_responder_tool_call."""
+
+    events = []
+
+    class TrackingDatabase:
+        def __init__(self):
+            self.calls = []
+
+        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, evidence_gap=None):
+            self.calls.append(query)
+            return {
+                "context_text": "some docs",
+                "selected_sources": list(sources or []),
+                "merged_blocks": [],
+                "bundle_summaries": [],
+                "retrieval_metadata": {
+                    "anchor_count": 0, "anchor_pages": [], "fetched_neighbor_pages": [],
+                    "delivered_bundle_count": 0, "delivered_bundle_keys": [],
+                    "delivered_block_keys": [], "delivered_page_window_keys": [],
+                    "delivered_page_windows": [], "excluded_seen_count": 0, "skipped_bundle_count": 0,
+                },
+            }
+
+    db = TrackingDatabase()
     router = ModelRouter(
-        database=database,
+        database=db,
         classifier=FakeClassifier(["no_rag"]),
-        context_agent=FakeContextAgent("check service state"),
+        context_agent=FakeContextAgent(""),
         history_summarizer=FakeHistorySummarizer(),
         context_summarizer=FakeContextSummarizer(summarized=False),
-        responder=protocol_worker,
-        memory_store=None,
+        responder=SpyResponder("ok"),
+        memory_store=FakeMemoryStore(),
+        memory_extractor=FakeMemoryExtractor(),
     )
+    router.set_event_listener(lambda et, pl: events.append((et, pl)))
 
-    turn = router.run_turn("How do I confirm the service is up?", stream_response=False)
-
-    assert turn.response == "final answer after bounded paraphrase retry"
-    assert len(database.calls) == 1
-    assert protocol_worker.continue_calls[2]["tool_names"] == []
-    assert any(
-        event["type"] == "responder_state"
-        and event["payload"]["state"] == "FINALIZE_RESPONSE"
-        and event["payload"]["details"]["reason"] == "search_justification_collapsed"
-        for event in turn.tool_events
+    # search_rag_database routes to the database
+    rag_result = router._handle_responder_tool_call(
+        "search_rag_database",
+        {"query": "install docker", "relevant_documents": ["debian"]},
     )
+    assert "some docs" in rag_result
+    assert db.calls == ["install docker"]
 
-
-def test_router_regular_responder_zero_progress_search_forces_finalization_after_evaluation():
-    database = FakeSequentialSearchDatabase([_retrieval_result_without_evidence()])
-    protocol_worker = FakeProtocolWorker(
-        start_result=ProviderStepResult(
-            tool_calls=[
-                ProviderToolCall(
-                    name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
-                    arguments={
-                        "action": "search",
-                        "query": "install package",
-                        "relevant_documents": ["debian"],
-                        "requested_evidence_goal": "install_component",
-                        "unresolved_gap": "missing install steps",
-                        "gap_type": "procedural_doc_gap",
-                        "why_current_evidence_is_insufficient": "the current evidence has no exact install step",
-                    },
-                    call_id="call_decide_1",
-                )
-            ],
-            session_state={"session": "start"},
-        ),
-        continue_results=[
-            ProviderStepResult(
-                tool_calls=[
-                    ProviderToolCall(
-                        name=ModelRouter.RESPONDER_EVALUATION_TOOL_NAME,
-                        arguments={
-                            "new_fact_or_evidence": "none",
-                            "reduced_unresolved_gap": "",
-                            "progress_assessment": "no_meaningful_progress",
-                            "another_search_justified": True,
-                            "remaining_unresolved_gap": "missing install steps",
-                        },
-                        call_id="call_eval_1",
-                    )
-                ],
-                session_state={"session": "eval_1"},
-            ),
-            ProviderStepResult(output_text="final answer after no progress", session_state={"session": "final"}),
-        ],
+    # search_conversation_history routes to history search (empty history → empty string)
+    history_result = router._handle_responder_tool_call(
+        "search_conversation_history",
+        {"query": "previous docker discussion"},
     )
-    router = ModelRouter(
-        database=database,
-        classifier=FakeClassifier(["no_rag"]),
-        context_agent=FakeContextAgent("install package"),
-        history_summarizer=FakeHistorySummarizer(),
-        context_summarizer=FakeContextSummarizer(summarized=False),
-        responder=protocol_worker,
-        memory_store=None,
-    )
+    assert isinstance(history_result, str)
 
-    turn = router.run_turn("How do I install it?", stream_response=False)
-
-    assert turn.response == "final answer after no progress"
-    assert protocol_worker.continue_calls[0]["tool_names"] == [ModelRouter.RESPONDER_EVALUATION_TOOL_NAME]
-    assert protocol_worker.continue_calls[1]["tool_names"] == []
-    assert "RESPONDER_EVALUATE_TOOL_RESULT" in turn.state_trace
-    assert any(
-        event["type"] == "responder_state"
-        and event["payload"]["state"] == "FINALIZE_RESPONSE"
-        and event["payload"]["details"]["reason"] == "search_no_progress"
-        for event in turn.tool_events
-    )
-
-
-def test_router_regular_responder_low_usefulness_does_not_force_immediate_finalization():
-    database = FakeSequentialSearchDatabase(
-        [
-            _retrieval_result_with_evidence("install_component", source="Debian.pdf", page=4, selected_sources=[]),
-            _retrieval_result_with_evidence("install_component exact package example", source="Debian-Guide-Alt.pdf", page=9),
-        ]
-    )
-    protocol_worker = FakeProtocolWorker(
-        start_result=ProviderStepResult(
-            tool_calls=[
-                ProviderToolCall(
-                    name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
-                    arguments={
-                        "action": "search",
-                        "query": "install package",
-                        "relevant_documents": ["debian"],
-                        "requested_evidence_goal": "install_component",
-                        "unresolved_gap": "missing exact package example",
-                        "gap_type": "procedural_doc_gap",
-                        "why_current_evidence_is_insufficient": "need an exact grounded example",
-                    },
-                    call_id="call_decide_1",
-                )
-            ],
-            session_state={"session": "start"},
-        ),
-        continue_results=[
-            ProviderStepResult(
-                tool_calls=[
-                    ProviderToolCall(
-                        name=ModelRouter.RESPONDER_EVALUATION_TOOL_NAME,
-                        arguments={
-                            "new_fact_or_evidence": "The result added one install fragment.",
-                            "reduced_unresolved_gap": "missing exact package example",
-                            "progress_assessment": "partial_progress",
-                            "another_search_justified": True,
-                            "remaining_unresolved_gap": "still need an alternate grounded example",
-                        },
-                        call_id="call_eval_1",
-                    )
-                ],
-                session_state={"session": "eval_1"},
-            ),
-            ProviderStepResult(
-                tool_calls=[
-                    ProviderToolCall(
-                        name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
-                        arguments={
-                            "action": "search",
-                            "query": "alternate install package example",
-                            "relevant_documents": ["debian"],
-                            "requested_evidence_goal": "install_component",
-                            "unresolved_gap": "missing exact package example",
-                            "gap_type": "procedural_doc_gap",
-                            "why_current_evidence_is_insufficient": "need confirmation from an alternate source",
-                            "repeat_reason": "alternate_source_confirmation",
-                        },
-                        call_id="call_decide_2",
-                    )
-                ],
-                session_state={"session": "decide_2"},
-            ),
-            ProviderStepResult(
-                tool_calls=[
-                    ProviderToolCall(
-                        name=ModelRouter.RESPONDER_EVALUATION_TOOL_NAME,
-                        arguments={
-                            "new_fact_or_evidence": "The alternate source confirmed the install example.",
-                            "reduced_unresolved_gap": "missing exact package example",
-                            "progress_assessment": "meaningful_progress",
-                            "another_search_justified": False,
-                            "remaining_unresolved_gap": "",
-                            "suggested_repeat_reason": "alternate_source_confirmation",
-                        },
-                        call_id="call_eval_2",
-                    )
-                ],
-                session_state={"session": "eval_2"},
-            ),
-            ProviderStepResult(output_text="final answer after bounded low-usefulness retry", session_state={"session": "final"}),
-        ],
-    )
-    router = ModelRouter(
-        database=database,
-        classifier=FakeClassifier(["no_rag"]),
-        context_agent=FakeContextAgent("install package"),
-        history_summarizer=FakeHistorySummarizer(),
-        context_summarizer=FakeContextSummarizer(summarized=False),
-        responder=protocol_worker,
-        memory_store=None,
-    )
-
-    turn = router.run_turn("How do I install it?", stream_response=False)
-
-    assert turn.response == "final answer after bounded low-usefulness retry"
-    assert len(database.calls) == 2
-    assert protocol_worker.continue_calls[1]["tool_names"] == [ModelRouter.RESPONDER_DECISION_TOOL_NAME]
-    assert protocol_worker.continue_calls[2]["tool_names"] == [ModelRouter.RESPONDER_EVALUATION_TOOL_NAME]
-    assert protocol_worker.continue_calls[3]["tool_names"] == []
-    assert not any(
-        event["type"] == "responder_state"
-        and event["payload"]["state"] == "FINALIZE_RESPONSE"
-        and event["payload"]["details"]["reason"] == "search_no_progress"
-        for event in turn.tool_events
-    )
-
-
-def test_router_regular_responder_environment_gap_biases_to_follow_up_questions():
-    database = FakeSequentialSearchDatabase([_retrieval_result_with_evidence("should not be used")])
-    protocol_worker = FakeProtocolWorker(
-        start_result=ProviderStepResult(
-            tool_calls=[
-                ProviderToolCall(
-                    name=ModelRouter.RESPONDER_DECISION_TOOL_NAME,
-                    arguments={
-                        "action": "search",
-                        "query": "which bridge should I use",
-                        "relevant_documents": ["debian"],
-                        "requested_evidence_goal": "configure_access",
-                        "unresolved_gap": "need the user's actual bridge name and whether this is LAN-only",
-                        "gap_type": "environment_fact_gap",
-                        "why_current_evidence_is_insufficient": "the missing detail is the user's real network setup",
-                    },
-                    call_id="call_decide_1",
-                )
-            ],
-            session_state={"session": "start"},
-        ),
-        continue_results=[
-            ProviderStepResult(output_text="Is this LAN-only, and what is the actual bridge name?", session_state={"session": "final"}),
-        ],
-    )
-    router = ModelRouter(
-        database=database,
-        classifier=FakeClassifier(["no_rag"]),
-        context_agent=FakeContextAgent("bridge configuration"),
-        history_summarizer=FakeHistorySummarizer(),
-        context_summarizer=FakeContextSummarizer(summarized=False),
-        responder=protocol_worker,
-        memory_store=None,
-    )
-
-    turn = router.run_turn("How should I expose this service?", stream_response=False)
-
-    assert turn.response == "Is this LAN-only, and what is the actual bridge name?"
-    assert len(database.calls) == 0
-    assert protocol_worker.continue_calls[0]["tool_names"] == []
-    assert any(
-        event["type"] == "responder_state"
-        and event["payload"]["state"] == "FINALIZE_RESPONSE"
-        and event["payload"]["details"]["reason"] == "environment_fact_gap_prefers_follow_up"
-        for event in turn.tool_events
-    )
+    # Both tool calls emitted tool_complete events (not tool_error)
+    complete_events = [et for et, _ in events if et == "tool_complete"]
+    assert len(complete_events) >= 2
 
 
 # ---------------------------------------------------------------------------

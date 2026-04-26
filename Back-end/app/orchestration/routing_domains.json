@@ -30,7 +30,8 @@
         "container",
         "compose",
         "dockerfile",
-        "dockerquickguide"
+        "dockerquickguide",
+        "dockergettingstarted"
       ],
       "description": "Docker, containers/images, Dockerfile, docker compose, docker CLI.",
       "skip_rag": false,
@@ -60,7 +61,8 @@
       "aliases": [
         "linux_command_line",
         "the_linux_command_line",
-        "linux_command_line_sixth_edition"
+        "linux_command_line_sixth_edition",
+        "sixth_internet_edition"
       ],
       "description": "Guide to the Linux command line, focusing on practical usage and commands.",
       "skip_rag": false,

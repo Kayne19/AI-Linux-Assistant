@@ -23,7 +23,6 @@ from orchestration.run_control import RunCancelledError, RunPausedError, invoke_
 from orchestration.evidence_pool import (
     ALLOWED_GAP_TYPES,
     ALLOWED_REPEAT_REASONS,
-    GENERIC_EVIDENCE_GOALS,
     GATE_BLOCK,
     GATE_REQUIRE_REASON,
     EvidencePool,
@@ -101,9 +100,6 @@ class ModelRouter:
         "google": GoogleWorker,
         "local": LocalWorker,
     }
-    RESPONDER_DECISION_TOOL_NAME = "responder_decide_next_step"
-    RESPONDER_EVALUATION_TOOL_NAME = "responder_evaluate_tool_result"
-
     def __init__(
         self,
         database=None,
@@ -387,195 +383,6 @@ class ModelRouter:
             },
         )
 
-    def _regular_responder_supports_router_protocol(self, responder):
-        return isinstance(responder, ResponseAgent) and responder.supports_router_protocol()
-
-    def _build_responder_decision_tool(self):
-        allowed_labels = get_allowed_labels()
-        return {
-            "name": self.RESPONDER_DECISION_TOOL_NAME,
-            "description": (
-                "Router-owned responder control tool. Call exactly once to choose the next regular-responder action "
-                "before any further retrieval."
-            ),
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["answer_now", "ask_focused_follow_up_questions", "search"],
-                        "description": "Exactly one next action for the router-owned responder protocol.",
-                    },
-                    "unresolved_gap": {
-                        "type": "string",
-                        "description": "The specific missing point that is blocking a grounded response.",
-                    },
-                    "gap_type": {
-                        "type": "string",
-                        "enum": sorted(ALLOWED_GAP_TYPES),
-                        "description": "Optional hint about whether the gap is procedural, environmental, or confirmatory.",
-                    },
-                    "why_current_evidence_is_insufficient": {
-                        "type": "string",
-                        "description": "Brief explanation of why the current evidence cannot safely answer yet.",
-                    },
-                    "requested_evidence_goal": {
-                        "type": "string",
-                        "description": "Internal evidence goal for a search decision.",
-                    },
-                    "repeat_reason": {
-                        "type": "string",
-                        "enum": sorted(ALLOWED_REPEAT_REASONS),
-                        "description": "Required for repeated same-scope retrieval.",
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Concrete retrieval query to execute when action=search.",
-                    },
-                    "relevant_documents": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "enum": allowed_labels,
-                        },
-                        "description": "Suggested domain labels to bias or narrow the search.",
-                    },
-                    "scope_hints": self._scope_hint_schema(),
-                    "canonical_source_ids": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "enum": self._known_canonical_doc_ids(),
-                        },
-                        "description": "Optional canonical document IDs to pin the search to specific documents.",
-                    },
-                    "focused_questions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "maxItems": 3,
-                        "description": "One to three tightly related follow-up questions when action=ask_focused_follow_up_questions.",
-                    },
-                },
-                "required": ["action"],
-            },
-        }
-
-    def _build_responder_evaluation_tool(self):
-        return {
-            "name": self.RESPONDER_EVALUATION_TOOL_NAME,
-            "description": (
-                "Router-owned responder evaluation tool. Call exactly once after a router-executed search result to "
-                "state what changed and whether another search is still justified."
-            ),
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "new_fact_or_evidence": {
-                        "type": "string",
-                        "description": "What new fact or evidence the search added. Use 'none' if nothing material was added.",
-                    },
-                    "reduced_unresolved_gap": {
-                        "type": "string",
-                        "description": "Which unresolved gap the search reduced, if any.",
-                    },
-                    "progress_assessment": {
-                        "type": "string",
-                        "enum": ["meaningful_progress", "partial_progress", "no_meaningful_progress"],
-                        "description": "Whether the search materially advanced the active gap.",
-                    },
-                    "another_search_justified": {
-                        "type": "boolean",
-                        "description": "Whether another search is still justified after this result.",
-                    },
-                    "remaining_unresolved_gap": {
-                        "type": "string",
-                        "description": "Any unresolved gap that remains after the search result.",
-                    },
-                    "gap_type": {
-                        "type": "string",
-                        "enum": sorted(ALLOWED_GAP_TYPES),
-                        "description": "Optional hint for the remaining unresolved gap.",
-                    },
-                    "suggested_repeat_reason": {
-                        "type": "string",
-                        "enum": sorted(ALLOWED_REPEAT_REASONS),
-                        "description": "Optional repeat reason if another same-scope search is justified.",
-                    },
-                },
-                "required": [
-                    "new_fact_or_evidence",
-                    "reduced_unresolved_gap",
-                    "progress_assessment",
-                    "another_search_justified",
-                ],
-            },
-        }
-
-    def _responder_decision_prompt(self, responder):
-        return (
-            f"{responder.chatbot_prompt}\n\n"
-            "ROUTER-OWNED REGULAR RESPONDER PROTOCOL\n"
-            "- You are in RESPONDER_DECIDE_NEXT_STEP.\n"
-            f"- Call `{self.RESPONDER_DECISION_TOOL_NAME}` exactly once.\n"
-            "- Do not answer the user directly in this phase.\n"
-            "- Choose exactly one action: answer_now, ask_focused_follow_up_questions, or search.\n"
-            "- Before any retrieval, name the unresolved gap and why current evidence is insufficient.\n"
-            "- Repeated same-scope search requires a named repeat_reason.\n"
-            "- Prefer ask_focused_follow_up_questions when the missing information is mainly about the user's actual environment or setup.\n"
-            "- If you ask follow-up questions, keep them tightly related to one unresolved gap and limit them to 1 to 3 questions.\n"
-        )
-
-    def _responder_evaluation_prompt(self, responder):
-        return (
-            f"{responder.chatbot_prompt}\n\n"
-            "ROUTER-OWNED REGULAR RESPONDER PROTOCOL\n"
-            "- You are in RESPONDER_EVALUATE_TOOL_RESULT.\n"
-            f"- Call `{self.RESPONDER_EVALUATION_TOOL_NAME}` exactly once.\n"
-            "- Do not answer the user directly in this phase.\n"
-            "- State what new fact or evidence the search added, which unresolved gap it reduced if any, and whether another search is still justified.\n"
-            "- Use no_meaningful_progress when the search did not materially advance the gap.\n"
-        )
-
-    def _responder_finalize_prompt(self, responder, *, reason="", question_limit=None):
-        extra = ""
-        if reason:
-            extra = f"- Finalization reason: {reason}.\n"
-        question_note = ""
-        if question_limit is not None:
-            question_note = (
-                f"- If you need follow-up questions, ask at most {int(question_limit)} tightly related questions about one unresolved gap.\n"
-                "- Do not broaden into a questionnaire or unrelated list.\n"
-            )
-        return (
-            f"{responder.chatbot_prompt}\n\n"
-            "ROUTER-OWNED REGULAR RESPONDER PROTOCOL\n"
-            "- You are in RESPONDER_FINALIZE_RESPONSE.\n"
-            "- No tools are available.\n"
-            "- Finalize using only the evidence already present in the conversation and prior tool results.\n"
-            f"{extra}"
-            f"{question_note}"
-        )
-
-    def _extract_expected_protocol_tool_call(self, step_result, expected_tool_name):
-        tool_calls = list(getattr(step_result, "tool_calls", []) or [])
-        if len(tool_calls) != 1:
-            return None, f"expected exactly one tool call, received {len(tool_calls)}"
-        tool_call = tool_calls[0]
-        if tool_call.name != expected_tool_name:
-            return None, f"expected {expected_tool_name}, received {tool_call.name}"
-        return tool_call, ""
-
-    def _protocol_tool_result(self, tool_call, output):
-        return {
-            "call_id": tool_call.call_id,
-            "name": tool_call.name,
-            "arguments": dict(tool_call.arguments or {}),
-            "output": output,
-        }
-
     def _known_canonical_doc_ids(self):
         if self._known_canonical_doc_ids_cache is not None:
             return list(self._known_canonical_doc_ids_cache)
@@ -696,423 +503,6 @@ class ModelRouter:
                 return None
             validated.append(item)
         return validated
-
-    def _validate_responder_decision(self, tool_call):
-        args = dict(getattr(tool_call, "arguments", {}) or {})
-        action = str(args.get("action") or "").strip()
-        if action not in {"answer_now", "ask_focused_follow_up_questions", "search"}:
-            return None, "missing or invalid action"
-
-        decision = {
-            "action": action,
-            "unresolved_gap": str(args.get("unresolved_gap") or "").strip(),
-            "gap_type": normalize_gap_type(args.get("gap_type", "")),
-            "why_current_evidence_is_insufficient": str(args.get("why_current_evidence_is_insufficient") or "").strip(),
-            "requested_evidence_goal": normalize_evidence_goal(args.get("requested_evidence_goal", "")),
-            "repeat_reason": normalize_repeat_reason(args.get("repeat_reason", "")),
-            "query": str(args.get("query") or "").strip(),
-            "relevant_documents": self._validated_relevant_documents(args.get("relevant_documents")),
-            "scope_hints": self._validated_scope_hints(args.get("scope_hints")),
-            "canonical_source_ids": self._validated_canonical_doc_ids(args.get("canonical_source_ids")),
-            "focused_questions": [
-                str(question or "").strip()
-                for question in list(args.get("focused_questions") or [])
-                if str(question or "").strip()
-            ],
-        }
-        if decision["relevant_documents"] is None:
-            return None, "invalid relevant_documents"
-
-        if action == "search":
-            if not decision["unresolved_gap"]:
-                return None, "search requires unresolved_gap"
-            if not decision["why_current_evidence_is_insufficient"]:
-                return None, "search requires why_current_evidence_is_insufficient"
-            if not decision["requested_evidence_goal"]:
-                return None, "search requires requested_evidence_goal"
-            if not decision["query"]:
-                return None, "search requires query"
-        elif action == "ask_focused_follow_up_questions":
-            if not decision["unresolved_gap"]:
-                return None, "follow-up questions require unresolved_gap"
-            if not 1 <= len(decision["focused_questions"]) <= 3:
-                return None, "follow-up questions must contain 1 to 3 entries"
-
-        return decision, ""
-
-    def _validate_responder_evaluation(self, tool_call):
-        args = dict(getattr(tool_call, "arguments", {}) or {})
-        progress_assessment = str(args.get("progress_assessment") or "").strip()
-        if progress_assessment not in {"meaningful_progress", "partial_progress", "no_meaningful_progress"}:
-            return None, "missing or invalid progress_assessment"
-        another_search_justified = args.get("another_search_justified")
-        if not isinstance(another_search_justified, bool):
-            return None, "another_search_justified must be boolean"
-        evaluation = {
-            "new_fact_or_evidence": str(args.get("new_fact_or_evidence") or "").strip(),
-            "reduced_unresolved_gap": str(args.get("reduced_unresolved_gap") or "").strip(),
-            "progress_assessment": progress_assessment,
-            "another_search_justified": another_search_justified,
-            "remaining_unresolved_gap": str(args.get("remaining_unresolved_gap") or "").strip(),
-            "gap_type": normalize_gap_type(args.get("gap_type", "")),
-            "suggested_repeat_reason": normalize_repeat_reason(args.get("suggested_repeat_reason", "")),
-        }
-        if not evaluation["new_fact_or_evidence"]:
-            return None, "evaluation requires new_fact_or_evidence"
-        if "reduced_unresolved_gap" not in args:
-            return None, "evaluation requires reduced_unresolved_gap"
-        return evaluation, ""
-
-    def _decision_prefers_follow_up_questions(self, decision):
-        if decision.get("gap_type") == "environment_fact_gap":
-            return True
-        gap_text = f"{decision.get('unresolved_gap', '')} {decision.get('why_current_evidence_is_insufficient', '')}".lower()
-        environment_tokens = (
-            "lan",
-            "public internet",
-            "dhcp",
-            "static ip",
-            "bridge",
-            "interface",
-            "dns",
-            "domain",
-            "hostname",
-            "actual setup",
-            "environment",
-            "target host",
-        )
-        return any(token in gap_text for token in environment_tokens)
-
-    def _execute_regular_responder_search(self, decision):
-        query = decision.get("query") or ""
-        relevant_documents = list(decision.get("relevant_documents") or [])
-        scope_hints = decision.get("scope_hints")
-        explicit_doc_ids = tuple(decision.get("canonical_source_ids") or ())
-        tool_args = {
-            "query": query,
-            "relevant_documents": relevant_documents,
-            "repeat_reason": decision.get("repeat_reason", ""),
-            "requested_evidence_goal": decision.get("requested_evidence_goal", ""),
-            "gap_type": decision.get("gap_type", ""),
-            "unresolved_gap": decision.get("unresolved_gap", ""),
-        }
-        if scope_hints:
-            tool_args["scope_hints"] = scope_hints
-        if explicit_doc_ids:
-            tool_args["canonical_source_ids"] = list(explicit_doc_ids)
-        self._check_cancel("before_tool:search_rag_database")
-        self._emit_event("tool_start", {"name": "search_rag_database", "args": tool_args})
-        self._append_trace_marker("TOOL_RETRIEVE_CONTEXT")
-        try:
-            searchable_labels = self._searchable_labels(relevant_documents)
-            retrieval_result, cached_hit = self._retrieve_with_ledger(
-                query,
-                searchable_labels,
-                repeat_reason=decision.get("repeat_reason", ""),
-                requested_evidence_goal=decision.get("requested_evidence_goal", ""),
-                unresolved_issue=decision.get("unresolved_gap", ""),
-                gap_type=decision.get("gap_type", ""),
-                strict_repeat_reason=True,
-                router_hint=scope_hints,
-                explicit_doc_ids=explicit_doc_ids,
-            )
-            retrieval_metadata = dict(retrieval_result.get("retrieval_metadata") or {})
-            search_text = str(retrieval_result.get("context_text") or "")
-            pool = self._active_evidence_pool()
-            tool_complete_payload = {
-                "name": "search_rag_database",
-                "result_size": len(search_text),
-                "result_text": search_text,
-                "result_blocks": list(retrieval_result.get("merged_blocks") or []),
-                "selected_sources": list(retrieval_result.get("selected_sources") or []),
-                "cached": cached_hit,
-                "anchor_count": retrieval_metadata.get("anchor_count", 0),
-                "anchor_pages": list(retrieval_metadata.get("anchor_pages") or []),
-                "fetched_neighbor_pages": list(retrieval_metadata.get("fetched_neighbor_pages") or []),
-                "delivered_bundle_count": retrieval_metadata.get("delivered_bundle_count", 0),
-                "excluded_seen_count": retrieval_metadata.get("excluded_seen_count", 0),
-                "skipped_bundle_count": retrieval_metadata.get("skipped_bundle_count", 0),
-                "gate_action": retrieval_metadata.get("gate_action", ""),
-                "search_outcome": retrieval_metadata.get("search_outcome") or pool.last_query_outcome(),
-                "usefulness": retrieval_metadata.get("usefulness") or pool.last_query_usefulness(),
-                "usefulness_reason": retrieval_metadata.get("usefulness_reason", ""),
-                "scope_key": retrieval_metadata.get("scope_key") or pool.last_query_scope_key(),
-                "covered_region_count": len(pool.known_covered_region_keys()),
-                "scope_exhausted": bool(pool.scope_state.exhausted_scope_keys),
-                "soft_exhausted_scope_keys": sorted(pool.scope_state.soft_exhausted_scope_keys),
-                "hard_exhausted_scope_keys": sorted(pool.scope_state.hard_exhausted_scope_keys),
-                "requested_evidence_goal": retrieval_metadata.get("requested_evidence_goal", decision.get("requested_evidence_goal", "")),
-                "gap_type": retrieval_metadata.get("gap_type", decision.get("gap_type", "")),
-                "repeat_reason": retrieval_metadata.get("repeat_reason", decision.get("repeat_reason", "")),
-            }
-            self._emit_event("tool_complete", tool_complete_payload)
-        except Exception as exc:
-            self._emit_event("tool_error", {"name": "search_rag_database", "error": str(exc)})
-            self._check_cancel("after_tool:search_rag_database")
-            raise
-        self._check_cancel("after_tool:search_rag_database")
-        payload = {
-            "decision": dict(decision),
-            "search_result_text": search_text,
-            "selected_sources": list(retrieval_result.get("selected_sources") or []),
-            "result_blocks": list(retrieval_result.get("merged_blocks") or []),
-            "cached": cached_hit,
-            "retrieval_metadata": retrieval_metadata,
-        }
-        return payload, retrieval_metadata
-
-    def _finalize_regular_responder(self, responder, turn, session_state, tool_results, *, reason, round_number, question_limit=None):
-        responder.emit_state(
-            ResponseState.FINALIZE_RESPONSE,
-            {
-                "round": round_number,
-                "reason": reason,
-            },
-        )
-        step_result = responder.continue_protocol_step(
-            session_state,
-            tool_results,
-            system_prompt=self._responder_finalize_prompt(
-                responder,
-                reason=reason,
-                question_limit=question_limit,
-            ),
-            tools=[],
-            enable_web_search=False,
-            round_number=round_number,
-        )
-        if self._stream_response_enabled:
-            responder.emit_final_text(step_result.output_text or "")
-        return step_result.output_text or ""
-
-    def _run_regular_responder_protocol(self, responder, turn):
-        search_rounds = 0
-        model_round = 0
-        try:
-            responder.emit_state(
-                ResponseState.DECIDE_NEXT_STEP,
-                {
-                    "round": 0,
-                    "available_actions": ["answer_now", "ask_focused_follow_up_questions", "search"],
-                },
-            )
-            step_result = responder.start_protocol_step(
-                turn.user_question,
-                turn.retrieved_docs,
-                turn.summarized_conversation_history,
-                turn.memory_snapshot_text,
-                system_prompt=self._responder_decision_prompt(responder),
-                tools=[self._build_responder_decision_tool()],
-                enable_web_search=False,
-                round_number=model_round,
-            )
-            while True:
-                decision_call, decision_error = self._extract_expected_protocol_tool_call(
-                    step_result,
-                    self.RESPONDER_DECISION_TOOL_NAME,
-                )
-                if decision_call is None:
-                    response_text = self._finalize_regular_responder(
-                        responder,
-                        turn,
-                        step_result.session_state,
-                        [],
-                        reason=f"invalid_decision:{decision_error}",
-                        round_number=model_round + 1,
-                    )
-                    responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": search_rounds})
-                    return response_text
-
-                decision, decision_error = self._validate_responder_decision(decision_call)
-                if decision is None:
-                    response_text = self._finalize_regular_responder(
-                        responder,
-                        turn,
-                        step_result.session_state,
-                        [self._protocol_tool_result(decision_call, {"router_error": decision_error})],
-                        reason=f"invalid_decision:{decision_error}",
-                        round_number=model_round + 1,
-                    )
-                    responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": search_rounds})
-                    return response_text
-
-                if decision["action"] == "search" and self._decision_prefers_follow_up_questions(decision):
-                    response_text = self._finalize_regular_responder(
-                        responder,
-                        turn,
-                        step_result.session_state,
-                        [
-                            self._protocol_tool_result(
-                                decision_call,
-                                {
-                                    "approved_action": "ask_focused_follow_up_questions",
-                                    "router_reason": "environment_fact_gap_prefers_follow_up",
-                                    "decision": decision,
-                                },
-                            )
-                        ],
-                        reason="environment_fact_gap_prefers_follow_up",
-                        round_number=model_round + 1,
-                        question_limit=3,
-                    )
-                    responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": search_rounds})
-                    return response_text
-
-                if decision["action"] != "search":
-                    response_text = self._finalize_regular_responder(
-                        responder,
-                        turn,
-                        step_result.session_state,
-                        [
-                            self._protocol_tool_result(
-                                decision_call,
-                                {
-                                    "approved_action": decision["action"],
-                                    "decision": decision,
-                                },
-                            )
-                        ],
-                        reason=decision["action"],
-                        round_number=model_round + 1,
-                        question_limit=3 if decision["action"] == "ask_focused_follow_up_questions" else None,
-                    )
-                    responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": search_rounds})
-                    return response_text
-
-                if search_rounds >= self.response_tool_rounds:
-                    response_text = self._finalize_regular_responder(
-                        responder,
-                        turn,
-                        step_result.session_state,
-                        [
-                            self._protocol_tool_result(
-                                decision_call,
-                                {
-                                    "approved_action": "finalize",
-                                    "router_reason": "tool_budget_exhausted",
-                                    "decision": decision,
-                                },
-                            )
-                        ],
-                        reason="tool_budget_exhausted",
-                        round_number=model_round + 1,
-                    )
-                    responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": search_rounds})
-                    return response_text
-
-                search_rounds += 1
-                search_payload, retrieval_metadata = self._execute_regular_responder_search(decision)
-                usefulness = retrieval_metadata.get("usefulness") or ""
-                search_outcome = retrieval_metadata.get("search_outcome") or ""
-                gate_action = retrieval_metadata.get("gate_action") or ""
-                if gate_action in {GATE_REQUIRE_REASON, GATE_BLOCK}:
-                    response_text = self._finalize_regular_responder(
-                        responder,
-                        turn,
-                        step_result.session_state,
-                        [self._protocol_tool_result(decision_call, search_payload)],
-                        reason="search_justification_collapsed",
-                        round_number=model_round + 1,
-                    )
-                    responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": search_rounds})
-                    return response_text
-
-                model_round += 1
-                responder.emit_state(
-                    ResponseState.EVALUATE_TOOL_RESULT,
-                    {
-                        "round": search_rounds,
-                        "search_outcome": search_outcome,
-                        "usefulness": usefulness,
-                    },
-                )
-                evaluation_step = responder.continue_protocol_step(
-                    step_result.session_state,
-                    [self._protocol_tool_result(decision_call, search_payload)],
-                    system_prompt=self._responder_evaluation_prompt(responder),
-                    tools=[self._build_responder_evaluation_tool()],
-                    enable_web_search=False,
-                    round_number=model_round,
-                )
-                evaluation_call, evaluation_error = self._extract_expected_protocol_tool_call(
-                    evaluation_step,
-                    self.RESPONDER_EVALUATION_TOOL_NAME,
-                )
-                if evaluation_call is None:
-                    response_text = self._finalize_regular_responder(
-                        responder,
-                        turn,
-                        evaluation_step.session_state,
-                        [],
-                        reason=f"invalid_evaluation:{evaluation_error}",
-                        round_number=model_round + 1,
-                    )
-                    responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": search_rounds})
-                    return response_text
-
-                evaluation, evaluation_error = self._validate_responder_evaluation(evaluation_call)
-                if evaluation is None:
-                    response_text = self._finalize_regular_responder(
-                        responder,
-                        turn,
-                        evaluation_step.session_state,
-                        [self._protocol_tool_result(evaluation_call, {"router_error": evaluation_error})],
-                        reason=f"invalid_evaluation:{evaluation_error}",
-                        round_number=model_round + 1,
-                    )
-                    responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": search_rounds})
-                    return response_text
-
-                no_progress = (
-                    usefulness == "zero"
-                    or search_outcome in {"no_new_evidence", "search_exhausted_for_scope"}
-                    or evaluation["progress_assessment"] == "no_meaningful_progress"
-                )
-                if no_progress:
-                    response_text = self._finalize_regular_responder(
-                        responder,
-                        turn,
-                        evaluation_step.session_state,
-                        [self._protocol_tool_result(evaluation_call, {"accepted_evaluation": evaluation})],
-                        reason="search_no_progress",
-                        round_number=model_round + 1,
-                    )
-                    responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": search_rounds})
-                    return response_text
-
-                if not evaluation["another_search_justified"]:
-                    response_text = self._finalize_regular_responder(
-                        responder,
-                        turn,
-                        evaluation_step.session_state,
-                        [self._protocol_tool_result(evaluation_call, {"accepted_evaluation": evaluation})],
-                        reason="evaluation_prefers_finalize",
-                        round_number=model_round + 1,
-                    )
-                    responder.emit_state(ResponseState.COMPLETE, {"tool_rounds": search_rounds})
-                    return response_text
-
-                model_round += 1
-                responder.emit_state(
-                    ResponseState.DECIDE_NEXT_STEP,
-                    {
-                        "round": search_rounds,
-                        "available_actions": ["answer_now", "ask_focused_follow_up_questions", "search"],
-                        "prior_usefulness": usefulness,
-                        "prior_search_outcome": search_outcome,
-                    },
-                )
-                step_result = responder.continue_protocol_step(
-                    evaluation_step.session_state,
-                    [self._protocol_tool_result(evaluation_call, {"accepted_evaluation": evaluation})],
-                    system_prompt=self._responder_decision_prompt(responder),
-                    tools=[self._build_responder_decision_tool()],
-                    enable_web_search=False,
-                    round_number=model_round,
-                )
-        except Exception:
-            responder.emit_state(ResponseState.ERROR, {})
-            raise
 
     # Maps MagiState names to (role, phase) for caller metadata tagging
     _MAGI_STATE_TO_CALLER = {
@@ -1275,7 +665,6 @@ class ModelRouter:
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
             pause_check=self.pause_check,
-            historian_web_search_decider=self._should_enable_historian_web_search,
         )
 
     def _build_magi_lite_responder(self):
@@ -1316,7 +705,6 @@ class ModelRouter:
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
             pause_check=self.pause_check,
-            historian_web_search_decider=self._should_enable_historian_web_search,
         )
 
     def _build_history_summarizer(self, history_summarizer):
@@ -1383,6 +771,18 @@ class ModelRouter:
                             "description": (
                                 "Optional internal evidence goal such as install_component, "
                                 "configure_access, verify_state, or troubleshoot_failure"
+                            ),
+                        },
+                        "progress_assessment": {
+                            "type": "string",
+                            "enum": ["meaningful_progress", "partial_progress", "no_meaningful_progress"],
+                            "description": (
+                                "Assessment of the previous RAG search's usefulness. "
+                                "Only meaningful on the 2nd+ call to search_rag_database in a turn — "
+                                "the first call has no prior search to evaluate. "
+                                "Use meaningful_progress if the prior search materially advanced the active question, "
+                                "partial_progress if it helped somewhat, "
+                                "no_meaningful_progress if it added nothing useful."
                             ),
                         },
                     },
@@ -1619,10 +1019,6 @@ class ModelRouter:
             return "troubleshoot_failure"
         return ""
 
-    def _should_enable_historian_web_search(self, *, phase: str = "", round_number: int = 0, unresolved_issue: str = "") -> bool:
-        del phase, round_number, unresolved_issue
-        return self._active_evidence_pool().historian_web_fallback_allowed()
-
     def _gate_message(self, gate, *, requested_evidence_goal: str = "", caller_role: str = "") -> str:
         goal_note = requested_evidence_goal or "a clearer requested_evidence_goal"
         if gate.action == GATE_REQUIRE_REASON:
@@ -1833,6 +1229,12 @@ class ModelRouter:
                         repeat_reason=repeat_reason,
                         unresolved_issue=self._active_caller_metadata().get("unresolved_issue", ""),
                     )
+                    # Apply progress_assessment from the model about the *prior* search before running the new one.
+                    # Only meaningful on the 2nd+ search_rag_database call in a turn.
+                    progress_assessment = str(tool_args.get("progress_assessment") or "").strip()
+                    pool = self._active_evidence_pool()
+                    if progress_assessment and pool.query_records:
+                        pool.apply_qualitative_evaluation(progress_assessment=progress_assessment)
                     retrieval_result, cached_hit = self._retrieve_with_ledger(
                         query,
                         searchable_labels,
@@ -2086,20 +1488,17 @@ class ModelRouter:
                 evidence_pool_summary=evidence_pool_summary,
             )
         else:
-            if self._regular_responder_supports_router_protocol(responder):
-                turn.response = self._run_regular_responder_protocol(responder, turn)
-            else:
-                responder_method = responder.stream_api if self._stream_response_enabled else responder.call_api
-                kwargs = {}
-                if evidence_pool_summary:
-                    kwargs["evidence_pool_summary"] = evidence_pool_summary
-                turn.response = responder_method(
-                    turn.user_question,
-                    turn.retrieved_docs,
-                    turn.summarized_conversation_history,
-                    turn.memory_snapshot_text,
-                    **kwargs,
-                )
+            responder_method = responder.stream_api if self._stream_response_enabled else responder.call_api
+            kwargs = {}
+            if evidence_pool_summary:
+                kwargs["evidence_pool_summary"] = evidence_pool_summary
+            turn.response = responder_method(
+                turn.user_question,
+                turn.retrieved_docs,
+                turn.summarized_conversation_history,
+                turn.memory_snapshot_text,
+                **kwargs,
+            )
         self._check_cancel("after_generate_response")
         turn.council_entries = list(getattr(responder, "last_council_entries", None) or [])
         if not (turn.retrieved_docs or "").strip():

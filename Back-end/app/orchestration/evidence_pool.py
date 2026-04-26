@@ -2,9 +2,9 @@
 
 Responsibilities:
 - Track query records, evidence records, coverage, and exhaustion state.
-- Issue gating decisions for retrieval across the normal responder and MAGI.
+- Issue retrieval-state signals across the normal responder and MAGI.
 - Classify retrieval outcomes after the pipeline returns.
-- Score usefulness of returned evidence, not only novelty.
+- Record model-supplied usefulness verdicts (the deterministic layer no longer scores usefulness).
 - Build short prompt summaries for MAGI roles.
 - Maintain an exact-fingerprint cache.
 
@@ -26,10 +26,6 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 def _normalize_text(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
-
-
-def _tokenize(value: str) -> set[str]:
-    return {token for token in _TOKEN_RE.findall(_normalize_text(value)) if len(token) >= 3}
 
 
 # ---------------------------------------------------------------------------
@@ -70,24 +66,19 @@ def _sha1_hex(data: str) -> str:
     return hashlib.sha1(data.encode("utf-8")).hexdigest()[:16]
 
 
-GENERIC_EVIDENCE_GOALS = frozenset(
-    {
-        "identify_prerequisites",
-        "create_target",
-        "configure_access",
-        "install_component",
-        "verify_state",
-        "troubleshoot_failure",
-        "confirm_contradiction",
-        "gather_alternate_source",
-        "expand_covered_region",
-        "fill_unresolved_gap",
-    }
-)
+_LEADING_GAP_NOISE = frozenset({"the", "a", "an", "this", "that", "these", "those"})
 
 
-def normalize_evidence_goal(goal: str) -> str:
-    return _normalize_text(goal).replace(" ", "_")
+def normalize_evidence_gap_key(gap: str) -> str:
+    """Canonical key for evidence-gap identity.
+
+    Gap identity must preserve short technical tokens such as IP, VM, SSH,
+    LXC, UI, and IO.
+    """
+    tokens = _TOKEN_RE.findall(_normalize_text(gap))
+    while tokens and tokens[0] in _LEADING_GAP_NOISE:
+        tokens.pop(0)
+    return "_".join(tokens)
 
 
 REPEAT_REASON_EXPAND = "expand_beyond_covered_region"
@@ -125,7 +116,8 @@ def normalize_gap_type(gap_type: str) -> str:
 class EvidenceScope:
     scope_key: str
     searchable_labels: tuple[str, ...]
-    requested_evidence_goal: str = ""
+    evidence_gap: str = ""
+    evidence_gap_key: str = ""
     unresolved_issue: str = ""
     gap_type: str = ""
     scope_anchor: str = ""
@@ -134,23 +126,25 @@ class EvidenceScope:
 def build_evidence_scope(
     searchable_labels: list[str],
     *,
-    requested_evidence_goal: str = "",
+    evidence_gap: str = "",
     unresolved_issue: str = "",
     gap_type: str = "",
     normalized_query: str = "",
 ) -> EvidenceScope:
     labels = tuple(sorted(searchable_labels or []))
-    goal = normalize_evidence_goal(requested_evidence_goal)
+    normalized_gap = _normalize_text(evidence_gap)
+    gap_key = normalize_evidence_gap_key(evidence_gap)
     issue = _normalize_text(unresolved_issue).replace(" ", "_")
     gap = normalize_gap_type(gap_type)
-    anchor = goal or issue or _normalize_text(normalized_query).replace(" ", "_") or "general"
+    anchor = gap_key or issue or normalize_evidence_gap_key(normalized_query) or "general"
     if gap:
         anchor = f"{gap}:{anchor}"
     labels_part = ",".join(labels) or "all"
     return EvidenceScope(
         scope_key=f"{labels_part}::{anchor}",
         searchable_labels=labels,
-        requested_evidence_goal=goal,
+        evidence_gap=normalized_gap,
+        evidence_gap_key=gap_key,
         unresolved_issue=issue,
         gap_type=gap,
         scope_anchor=anchor,
@@ -160,14 +154,14 @@ def build_evidence_scope(
 def build_query_fingerprint(
     normalized_query: str,
     searchable_labels: list[str],
-    requested_evidence_goal: str = "",
+    evidence_gap: str = "",
     unresolved_issue: str = "",
     gap_type: str = "",
 ) -> str:
     payload = {
         "query": normalized_query or "",
         "labels": sorted(searchable_labels or []),
-        "goal": normalize_evidence_goal(requested_evidence_goal),
+        "evidence_gap_key": normalize_evidence_gap_key(evidence_gap),
         "unresolved_issue": _normalize_text(unresolved_issue),
         "gap_type": normalize_gap_type(gap_type),
     }
@@ -206,9 +200,12 @@ class QueryRecord:
     caller_round: int = 0
     unresolved_issue: str = ""
     gap_type: str = ""
-    requested_evidence_goal: str = ""
+    evidence_gap: str = ""
+    evidence_gap_key: str = ""
     repeat_reason: str = ""
+    requested_evidence_goal: str = ""
     usefulness: str = ""
+    usefulness_history_index: int = -1
     usefulness_reason: str = ""
     outcome: str = ""
     linked_evidence_fingerprint: str = ""
@@ -237,6 +234,7 @@ class ScopeState:
     no_new_evidence_counts: dict[str, int] = field(default_factory=dict)
     low_value_streaks: dict[str, int] = field(default_factory=dict)
     zero_value_streaks: dict[str, int] = field(default_factory=dict)
+    scope_usefulness_history: dict[str, list[str]] = field(default_factory=dict)
     scope_query_counts: dict[str, int] = field(default_factory=dict)
     scope_seen_sources: dict[str, set[str]] = field(default_factory=dict)
     soft_exhausted_scope_keys: set[str] = field(default_factory=set)
@@ -267,6 +265,26 @@ GATE_ALLOW = "allow"
 GATE_ALLOW_NET_NEW_ONLY = "allow_net_new_only"
 GATE_REQUIRE_REASON = "require_reason"
 GATE_BLOCK = "block"
+
+# Evidence goal constants and normalization (used by router for requested_evidence_goal field)
+GENERIC_EVIDENCE_GOALS = frozenset({
+    "install_component",
+    "configure_access",
+    "verify_state",
+    "troubleshoot_failure",
+    "identify_prerequisites",
+    "create_target",
+    "expand_covered_region",
+    "fill_unresolved_gap",
+    "confirm_contradiction",
+    "gather_alternate_source",
+})
+
+
+def normalize_evidence_goal(goal: str) -> str:
+    """Return the goal string if it is a recognized evidence goal, else empty string."""
+    normalized = _normalize_text(goal).replace(" ", "_")
+    return normalized if normalized in GENERIC_EVIDENCE_GOALS else ""
 
 SOFT_EXHAUSTION_LOW_VALUE_THRESHOLD = 2
 HARD_EXHAUSTION_ZERO_THRESHOLD = 3
@@ -362,14 +380,14 @@ class EvidencePool:
         self,
         searchable_labels,
         *,
-        requested_evidence_goal="",
+        evidence_gap="",
         unresolved_issue="",
         gap_type="",
         normalized_query="",
     ) -> EvidenceScope:
         return build_evidence_scope(
             list(searchable_labels or []),
-            requested_evidence_goal=requested_evidence_goal,
+            evidence_gap=evidence_gap,
             unresolved_issue=unresolved_issue,
             gap_type=gap_type,
             normalized_query=normalized_query,
@@ -380,7 +398,7 @@ class EvidencePool:
         caller_role: str,
         searchable_labels: list[str],
         *,
-        requested_evidence_goal="",
+        evidence_gap="",
         unresolved_issue="",
         gap_type="",
         normalized_query="",
@@ -388,29 +406,15 @@ class EvidencePool:
         del caller_role
         return self._scope(
             searchable_labels,
-            requested_evidence_goal=requested_evidence_goal,
+            evidence_gap=evidence_gap,
             unresolved_issue=unresolved_issue,
             gap_type=gap_type,
             normalized_query=normalized_query,
         ).scope_key
 
-    def _mark_scope_exhaustion(self, scope_key: str, usefulness: str) -> str:
+    def _refresh_scope_exhaustion(self, scope_key: str) -> str:
         low_value_streak = self.scope_state.low_value_streaks.get(scope_key, 0)
         zero_value_streak = self.scope_state.zero_value_streaks.get(scope_key, 0)
-
-        if usefulness in {USEFULNESS_LOW, USEFULNESS_ZERO}:
-            low_value_streak += 1
-        else:
-            low_value_streak = 0
-
-        if usefulness == USEFULNESS_ZERO:
-            zero_value_streak += 1
-        else:
-            zero_value_streak = 0
-
-        self.scope_state.low_value_streaks[scope_key] = low_value_streak
-        self.scope_state.zero_value_streaks[scope_key] = zero_value_streak
-        self.scope_state.no_new_evidence_counts[scope_key] = low_value_streak
 
         if zero_value_streak >= HARD_EXHAUSTION_ZERO_THRESHOLD or low_value_streak >= HARD_EXHAUSTION_LOW_VALUE_THRESHOLD:
             self.scope_state.hard_exhausted_scope_keys.add(scope_key)
@@ -420,6 +424,7 @@ class EvidencePool:
 
         if low_value_streak >= SOFT_EXHAUSTION_LOW_VALUE_THRESHOLD:
             self.scope_state.soft_exhausted_scope_keys.add(scope_key)
+            self.scope_state.hard_exhausted_scope_keys.discard(scope_key)
             self.scope_state.exhausted_scope_keys.add(scope_key)
             return "soft"
 
@@ -428,86 +433,30 @@ class EvidencePool:
         self.scope_state.exhausted_scope_keys.discard(scope_key)
         return ""
 
-    def _score_usefulness(
-        self,
-        retrieval_result: dict,
-        query_record: QueryRecord,
-        *,
-        net_new_keys: list[str],
-        newly_selected_sources: list[str],
-        is_cache_hit: bool,
-        is_reused_known: bool,
-    ) -> tuple[str, str]:
-        metadata = retrieval_result.get("retrieval_metadata") or {}
-        context_text = str(retrieval_result.get("context_text") or "")
-        selected_sources = list(retrieval_result.get("selected_sources") or [])
-        excluded_seen_count = int(metadata.get("excluded_seen_count") or 0)
-        has_evidence = bool(metadata.get("delivered_bundle_keys") or metadata.get("delivered_block_keys") or region_keys_from_retrieval_metadata(metadata))
+    def _recompute_scope_exhaustion(self, scope_key: str) -> str:
+        history = self.scope_state.scope_usefulness_history.get(scope_key, [])
+        low_value_streak = 0
+        zero_value_streak = 0
+        for usefulness in reversed(history):
+            if usefulness in {USEFULNESS_LOW, USEFULNESS_ZERO}:
+                low_value_streak += 1
+            else:
+                break
+        for usefulness in reversed(history):
+            if usefulness == USEFULNESS_ZERO:
+                zero_value_streak += 1
+            else:
+                break
 
-        if not has_evidence:
-            reason = "retrieval returned no prompt-facing evidence"
-            if excluded_seen_count:
-                reason = "retrieval only revisited already-covered regions"
-            return USEFULNESS_ZERO, reason
+        self.scope_state.low_value_streaks[scope_key] = low_value_streak
+        self.scope_state.zero_value_streaks[scope_key] = zero_value_streak
+        self.scope_state.no_new_evidence_counts[scope_key] = low_value_streak
+        return self._refresh_scope_exhaustion(scope_key)
 
-        if is_cache_hit:
-            return USEFULNESS_LOW, "retrieval reused a cached result for the same scope"
-
-        goal_terms = _tokenize(query_record.requested_evidence_goal)
-        gap_terms = _tokenize(query_record.unresolved_issue)
-        evidence_terms = _tokenize(context_text + " " + " ".join(selected_sources))
-
-        score = 0
-        reasons: list[str] = []
-        if net_new_keys:
-            score += 1
-            reasons.append("expanded covered evidence")
-            if len(net_new_keys) >= 2:
-                score += 1
-        if newly_selected_sources:
-            score += 1
-            reasons.append("added source diversity")
-
-        goal_overlap = len(goal_terms & evidence_terms)
-        if goal_overlap >= 2:
-            score += 2
-            reasons.append("aligned with requested evidence goal")
-        elif goal_overlap == 1:
-            score += 1
-            reasons.append("partially aligned with requested evidence goal")
-
-        gap_overlap = len(gap_terms & evidence_terms)
-        if gap_overlap >= 1:
-            score += 1
-            reasons.append("helped fill the unresolved gap")
-
-        repeat_reason = normalize_repeat_reason(query_record.repeat_reason)
-        if repeat_reason == "alternate_source_confirmation" and newly_selected_sources:
-            score += 1
-            reasons.append("confirmed the scope from an alternate source")
-        if repeat_reason == "contradiction_check" and has_evidence:
-            score += 1
-            reasons.append("supported a contradiction check")
-
-        if is_reused_known:
-            score = min(score, 1)
-            reasons.append("mostly repeated a known evidence set")
-        if excluded_seen_count and not net_new_keys:
-            score -= 1
-            reasons.append("primarily revisited already-covered regions")
-
-        if score >= 4:
-            usefulness = USEFULNESS_HIGH
-        elif score >= 2:
-            usefulness = USEFULNESS_MEDIUM
-        elif score >= 1:
-            usefulness = USEFULNESS_LOW
-        else:
-            usefulness = USEFULNESS_ZERO
-
-        if usefulness == USEFULNESS_ZERO and not reasons:
-            reasons.append("did not materially advance the active scope")
-        return usefulness, "; ".join(dict.fromkeys(reasons))
+    def _mark_scope_exhaustion(self, scope_key: str, usefulness: str) -> tuple[int, str]:
+        history = self.scope_state.scope_usefulness_history.setdefault(scope_key, [])
+        history.append(usefulness)
+        return len(history) - 1, self._recompute_scope_exhaustion(scope_key)
 
     # ------------------------------------------------------------------
     # Query and evidence recording
@@ -522,13 +471,14 @@ class EvidencePool:
         caller_round: int = 0,
         unresolved_issue: str = "",
         gap_type: str = "",
-        requested_evidence_goal: str = "",
+        evidence_gap: str = "",
         repeat_reason: str = "",
+        requested_evidence_goal: str = "",
     ) -> QueryRecord:
         normalized = _normalize_text(raw_query)
         scope = self._scope(
             searchable_labels,
-            requested_evidence_goal=requested_evidence_goal,
+            evidence_gap=evidence_gap,
             unresolved_issue=unresolved_issue,
             gap_type=gap_type,
             normalized_query=normalized,
@@ -536,7 +486,7 @@ class EvidencePool:
         qfp = build_query_fingerprint(
             normalized,
             searchable_labels,
-            requested_evidence_goal=requested_evidence_goal,
+            evidence_gap=evidence_gap,
             unresolved_issue=unresolved_issue,
             gap_type=gap_type,
         )
@@ -551,8 +501,10 @@ class EvidencePool:
             caller_round=caller_round,
             unresolved_issue=_normalize_text(unresolved_issue),
             gap_type=normalize_gap_type(gap_type),
-            requested_evidence_goal=scope.requested_evidence_goal,
+            evidence_gap=scope.evidence_gap,
+            evidence_gap_key=scope.evidence_gap_key,
             repeat_reason=normalize_repeat_reason(repeat_reason),
+            requested_evidence_goal=requested_evidence_goal or "",
         )
         self._known_query_fingerprints.add(qfp)
         self.query_records.append(record)
@@ -584,18 +536,8 @@ class EvidencePool:
         is_reused_known = bool(bundle_keys or block_keys or region_keys) and rsfp in self._known_result_set_fingerprints
         net_new_keys = [region_key for region_key in region_keys if self._add_covered_region(region_key)] if not is_cache_hit and not is_reused_known else []
 
-        usefulness, usefulness_reason = self._score_usefulness(
-            retrieval_result,
-            query_record,
-            net_new_keys=net_new_keys,
-            newly_selected_sources=newly_selected_sources,
-            is_cache_hit=is_cache_hit,
-            is_reused_known=is_reused_known,
-        )
-        query_record.usefulness = usefulness
-        query_record.usefulness_reason = usefulness_reason
-
-        exhaustion_level = self._mark_scope_exhaustion(query_record.scope_key, usefulness)
+        query_record.usefulness = ""
+        query_record.usefulness_reason = ""
 
         if is_cache_hit:
             query_record.outcome = OUTCOME_CACHE_HIT
@@ -607,8 +549,6 @@ class EvidencePool:
 
         if net_new_keys:
             query_record.outcome = OUTCOME_NEW_EVIDENCE
-        elif exhaustion_level == "hard":
-            query_record.outcome = OUTCOME_EXHAUSTED
         else:
             query_record.outcome = OUTCOME_NO_NEW
 
@@ -625,6 +565,49 @@ class EvidencePool:
         self.evidence_records[efp] = evidence_record
         return evidence_record
 
+    def apply_qualitative_evaluation(
+        self,
+        query_record: QueryRecord | None = None,
+        *,
+        progress_assessment: str = "",
+    ) -> None:
+        """Let a structured responder evaluation adjust gap-relative usefulness.
+
+        Deterministic bookkeeping still owns coverage, cache/reuse, and result
+        fingerprints. The model only answers whether this result reduced the
+        active evidence gap.
+        """
+        record = query_record or (self.query_records[-1] if self.query_records else None)
+        if record is None:
+            return
+        assessment = (progress_assessment or "").strip()
+        mapping = {
+            "meaningful_progress": (USEFULNESS_HIGH, "responder judged the evidence gap meaningfully reduced"),
+            "partial_progress":    (USEFULNESS_MEDIUM, "responder judged partial progress on the evidence gap"),
+            "no_meaningful_progress": (USEFULNESS_ZERO, "responder judged no meaningful progress on the evidence gap"),
+        }
+        if assessment not in mapping:
+            return
+        new_usefulness, note = mapping[assessment]
+        record.usefulness = new_usefulness
+        existing = [p for p in (record.usefulness_reason or "").split("; ") if p]
+        existing.append(note)
+        record.usefulness_reason = "; ".join(dict.fromkeys(existing))
+
+        history = self.scope_state.scope_usefulness_history.setdefault(record.scope_key, [])
+        if 0 <= record.usefulness_history_index < len(history):
+            history[record.usefulness_history_index] = new_usefulness
+        else:
+            history.append(new_usefulness)
+            record.usefulness_history_index = len(history) - 1
+        self._recompute_scope_exhaustion(record.scope_key)
+
+        if assessment == "no_meaningful_progress":
+            # Single-strike SOFT exhaustion only. Hard exhaustion stays streak-driven via _recompute_scope_exhaustion.
+            self.scope_state.soft_exhausted_scope_keys.add(record.scope_key)
+            self.scope_state.exhausted_scope_keys.add(record.scope_key)
+            # Do NOT touch hard_exhausted_scope_keys here — hard requires repeat failures, handled by streak logic.
+
     # ------------------------------------------------------------------
     # Gating
     # ------------------------------------------------------------------
@@ -635,15 +618,16 @@ class EvidencePool:
         searchable_labels: list[str],
         caller_role: str = "",
         repeat_reason: str = "",
-        requested_evidence_goal: str = "",
+        evidence_gap: str = "",
         unresolved_issue: str = "",
         gap_type: str = "",
         strict_repeat_reason: bool = False,
+        requested_evidence_goal: str = "",
     ) -> GateDecision:
         normalized = _normalize_text(raw_query)
         scope = self._scope(
             searchable_labels,
-            requested_evidence_goal=requested_evidence_goal,
+            evidence_gap=evidence_gap,
             unresolved_issue=unresolved_issue,
             gap_type=gap_type,
             normalized_query=normalized,
@@ -651,7 +635,7 @@ class EvidencePool:
         qfp = build_query_fingerprint(
             normalized,
             searchable_labels,
-            requested_evidence_goal=requested_evidence_goal,
+            evidence_gap=evidence_gap,
             unresolved_issue=unresolved_issue,
             gap_type=gap_type,
         )
@@ -681,7 +665,8 @@ class EvidencePool:
             self.scope_state.last_gate_action = GATE_BLOCK
             return GateDecision(
                 action=GATE_BLOCK,
-                allow_search=False,
+                allow_search=True,
+                prefer_net_new_only=True,
                 scope_exhausted=True,
                 blocked_reason=reason,
                 exhaustion_level="hard",
@@ -694,7 +679,8 @@ class EvidencePool:
             self.scope_state.last_gate_action = GATE_REQUIRE_REASON
             return GateDecision(
                 action=GATE_REQUIRE_REASON,
-                allow_search=False,
+                allow_search=True,
+                prefer_net_new_only=True,
                 requires_reason=True,
                 scope_exhausted=soft_exhausted,
                 blocked_reason=reason,
@@ -703,12 +689,13 @@ class EvidencePool:
             )
 
         if caller_is_magi and soft_exhausted:
-            reason = f"scope soft exhausted for {scope.scope_key}; provide repeat_reason or refine requested_evidence_goal"
+            reason = f"scope soft exhausted for {scope.scope_key}; provide repeat_reason or refine evidence_gap"
             self.scope_state.last_require_reason = reason
             self.scope_state.last_gate_action = GATE_REQUIRE_REASON
             return GateDecision(
                 action=GATE_REQUIRE_REASON,
-                allow_search=False,
+                allow_search=True,
+                prefer_net_new_only=True,
                 requires_reason=True,
                 scope_exhausted=True,
                 blocked_reason=reason,
@@ -717,12 +704,13 @@ class EvidencePool:
             )
 
         if not caller_is_magi and soft_exhausted and repeated_scope and exact_query_seen:
-            reason = f"scope is repeating low-value evidence for {scope.scope_key}; refine requested_evidence_goal or provide repeat_reason"
+            reason = f"scope is repeating low-value evidence for {scope.scope_key}; refine evidence_gap or provide repeat_reason"
             self.scope_state.last_require_reason = reason
             self.scope_state.last_gate_action = GATE_REQUIRE_REASON
             return GateDecision(
                 action=GATE_REQUIRE_REASON,
-                allow_search=False,
+                allow_search=True,
+                prefer_net_new_only=True,
                 requires_reason=True,
                 scope_exhausted=True,
                 blocked_reason=reason,
@@ -769,14 +757,13 @@ class EvidencePool:
             last = self.query_records[-1]
             if last.outcome:
                 lines.append(f"  Latest retrieval outcome: {last.outcome}")
-            if last.usefulness:
-                lines.append(f"  Latest usefulness: {last.usefulness}")
+            lines.append(f"  Latest usefulness: {last.usefulness or 'pending (you decide)'}")
             if last.usefulness_reason:
                 lines.append(f"  Usefulness note: {last.usefulness_reason}")
-            if last.requested_evidence_goal:
-                lines.append(f"  Active evidence goal: {last.requested_evidence_goal}")
+            if last.evidence_gap:
+                lines.append(f"  Active evidence gap: {last.evidence_gap}")
             if last.unresolved_issue:
-                lines.append(f"  Unresolved evidence gap: {last.unresolved_issue}")
+                lines.append(f"  Unresolved issue: {last.unresolved_issue}")
 
         if self.scope_state.soft_exhausted_scope_keys:
             lines.append(f"  Soft exhausted scopes: {', '.join(sorted(self.scope_state.soft_exhausted_scope_keys))}")
@@ -798,7 +785,8 @@ class EvidencePool:
             "last_usefulness": last.usefulness if last else "",
             "last_usefulness_reason": last.usefulness_reason if last else "",
             "last_scope_key": last.scope_key if last else "",
-            "last_requested_evidence_goal": last.requested_evidence_goal if last else "",
+            "last_evidence_gap": last.evidence_gap if last else "",
+            "last_evidence_gap_key": last.evidence_gap_key if last else "",
         }
 
     def last_query_outcome(self) -> str:
@@ -810,7 +798,3 @@ class EvidencePool:
     def last_query_scope_key(self) -> str:
         return self.query_records[-1].scope_key if self.query_records else ""
 
-    def historian_web_fallback_allowed(self) -> bool:
-        if self.scope_state.hard_exhausted_scope_keys or self.scope_state.soft_exhausted_scope_keys:
-            return True
-        return self.last_query_usefulness() in {USEFULNESS_LOW, USEFULNESS_ZERO}

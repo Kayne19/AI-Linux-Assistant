@@ -315,7 +315,7 @@ def test_openai_worker_normalizes_optional_tool_fields_for_strict_schemas():
                         "query": {"type": "string"},
                         "relevant_documents": {"type": "array", "items": {"type": "string"}},
                         "repeat_reason": {"type": "string", "enum": ["contradiction_check"]},
-                        "requested_evidence_goal": {"type": "string"},
+                        "evidence_gap": {"type": "string"},
                     },
                     "required": ["query", "relevant_documents"],
                 },
@@ -329,7 +329,7 @@ def test_openai_worker_normalizes_optional_tool_fields_for_strict_schemas():
         "query",
         "relevant_documents",
         "repeat_reason",
-        "requested_evidence_goal",
+        "evidence_gap",
     ]
     assert schema["properties"]["query"] == {"type": "string"}
     assert schema["properties"]["repeat_reason"]["anyOf"][0] == {
@@ -337,7 +337,7 @@ def test_openai_worker_normalizes_optional_tool_fields_for_strict_schemas():
         "enum": ["contradiction_check"],
     }
     assert schema["properties"]["repeat_reason"]["anyOf"][1] == {"type": "null"}
-    assert schema["properties"]["requested_evidence_goal"]["anyOf"][1] == {"type": "null"}
+    assert schema["properties"]["evidence_gap"]["anyOf"][1] == {"type": "null"}
 
 
 def test_openai_worker_requests_native_structured_output_when_schema_is_provided():

@@ -25,11 +25,11 @@ The system employs several specialized agents to handle specific phases of the r
 The normal responder now borrows MAGI's search discipline without becoming MAGI.
 
 - the router owns a lightweight `DECIDE_NEXT_STEP -> SEARCH -> EVALUATE_TOOL_RESULT -> FINALIZE_RESPONSE` mini-protocol for non-MAGI turns
-- before any regular-responder retrieval, the model must choose `answer_now`, `ask_focused_follow_up_questions`, or `search`
-- search decisions must include explicit justification for the router, including `requested_evidence_goal`, `unresolved_gap`, and why the current evidence is insufficient
+- before any regular-responder retrieval or web lookup, the model must choose `answer_now`, `ask_focused_follow_up_questions`, `search`, or `web_lookup`
+- search decisions must include explicit justification for the router, including `evidence_gap`, `unresolved_gap`, and why the current evidence is insufficient
 - `gap_type` may optionally identify a `procedural_doc_gap`, `environment_fact_gap`, or `confirmation_gap`
 - after each responder search, the model must evaluate what new evidence was added, what gap was reduced if any, and whether another search is still justified
-- the router and evidence pool remain the authority on whether another search is allowed; the evaluation step is advisory for reasoning clarity
+- the router and evidence pool remain the authority on whether another search is allowed; the evaluation step also supplies qualitative gap-progress feedback for regular-chat usefulness scoring
 - when the unresolved gap is mainly about the user's real environment, the responder should prefer 1 to 3 tightly related follow-up questions instead of speculative extra retrieval
 - repeated same-scope responder retrieval requires a named `repeat_reason`
 
@@ -63,16 +63,16 @@ The summary includes:
 - covered region keys (what evidence areas have already been retrieved this turn)
 - the latest retrieval outcome classification (`delivered_new_evidence`, `cache_hit`, `reused_known_evidence`, `no_new_evidence`, `search_exhausted_for_scope`)
 - the latest usefulness classification (`high`, `medium`, `low`, `zero`)
-- the active `requested_evidence_goal`, when one is in play
+- the active `evidence_gap`, when one is in play
 - any unresolved evidence gap from the prior query
-- soft exhausted scope keys (scopes where repeat retrieval now requires an explicit reason)
-- hard exhausted scope keys (scopes where repeat retrieval is blocked unless a recognized reason is supplied)
+- soft exhausted scope keys (scopes where repeat retrieval should explain or refine the evidence path)
+- hard exhausted scope keys (scopes where local RAG is strongly signaling that web fallback or follow-up may be better)
 
 An accompanying `MAGI_NET_NEW_INSTRUCTION` is also injected to guide tool use:
 
 > When using tools: prefer net-new evidence regions not yet covered this run. Revisit covered regions only for contradiction checks, alternate-source confirmation, or explicit gap expansion.
 
-Roles that attempt retrieval on an exhausted scope receive a router-owned `retrieval_gated` decision rather than an unconditional DB call. Recognized `repeat_reason` values are:
+Roles that attempt retrieval on an exhausted scope receive a router-owned `retrieval_signal` event, but the DB call still runs within the shared tool budget. Recognized `repeat_reason` values are:
 
 - `contradiction_check`
 - `alternate_source_confirmation`
@@ -81,8 +81,8 @@ Roles that attempt retrieval on an exhausted scope receive a router-owned `retri
 
 Current MAGI rule:
 
-- soft exhaustion triggers `require_reason`
-- hard exhaustion triggers `block`
+- soft exhaustion signals `require_reason`
+- hard exhaustion signals `block`
 - the normal responder uses the same evidence-pool machinery, but through its own router-owned mini-protocol and without changing MAGI's role contracts or prompts
 
 Current Historian fallback rule:

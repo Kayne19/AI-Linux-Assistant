@@ -37,13 +37,12 @@ def test_chatbot_prompt_uses_updated_grounded_response_shape():
     assert "Ask for the most discriminating missing detail" in CHATBOT_SYSTEM_PROMPT
     assert "prefer conversation-history and structured-memory tools before fresh database retrieval" in CHATBOT_SYSTEM_PROMPT
     assert "prefer evidence that materially advances the active subtask" in CHATBOT_SYSTEM_PROMPT
+    # Tool-loop style: model sets requested_evidence_goal, not evidence_gap
     assert "set an internal requested_evidence_goal before repeating database retrieval" in CHATBOT_SYSTEM_PROMPT
     assert "provide a repeat_reason instead of brute-force re-querying the same scope" in CHATBOT_SYSTEM_PROMPT
-    assert "make the next-step decision explicit before any fresh retrieval" in CHATBOT_SYSTEM_PROMPT
-    assert "answer now, ask focused follow-up questions, or search" in CHATBOT_SYSTEM_PROMPT
-    assert "procedural_doc_gap, environment_fact_gap, or confirmation_gap" in CHATBOT_SYSTEM_PROMPT
+    # progress_assessment is now the model's self-evaluation mechanism
+    assert "include `progress_assessment` describing whether the previous search helped" in CHATBOT_SYSTEM_PROMPT
     assert "prefer 1 to 3 tightly related follow-up questions over speculative extra retrieval" in CHATBOT_SYSTEM_PROMPT
-    assert "explicitly evaluate what new evidence was added" in CHATBOT_SYSTEM_PROMPT
     assert "TROUBLESHOOTING DISCIPLINE (MANDATORY)" in CHATBOT_SYSTEM_PROMPT
     assert "Do not treat the first plausible branch as proven." in CHATBOT_SYSTEM_PROMPT
     assert "Good troubleshooting is eliminating wrong branches quickly." in CHATBOT_SYSTEM_PROMPT
@@ -52,7 +51,8 @@ def test_chatbot_prompt_uses_updated_grounded_response_shape():
     assert "Do not force every answer into the same shape" in CHATBOT_SYSTEM_PROMPT
     assert "On the first troubleshooting turn, default to diagnosis-first behavior" in CHATBOT_SYSTEM_PROMPT
     assert "do not jump to remediation before you have the evidence that distinguishes the leading branches" in CHATBOT_SYSTEM_PROMPT
-    assert "Local RAG remains primary. Use provider-native web search only as a fallback" in CHATBOT_SYSTEM_PROMPT
+    # Provider-native web search is now simply web_search tool
+    assert "Local RAG remains primary. Use web_search only as a fallback" in CHATBOT_SYSTEM_PROMPT
     assert "mentally follow this order: identify the project, name the source that established that identity, then decide whether you have enough source quality for actionable guidance" in CHATBOT_SYSTEM_PROMPT
     assert "Do not guess what an unfamiliar project probably is." in CHATBOT_SYSTEM_PROMPT
     assert "confirm the canonical source first" in CHATBOT_SYSTEM_PROMPT

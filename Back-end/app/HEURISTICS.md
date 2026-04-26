@@ -167,21 +167,21 @@ Preferred future:
 - evaluate whether metadata-aware document scoping makes this unnecessary
 - remove if retrieval evals show no benefit after the new ingestion corpus is active
 
-### Requested Evidence Goal Boost
+### Evidence Gap Boost
 
 - Status: `Watch`
 - Owner: [retrieval/search_pipeline.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/search_pipeline.py)
-- Code: `_goal_alignment_boost()`
+- Code: `_gap_alignment_boost()`
 
 What it does:
 
-- tokenizes `requested_evidence_goal`
+- tokenizes `evidence_gap`
 - adds a bounded boost based on overlap with chunk text/source text
 - caps the boost at `0.45`
 
 Why it exists:
 
-- gives the router's evidence goal limited influence over anchor choice without replacing reranking
+- gives the router's evidence gap limited influence over anchor choice without replacing reranking
 
 Risks:
 
@@ -220,30 +220,32 @@ Preferred future:
 
 ## Router And Evidence Pool
 
-### Evidence Goal Derivation
+### Evidence Gap Identity
 
-- Status: `Watch`
-- Owner: [orchestration/model_router.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/model_router.py)
-- Code: `_derive_requested_evidence_goal()`
+- Status: `Accepted`, `Watch`
+- Owner: [orchestration/evidence_pool.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/evidence_pool.py)
+- Code: `normalize_evidence_gap_key()`
 
 What it does:
 
-- maps query/gap text tokens to generic evidence goals such as `identify_prerequisites`, `create_target`, `configure_access`, `install_component`, `verify_state`, and `troubleshoot_failure`
+- normalizes model-provided `evidence_gap` text into a stable scope key
+- strips leading noise words such as `the`, `a`, `an`, `this`, and `that`
+- preserves short technical tokens such as `ip`, `vm`, `lxc`, `ssh`, `ui`, and `io`
 
 Why it exists:
 
-- gives repeated retrieval a stable purpose when the model did not provide one
-- improves EvidencePool scope keys and retrieval anchor selection
+- lets qualitative gap text drive reranking without fragmenting retrieval history on superficial wording
+- ensures gaps like `The IP address` and `IP address` share a retrieval scope
 
 Risks:
 
-- token rules can misclassify user intent
-- derived goals can affect caching, gating, and retrieval boosts
+- normalization is still lexical
+- genuinely distinct gaps with similar wording can share a scope
 
 Preferred future:
 
-- move toward model-emitted structured goals with deterministic validation
-- keep the fallback small and test-covered
+- keep examples test-covered
+- evaluate against traces where paraphrased gaps should or should not share history
 
 ### Environment-Fact Follow-Up Preference
 
@@ -297,7 +299,7 @@ Preferred future:
 - add regression cases for usefulness classifications
 - consider replacing parts of the scoring with structured retrieval outcome evaluation
 
-### Scope Exhaustion And Gating
+### Scope Exhaustion Signaling
 
 - Status: `Watch`
 - Owner: [orchestration/evidence_pool.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/evidence_pool.py)
@@ -306,22 +308,22 @@ Preferred future:
 What it does:
 
 - marks repeated low/zero usefulness as soft or hard exhausted
-- blocks or requires `repeat_reason` for repeated same-scope retrieval
-- allows `allow_net_new_only` when appropriate
+- returns retrieval-state signals such as `allow_net_new_only`, `require_reason`, or `block`
+- keeps repeated same-scope retrieval executable while preserving net-new exclusions and trace metadata
 
 Why it exists:
 
-- prevents expensive loops over the same low-value evidence
-- forces the model to explain why another retrieval is justified
+- lets local RAG exhaustion cue a pivot to web or follow-up without becoming a backend veto
+- keeps repeated retrieval observable while the total tool budget remains the hard stop
 
 Risks:
 
-- can gate retrieval too aggressively after a bad query rewrite
-- can require repeat reasons when a human would simply search again with better wording
+- can spend extra retrieval calls if the model ignores exhaustion signals
+- can still bias the model through signal wording even though search is allowed
 
 Preferred future:
 
-- keep observable through `evidence_pool_update`
+- keep observable through `evidence_pool_update` and `retrieval_signal`
 - tune with router runtime tests and real debug traces
 
 ### Web Fallback Allowance
@@ -521,4 +523,3 @@ Preferred future:
 - keep defaults centralized
 - prefer explicit setting names over hidden constants
 - document behavior-changing defaults in the relevant subsystem docs and here when they are heuristic policy
-
