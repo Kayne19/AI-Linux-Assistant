@@ -1,4 +1,6 @@
-Router evals live here.
+Router evals live here. For end-to-end blind judging across subjects, see [`eval-harness/README.md`](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/README.md).
+
+
 
 Files:
 - `router_eval_cases.json`: prompt cases for repeatable router evaluation

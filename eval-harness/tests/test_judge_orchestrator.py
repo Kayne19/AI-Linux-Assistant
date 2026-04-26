@@ -237,7 +237,7 @@ def test_run_absolute_multi_judge_weighted_mean_unequal_weights() -> None:
 
 def test_run_absolute_multi_judge_produces_per_judge_and_agg_rows() -> None:
     store = _build_store()
-    _, benchmark, _ = _make_scenario_and_benchmark(store, ["subj-a", "subj-b"])
+    _, benchmark, eval_runs = _make_scenario_and_benchmark(store, ["subj-a", "subj-b"])
     judge_a = FakeJudge(name="ja")
     judge_b = FakeJudge(name="jb")
     result = JudgeJobOrchestrator(judges=[judge_a, judge_b], store=store).run_absolute(
@@ -249,6 +249,11 @@ def test_run_absolute_multi_judge_produces_per_judge_and_agg_rows() -> None:
     # 2 subjects × 2 judges = 4 absolute rows; 2 subjects × 1 aggregate = 2 agg rows.
     assert len(absolute_items) == 4
     assert len(agg_items) == 2
+    # Per-judge rows must have evaluation_run_id set (not evaluation_run_id_a).
+    eval_run_ids = {er.id for er in eval_runs}
+    for item in absolute_items:
+        assert item.evaluation_run_id in eval_run_ids
+        assert item.evaluation_run_id_a is None
 
 
 def test_run_backward_compat_legacy_run() -> None:

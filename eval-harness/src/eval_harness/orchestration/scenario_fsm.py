@@ -22,6 +22,7 @@ from ..models import (
     ScenarioSetupStatus,
     ScenarioSpec,
 )
+from ..judges.rubric import UNIVERSAL_RUBRIC
 from ..persistence.store import EvalHarnessStore
 from ..planners.base import ScenarioPlanner
 from ..scenario import ScenarioValidationError, build_verification_snapshot, validate_sabotage_step, validate_scenario
@@ -425,7 +426,7 @@ class ScenarioBuilderFSM:
             initial_user_message=draft.initial_user_message,
             sabotage_plan={"steps": list(draft.sabotage_procedure)},
             verification_plan={"probes": [item.to_dict() for item in draft.verification_probes]},
-            judge_rubric={"items": list(draft.judge_rubric)},
+            judge_rubric={"items": list(draft.judge_rubric), "universal": list(UNIVERSAL_RUBRIC)},
             planner_metadata={
                 **draft.planner_metadata,
                 "repair_checks": [item.to_dict() for item in draft.repair_checks],

@@ -228,7 +228,7 @@ class JudgeJobOrchestrator:
                     per_judge_results.append(result)
                     item = self.store.create_judge_item(
                         judge_job_id=judge_job.id,
-                        evaluation_run_id=None,
+                        evaluation_run_id=evaluation_run.id,
                         blind_label=f"{blind_label}-judge{j_idx}",
                         blinded_transcript=request.to_dict(),
                         raw_judge_response=result.raw_response,
@@ -236,7 +236,6 @@ class JudgeJobOrchestrator:
                         summary=result.summary,
                         kind="absolute",
                         judge_name=judge.name,
-                        evaluation_run_id_a=evaluation_run.id,
                     )
                     item_ids.append(item.id)
 

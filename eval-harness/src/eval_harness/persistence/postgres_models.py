@@ -179,7 +179,7 @@ class JudgeItemRecord(Base):
     __tablename__ = "judge_items"
     __table_args__ = (
         UniqueConstraint("judge_job_id", "blind_label", name="uq_judge_item_blind_label"),
-        UniqueConstraint("judge_job_id", "evaluation_run_id", name="uq_judge_item_eval_run"),
+        # uq_judge_item_eval_run was dropped in migration 0002; not declared here.
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)

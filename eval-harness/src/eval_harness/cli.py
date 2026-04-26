@@ -257,6 +257,49 @@ def _judge_from_config(config: dict[str, Any]):
     raise ValueError(f"Unsupported judge provider {provider!r}.")
 
 
+_DEFAULT_JUDGE_PAIRWISE = {
+    "provider": "anthropic",
+    "model": "claude-haiku-4-5-20251001",
+    "api_key": "env:ANTHROPIC_API_KEY",
+    "request_timeout_seconds": 90,
+}
+
+_DEFAULT_JUDGE_ABSOLUTE = {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "api_key": "env:ANTHROPIC_API_KEY",
+    "request_timeout_seconds": 120,
+}
+
+
+def _judges_from_config(config: dict[str, Any], *, mode: str = "absolute") -> tuple[list, list[float]]:
+    """Return (judges_list, weights_list) from config.
+
+    Accepts a top-level ``judges:`` list or falls back to the legacy ``judge:`` block.
+    If neither is present, applies a sensible default based on ``mode``.
+    """
+    judges_cfg: list[dict[str, Any]] | None = config.get("judges")
+    if not judges_cfg:
+        single = dict(config.get("judge", {}) or {})
+        if single:
+            judges_cfg = [single]
+        else:
+            # Apply default per mode.
+            judges_cfg = [_DEFAULT_JUDGE_PAIRWISE if mode == "pairwise" else _DEFAULT_JUDGE_ABSOLUTE]
+
+    # Resolve env: placeholders inside each entry.
+    judges_cfg = [_resolve_env_placeholders(entry) for entry in judges_cfg]
+
+    judges = []
+    weights = []
+    for entry in judges_cfg:
+        entry = dict(entry)
+        weight = float(entry.pop("weight", 1.0))
+        judges.append(_judge_from_config(entry))
+        weights.append(weight)
+    return judges, weights
+
+
 def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, SubjectAdapter]:
     adapters: dict[str, SubjectAdapter] = {}
     adapter_configs = dict(config.get("subject_adapters", {}) or {})
@@ -459,10 +502,214 @@ def _command_run_benchmark(args: argparse.Namespace) -> int:
 def _command_run_judge_job(args: argparse.Namespace) -> int:
     config = _load_resolved_config(args.config)
     store = _store_from_config(config)
-    judge = _judge_from_config(dict(config.get("judge", {}) or {}))
-    orchestrator = JudgeJobOrchestrator(judge=judge, store=store)
-    result = orchestrator.run(benchmark_run_id=args.benchmark_run_id)
+    mode = getattr(args, "mode", None) or str(config.get("judge_default_mode", "absolute"))
+    if mode not in {"absolute", "pairwise"}:
+        raise ValueError(f"Unknown mode {mode!r}; expected 'absolute' or 'pairwise'.")
+    anchor_subject = getattr(args, "anchor_subject", None)
+    if anchor_subject is not None and mode != "pairwise":
+        raise ValueError("--anchor-subject is only valid with --mode pairwise.")
+    judges, weights = _judges_from_config(config, mode=mode)
+    orchestrator = JudgeJobOrchestrator(judges=judges, store=store, weights=weights)
+    if mode == "pairwise":
+        result = orchestrator.run_pairwise(
+            benchmark_run_id=args.benchmark_run_id,
+            anchor_subject=anchor_subject,
+        )
+    else:
+        result = orchestrator.run_absolute(benchmark_run_id=args.benchmark_run_id)
     print(json.dumps(result.__dict__, indent=2))
+    return 0
+
+
+def _command_calibrate_judge(args: argparse.Namespace) -> int:
+    """Replay benchmark items through two judges and report agreement statistics."""
+    import math
+    import random
+
+    config = _load_resolved_config(args.config)
+    store = _store_from_config(config)
+    mode = str(args.mode)
+    rng = random.Random(args.rng_seed)
+
+    # Build the two judges from config by name.
+    judges_cfg_list = list(config.get("judges", []) or [])
+    if not judges_cfg_list:
+        single = dict(config.get("judge", {}) or {})
+        if single:
+            judges_cfg_list = [single]
+
+    named_judges: dict[str, Any] = {}
+    for entry in judges_cfg_list:
+        entry = _resolve_env_placeholders(dict(entry))
+        entry_copy = dict(entry)
+        entry_copy.pop("weight", None)
+        name = str(entry_copy.get("name", entry_copy.get("model", "unknown")))
+        named_judges[name] = entry_copy
+
+    def _get_judge(key: str):
+        if key in named_judges:
+            return _judge_from_config(named_judges[key])
+        # Try treating key as a model id or provider:model.
+        raise ValueError(
+            f"Judge {key!r} not found in config. Available: {list(named_judges)}. "
+            "Add it to the 'judges:' list in config."
+        )
+
+    strong_judge = _get_judge(args.strong)
+    candidate_judge = _get_judge(args.candidate)
+
+    # Fetch evaluation runs for the benchmark.
+    benchmark_run = store.get_benchmark_run(args.benchmark_run_id)
+    if benchmark_run is None:
+        raise ValueError(f"Unknown benchmark run {args.benchmark_run_id}")
+    revision = store.get_scenario_revision(benchmark_run.scenario_revision_id)
+    if revision is None:
+        raise ValueError(f"Unknown scenario revision {benchmark_run.scenario_revision_id}")
+
+    from .judges.rubric import UNIVERSAL_RUBRIC, format_tagged_rubric
+    from .mapping import turn_record_from_evaluation_event
+    from .models import BlindJudgeRequest, PairwiseJudgeRequest
+
+    scenario_items = tuple(
+        str(item) for item in (revision.judge_rubric_json or {}).get("items", [])
+    )
+    rubric = format_tagged_rubric(UNIVERSAL_RUBRIC, scenario_items)
+
+    eval_runs = list(store.list_evaluation_runs(args.benchmark_run_id))
+    if not eval_runs:
+        raise ValueError("No evaluation runs found for benchmark.")
+
+    def _transcript(er):
+        turns = []
+        for event in store.list_evaluation_events(er.id):
+            turn = turn_record_from_evaluation_event(event)
+            if turn is not None:
+                turns.append(turn.__class__(role=turn.role, content=turn.content, created_at=turn.created_at, metadata={}))
+        return tuple(turns)
+
+    max_pairs = int(args.max_pairs)
+
+    if mode == "pairwise":
+        from .models import PairwiseJudgeRequest
+
+        # Build all pairs from eval_runs.
+        import itertools
+        all_pairs = list(itertools.combinations(eval_runs, 2))
+        rng.shuffle(all_pairs)
+        pairs = all_pairs[: max_pairs]
+
+        strong_verdicts: list[str] = []
+        candidate_verdicts: list[str] = []
+
+        for er_a, er_b in pairs:
+            t_a = _transcript(er_a)
+            t_b = _transcript(er_b)
+            req = PairwiseJudgeRequest(
+                blind_label_a="A",
+                blind_label_b="B",
+                transcript_a=t_a,
+                transcript_b=t_b,
+                rubric=rubric,
+                repair_success_a=er_a.repair_success,
+                repair_success_b=er_b.repair_success,
+            )
+            s_res = strong_judge.compare(req)
+            c_res = candidate_judge.compare(req)
+            for sv, cv in zip(s_res.verdicts, c_res.verdicts):
+                strong_verdicts.append(sv.winner)
+                candidate_verdicts.append(cv.winner)
+
+        # Compute Cohen's kappa and raw agreement on non-tie verdicts.
+        categories = ["A", "B", "tie"]
+        n = len(strong_verdicts)
+        if n == 0:
+            print(json.dumps({"error": "no verdicts to compare"}, indent=2))
+            return 0
+
+        agree = sum(1 for s, c in zip(strong_verdicts, candidate_verdicts) if s == c)
+        raw_agreement = agree / n
+
+        # Cohen's kappa.
+        def _kappa(obs_a: list[str], obs_b: list[str]) -> float:
+            n_ = len(obs_a)
+            if n_ == 0:
+                return 0.0
+            p_o = sum(a == b for a, b in zip(obs_a, obs_b)) / n_
+            freq_a = {c: obs_a.count(c) / n_ for c in categories}
+            freq_b = {c: obs_b.count(c) / n_ for c in categories}
+            p_e = sum(freq_a[c] * freq_b[c] for c in categories)
+            if abs(1 - p_e) < 1e-9:
+                return 1.0
+            return (p_o - p_e) / (1 - p_e)
+
+        kappa = _kappa(strong_verdicts, candidate_verdicts)
+
+        # Non-tie agreement.
+        non_tie_pairs = [(s, c) for s, c in zip(strong_verdicts, candidate_verdicts) if s != "tie" and c != "tie"]
+        non_tie_agree = sum(1 for s, c in non_tie_pairs if s == c) / len(non_tie_pairs) if non_tie_pairs else None
+
+        report = {
+            "mode": "pairwise",
+            "n_verdicts": n,
+            "raw_agreement": round(raw_agreement, 4),
+            "cohens_kappa": round(kappa, 4),
+            "non_tie_agreement": round(non_tie_agree, 4) if non_tie_agree is not None else None,
+            "strong": args.strong,
+            "candidate": args.candidate,
+        }
+
+    else:
+        # Absolute mode: MAE and Pearson correlation per criterion.
+        sample = rng.sample(eval_runs, min(max_pairs, len(eval_runs)))
+        criterion_strong: dict[str, list[float]] = {}
+        criterion_candidate: dict[str, list[float]] = {}
+
+        for er in sample:
+            t = _transcript(er)
+            req = BlindJudgeRequest(
+                blind_label="subject",
+                transcript=t,
+                rubric=rubric,
+                repair_success=er.repair_success,
+            )
+            s_res = strong_judge.grade(req)
+            c_res = candidate_judge.grade(req)
+            for crit in rubric:
+                s_score = (s_res.scores.get(crit) or {}).get("score") if isinstance(s_res.scores.get(crit), dict) else s_res.scores.get(crit)
+                c_score = (c_res.scores.get(crit) or {}).get("score") if isinstance(c_res.scores.get(crit), dict) else c_res.scores.get(crit)
+                if s_score is not None and c_score is not None:
+                    criterion_strong.setdefault(crit, []).append(float(s_score))
+                    criterion_candidate.setdefault(crit, []).append(float(c_score))
+
+        per_criterion: dict[str, dict] = {}
+        for crit in criterion_strong:
+            sv = criterion_strong[crit]
+            cv = criterion_candidate.get(crit, [])
+            if len(sv) != len(cv) or len(sv) == 0:
+                continue
+            mae = sum(abs(a - b) for a, b in zip(sv, cv)) / len(sv)
+            mean_s = sum(sv) / len(sv)
+            mean_c = sum(cv) / len(cv)
+            num = sum((a - mean_s) * (b - mean_c) for a, b in zip(sv, cv))
+            den_s = math.sqrt(sum((a - mean_s) ** 2 for a in sv))
+            den_c = math.sqrt(sum((b - mean_c) ** 2 for b in cv))
+            pearson = num / (den_s * den_c) if den_s > 0 and den_c > 0 else None
+            per_criterion[crit] = {
+                "mae": round(mae, 4),
+                "pearson": round(pearson, 4) if pearson is not None else None,
+                "n": len(sv),
+            }
+
+        report = {
+            "mode": "absolute",
+            "strong": args.strong,
+            "candidate": args.candidate,
+            "per_criterion": per_criterion,
+        }
+
+    print(json.dumps(report, indent=2))
+    if getattr(args, "out", None):
+        Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
     return 0
 
 
@@ -521,7 +768,35 @@ def build_parser() -> argparse.ArgumentParser:
     judge_parser = subparsers.add_parser("run-judge-job", help="Blind-grade a completed benchmark run.")
     judge_parser.add_argument("--config", required=True)
     judge_parser.add_argument("--benchmark-run-id", required=True)
+    judge_parser.add_argument("--mode", choices=["absolute", "pairwise"], default=None,
+                              help="Grading mode (default: from config judge_default_mode or 'absolute').")
+    judge_parser.add_argument("--anchor-subject", default=None, metavar="NAME",
+                              help="Only grade pairs including this subject (pairwise mode only).")
+    judge_parser.add_argument("--bootstrap-samples", type=int, default=200, metavar="N",
+                              help="Number of bootstrap samples for Bradley-Terry CIs (default 200).")
+    judge_parser.add_argument("--rng-seed", type=int, default=None, metavar="N",
+                              help="RNG seed for reproducible bootstrap sampling.")
     judge_parser.set_defaults(func=_command_run_judge_job)
+
+    calibrate_parser = subparsers.add_parser(
+        "calibrate-judge",
+        help="Replay benchmark items through two judges and report agreement statistics.",
+    )
+    calibrate_parser.add_argument("--config", required=True)
+    calibrate_parser.add_argument("--benchmark-run-id", required=True)
+    calibrate_parser.add_argument("--strong", required=True, metavar="JUDGE_KEY",
+                                  help="Name of the strong/reference judge from the 'judges:' config list.")
+    calibrate_parser.add_argument("--candidate", required=True, metavar="JUDGE_KEY",
+                                  help="Name of the candidate judge to calibrate against the strong judge.")
+    calibrate_parser.add_argument("--max-pairs", type=int, default=50, metavar="N",
+                                  help="Maximum number of pairs (pairwise) or items (absolute) to sample.")
+    calibrate_parser.add_argument("--mode", choices=["absolute", "pairwise"], default="pairwise",
+                                  help="Calibration mode (default: pairwise).")
+    calibrate_parser.add_argument("--rng-seed", type=int, default=None, metavar="N",
+                                  help="RNG seed for reproducible sampling.")
+    calibrate_parser.add_argument("--out", default=None, metavar="PATH",
+                                  help="Optional path to write the JSON report.")
+    calibrate_parser.set_defaults(func=_command_calibrate_judge)
 
     export_parser = subparsers.add_parser("export-artifact-pack", help="Export a Postgres-backed benchmark run to JSON artifacts.")
     export_parser.add_argument("--config", required=True)

@@ -36,12 +36,31 @@
     "reasoning_effort": "xhigh",
     "web_search_enabled": true
   },
+  "judge_default_mode": "absolute",
   "judge": {
     "provider": "openai",
     "model": "gpt-5.4-mini",
     "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
     "request_timeout_seconds": 90
   },
+  "judges": [
+    {
+      "name": "haiku",
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5-20251001",
+      "api_key": "env:ANTHROPIC_API_KEY",
+      "request_timeout_seconds": 90,
+      "weight": 1.0
+    },
+    {
+      "name": "gpt-mini",
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
+      "request_timeout_seconds": 90,
+      "weight": 1.0
+    }
+  ],
   "user_proxy_llm": {
     "provider": "openai",
     "model": "gpt-5.4",

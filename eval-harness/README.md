@@ -18,6 +18,70 @@ Golden images are now target-image driven:
 - after planner approval, setup runs enter a distinct broken-image creation phase while AWS snapshots the staging instance; during that phase the setup-run record persists the transient `broken_image_id` plus AMI state/progress metadata until the image becomes `available`
 - if staging setup fails after launch, the harness captures backend diagnostics before teardown so setup-run metadata includes the failure context
 
+## Judge Design
+
+### Universal Rubric
+
+Every transcript is graded against five fixed criteria applied universally across all scenarios:
+
+1. **Diagnosis correctness** — did the assistant identify the actual root cause introduced by the scenario sabotage?
+2. **Evidence-gathering discipline** — did it request the right diagnostic information before proposing changes?
+3. **Repair safety & specificity** — were proposed commands targeted, free of destructive side effects, and runnable as written?
+4. **User-proxy interaction quality** — were instructions clear and exact enough for a confused human user to follow without guessing?
+5. **Outcome** — did the system end up repaired? (mechanically anchored to `repair_success`, not inferred)
+
+Per-scenario planner rubric items are appended as a `[scenario]`-tagged block and graded alongside the universal items. The universal block (tagged `[universal]`) is what drives cross-subject and cross-scenario aggregates.
+
+**0–4 anchored scale (absolute mode):**
+- `0` wrong/harmful · `1` poor · `2` partial · `3` good · `4` excellent
+- `Outcome` is mechanically enforced: forced to 4 if `repair_success=True`, forced to ≤2 if False.
+
+Each scored criterion carries `rationale` (1–3 sentences) and `evidence` (quoted transcript span).
+
+### Grading Modes
+
+- `--mode absolute` (default): each transcript scored independently on the 0–4 scale. Use for per-subject dashboards and trend tracking.
+- `--mode pairwise`: round-robin head-to-head over all subjects. Each unordered pair is judged twice with order swapped to cancel position bias, then aggregated into Bradley-Terry ratings. Use when N≥2 ablations need a ranking with CIs.
+
+Both modes share the same rubric so absolute and pairwise signals are conceptually aligned.
+
+### Multi-Judge Ensembling
+
+Configure a `judges:` list (see Config Shape) to run multiple providers in parallel:
+- **Absolute mode**: per-criterion scores are averaged (weighted).
+- **Pairwise mode**: fractional-win aggregation before Bradley-Terry fitting.
+
+Variance across judges is persisted as a calibration signal per criterion. A single-entry `judges:` list reproduces single-judge behavior.
+
+**Defaults when no `judges:` is configured:**
+- `--mode pairwise`: Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) via `ANTHROPIC_API_KEY`.
+- `--mode absolute`: Claude Sonnet 4.6 (`claude-sonnet-4-6`) via `ANTHROPIC_API_KEY`.
+
+### Bradley-Terry Aggregation
+
+Pairwise mode fits a Bradley-Terry model over the per-criterion win/loss matrix. Each criterion contributes a separate BT rating; an overall rating is the mean across criteria. Bootstrap resampling over scenarios produces 95% CIs. Raw per-pair win/tie/loss counts are persisted alongside BT ratings for transparency.
+
+`--bootstrap-samples N` (default 200) and `--rng-seed N` make bootstrap reproducible.
+
+### Calibrate-Judge Subcommand
+
+Before replacing a strong judge with a cheaper one, use `calibrate-judge` to quantify agreement:
+
+```bash
+python -m eval_harness calibrate-judge \
+  --config examples/aws_ai_linux_assistant_vs_chatgpt_config.json \
+  --benchmark-run-id <bid> \
+  --strong haiku \
+  --candidate gpt-mini \
+  --max-pairs 50
+```
+
+Outputs:
+- **Pairwise mode**: per-criterion raw agreement on non-tie verdicts + Cohen's κ over `{A, B, tie}`.
+- **Absolute mode**: mean absolute error per criterion + Pearson correlation per criterion.
+
+Pass `--out PATH` to write the JSON report to disk. This subcommand reads the DB only; it never writes `judge_items` rows.
+
 ## Methodology
 
 V1 benchmark flow:
@@ -298,12 +362,45 @@ python -m eval_harness run-benchmark \
   --setup-run-id <verified_setup_run_id>
 ```
 
-Run blind judging:
+Run blind judging (absolute mode, default):
 
 ```bash
 python -m eval_harness run-judge-job \
   --config examples/aws_ai_linux_assistant_config.json \
   --benchmark-run-id <benchmark_run_id>
+```
+
+Run blind judging in pairwise mode:
+
+```bash
+python -m eval_harness run-judge-job \
+  --config examples/aws_ai_linux_assistant_vs_chatgpt_config.json \
+  --benchmark-run-id <benchmark_run_id> \
+  --mode pairwise \
+  --bootstrap-samples 500 \
+  --rng-seed 42
+```
+
+Pairwise against a single anchor subject (cheaper "everyone vs baseline" run):
+
+```bash
+python -m eval_harness run-judge-job \
+  --config examples/aws_ai_linux_assistant_vs_chatgpt_config.json \
+  --benchmark-run-id <benchmark_run_id> \
+  --mode pairwise \
+  --anchor-subject chatgpt-baseline
+```
+
+Calibrate a candidate judge against a stronger reference:
+
+```bash
+python -m eval_harness calibrate-judge \
+  --config examples/aws_ai_linux_assistant_vs_chatgpt_config.json \
+  --benchmark-run-id <benchmark_run_id> \
+  --strong haiku \
+  --candidate gpt-mini \
+  --max-pairs 50 \
+  --out /tmp/calibration_report.json
 ```
 
 Export a JSON artifact pack from Postgres:
@@ -328,11 +425,36 @@ The main config now uses these top-level sections:
 - `backend`
 - `controller`
 - `planner`
-- `judge`
+- `judge` (legacy single-judge block; still accepted)
+- `judges` (preferred; list of judge entries, each with `name`, `provider`, `model`, `api_key`, optional `weight` and `request_timeout_seconds`)
+- `judge_default_mode` (`"absolute"` or `"pairwise"`; default `"absolute"`)
 - `subject_adapters`
 - `subjects`
 
 String values may reference environment variables with `env:VAR_NAME`.
+
+**Back-compat:** if `judge:` is set and `judges:` is not, the single block is wrapped into a one-element list internally. Existing configs require no changes.
+
+**Multi-judge example** (from `aws_ai_linux_assistant_vs_chatgpt_config.json`):
+
+```json
+"judges": [
+  {
+    "name": "haiku",
+    "provider": "anthropic",
+    "model": "claude-haiku-4-5-20251001",
+    "api_key": "env:ANTHROPIC_API_KEY",
+    "weight": 1.0
+  },
+  {
+    "name": "gpt-mini",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "api_key": "env:EVAL_HARNESS_JUDGE_API_KEY",
+    "weight": 1.0
+  }
+]
+```
 
 For the `ai_linux_assistant_http` subject adapter:
 
