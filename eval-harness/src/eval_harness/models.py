@@ -571,6 +571,7 @@ class BlindJudgeRequest:
 class BlindJudgeResult:
     blind_label: str
     summary: str
+    # scores shape: {criterion: {score: int, rationale: str, evidence: str}}
     scores: dict[str, Any]
     raw_response: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -581,6 +582,82 @@ class BlindJudgeResult:
             blind_label=str(payload.get("blind_label", "")).strip(),
             summary=str(payload.get("summary", "")).strip(),
             scores=dict(payload.get("scores", {}) or {}),
+            raw_response=dict(payload.get("raw_response", {}) or {}),
+            metadata=dict(payload.get("metadata", {}) or {}),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return to_primitive(self)
+
+
+@dataclass(frozen=True)
+class PairwiseVerdict:
+    criterion: str
+    winner: Literal["A", "B", "tie"]
+    margin: Literal["slight", "clear", "decisive"]
+    rationale: str
+    evidence_a: str
+    evidence_b: str
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "PairwiseVerdict":
+        return cls(
+            criterion=str(payload.get("criterion", "")).strip(),
+            winner=str(payload.get("winner", "tie")),  # type: ignore[arg-type]
+            margin=str(payload.get("margin", "slight")),  # type: ignore[arg-type]
+            rationale=str(payload.get("rationale", "")),
+            evidence_a=str(payload.get("evidence_a", "")),
+            evidence_b=str(payload.get("evidence_b", "")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return to_primitive(self)
+
+
+@dataclass(frozen=True)
+class PairwiseJudgeRequest:
+    blind_label_a: str
+    blind_label_b: str
+    transcript_a: tuple[TurnRecord, ...]
+    transcript_b: tuple[TurnRecord, ...]
+    rubric: tuple[str, ...]
+    repair_success_a: bool | None = None
+    repair_success_b: bool | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "PairwiseJudgeRequest":
+        return cls(
+            blind_label_a=str(payload.get("blind_label_a", "")).strip(),
+            blind_label_b=str(payload.get("blind_label_b", "")).strip(),
+            transcript_a=tuple(TurnRecord.from_dict(item) for item in payload.get("transcript_a", []) or []),
+            transcript_b=tuple(TurnRecord.from_dict(item) for item in payload.get("transcript_b", []) or []),
+            rubric=tuple(str(item).strip() for item in payload.get("rubric", []) or [] if str(item).strip()),
+            repair_success_a=payload.get("repair_success_a"),
+            repair_success_b=payload.get("repair_success_b"),
+            metadata=dict(payload.get("metadata", {}) or {}),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return to_primitive(self)
+
+
+@dataclass(frozen=True)
+class PairwiseJudgeResult:
+    blind_label_a: str
+    blind_label_b: str
+    summary: str
+    verdicts: tuple[PairwiseVerdict, ...]
+    raw_response: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "PairwiseJudgeResult":
+        return cls(
+            blind_label_a=str(payload.get("blind_label_a", "")).strip(),
+            blind_label_b=str(payload.get("blind_label_b", "")).strip(),
+            summary=str(payload.get("summary", "")).strip(),
+            verdicts=tuple(PairwiseVerdict.from_dict(item) for item in payload.get("verdicts", []) or []),
             raw_response=dict(payload.get("raw_response", {}) or {}),
             metadata=dict(payload.get("metadata", {}) or {}),
         )

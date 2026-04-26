@@ -555,12 +555,16 @@ class EvalHarnessStore:
         self,
         *,
         judge_job_id: str,
-        evaluation_run_id: str,
+        evaluation_run_id: str | None = None,
         blind_label: str,
         blinded_transcript: dict,
         raw_judge_response: dict | None = None,
         parsed_scores: dict | None = None,
         summary: str = "",
+        kind: str = "absolute",
+        judge_name: str | None = None,
+        evaluation_run_id_a: str | None = None,
+        evaluation_run_id_b: str | None = None,
     ) -> JudgeItemRecord:
         with self._session_factory() as session:
             row = JudgeItemRecord(
@@ -571,10 +575,41 @@ class EvalHarnessStore:
                 raw_judge_response_json=dict(raw_judge_response or {}),
                 parsed_scores_json=dict(parsed_scores or {}),
                 summary=summary,
+                kind=kind,
+                judge_name=judge_name,
+                evaluation_run_id_a=evaluation_run_id_a,
+                evaluation_run_id_b=evaluation_run_id_b,
             )
             session.add(row)
             session.commit()
             return row
+
+    def create_pairwise_judge_item(
+        self,
+        *,
+        judge_job_id: str,
+        blind_label: str,
+        blinded_transcript: dict,
+        evaluation_run_id_a: str,
+        evaluation_run_id_b: str,
+        raw_judge_response: dict | None = None,
+        parsed_scores: dict | None = None,
+        summary: str = "",
+        judge_name: str | None = None,
+    ) -> JudgeItemRecord:
+        return self.create_judge_item(
+            judge_job_id=judge_job_id,
+            evaluation_run_id=None,
+            blind_label=blind_label,
+            blinded_transcript=blinded_transcript,
+            raw_judge_response=raw_judge_response,
+            parsed_scores=parsed_scores,
+            summary=summary,
+            kind="pairwise",
+            judge_name=judge_name,
+            evaluation_run_id_a=evaluation_run_id_a,
+            evaluation_run_id_b=evaluation_run_id_b,
+        )
 
     def list_judge_items(self, judge_job_id: str) -> list[JudgeItemRecord]:
         with self._session_factory() as session:

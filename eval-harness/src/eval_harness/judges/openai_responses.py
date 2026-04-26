@@ -6,7 +6,7 @@ from typing import Any
 
 from .base import BlindJudge
 from .schema import blind_judge_schema, normalize_blind_judge_payload
-from ..models import BlindJudgeRequest, BlindJudgeResult
+from ..models import BlindJudgeRequest, BlindJudgeResult, PairwiseJudgeRequest, PairwiseJudgeResult
 from ..openai_responses import OpenAIResponsesClient, OpenAIResponsesClientConfig
 
 
@@ -71,3 +71,6 @@ class OpenAIResponsesBlindJudge(BlindJudge):
             schema_description="Blind benchmark grading result.",
         )
         return BlindJudgeResult.from_dict(normalize_blind_judge_payload(payload, blind_label=request.blind_label))
+
+    def compare(self, request: PairwiseJudgeRequest) -> PairwiseJudgeResult:
+        raise NotImplementedError("phase 2")

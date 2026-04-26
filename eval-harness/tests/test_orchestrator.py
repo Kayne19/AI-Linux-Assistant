@@ -390,6 +390,9 @@ class FakeJudge(BlindJudge):
             raw_response={"blind_label": request.blind_label},
         )
 
+    def compare(self, request: "PairwiseJudgeRequest") -> "PairwiseJudgeResult":  # type: ignore[override]
+        raise NotImplementedError("phase 2")
+
 
 @dataclass
 class FakeUserProxyLLM:

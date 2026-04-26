@@ -69,8 +69,11 @@ def test_blind_judge_uses_structured_output_and_backfills_defaults() -> None:
     assert judge.calls[0]["schema_name"] == "blind_judge_result"
     assert result.blind_label == "candidate-1"
     assert result.summary.startswith("The assistant converged")
-    assert result.scores == {"diagnosis": 4, "efficiency": 3}
-    assert result.raw_response["scores"]["diagnosis"] == 4
+    assert result.scores == {
+        "diagnosis": {"score": 4, "rationale": "", "evidence": ""},
+        "efficiency": {"score": 3, "rationale": "", "evidence": ""},
+    }
+    assert result.raw_response["scores"]["diagnosis"]["score"] == 4
 
 
 def test_blind_judge_normalizes_wire_score_items_to_persisted_score_dict() -> None:
@@ -98,12 +101,12 @@ def test_blind_judge_normalizes_wire_score_items_to_persisted_score_dict() -> No
     result = judge.grade(request)
 
     assert result.scores == {
-        "Correct diagnosis": 4,
-        "Efficient troubleshooting": 3,
+        "Correct diagnosis": {"score": 4, "rationale": "", "evidence": ""},
+        "Efficient troubleshooting": {"score": 3, "rationale": "", "evidence": ""},
     }
     assert result.raw_response["scores"] == {
-        "Correct diagnosis": 4,
-        "Efficient troubleshooting": 3,
+        "Correct diagnosis": {"score": 4, "rationale": "", "evidence": ""},
+        "Efficient troubleshooting": {"score": 3, "rationale": "", "evidence": ""},
     }
 
 

@@ -186,12 +186,16 @@ class JudgeItemRecord(Base):
     judge_job_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("judge_jobs.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    evaluation_run_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    evaluation_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=True, index=True
     )
     blind_label: Mapped[str] = mapped_column(String(120), nullable=False)
     blinded_transcript_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     raw_judge_response_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     parsed_scores_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="absolute")
+    judge_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    evaluation_run_id_a: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    evaluation_run_id_b: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
