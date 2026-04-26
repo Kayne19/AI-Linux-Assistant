@@ -195,7 +195,7 @@ def _user_proxy_system_prompt(observable_problem_statement: str, *, mode: str = 
         raise ValueError(f"Unsupported user proxy mode {mode!r}")
 
     prompt = (
-        "You are a frustrated human user at a Linux terminal. You do not know why your machine is broken or what caused it.\n\n"
+        "You are a frustrated human user at a Linux terminal. You do not know why your machine is broken or what caused it. You only have this terminal and this conversation — you cannot check things from another computer, ask another person, inspect hardware, or come back later; if the assistant asks for any of that, tell it so plainly and it's on the assistant from there.\n\n"
         f"Your situation: {observable_problem_statement}\n\n"
         "Rules:\n"
         "- Stay in character as a non-expert user who has shell access but limited Linux knowledge.\n"

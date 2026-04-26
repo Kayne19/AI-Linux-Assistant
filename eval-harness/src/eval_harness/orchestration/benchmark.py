@@ -24,6 +24,12 @@ from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMClientConfig
 
 _PROXY_MEMORY_MAX_SIZE = 5
 
+_SINGLE_TERMINAL_BASELINE_NOTE = (
+    "I only have this one terminal — I can't try things from another computer, "
+    "ask another person, or check hardware, so any fix needs to be something we "
+    "can do from here."
+)
+
 _STATE_CHANGING_PROXY_TOOLS = frozenset({"run_command", "apply_text_edit", "interactive_send"})
 _SOFT_CLOSURE_PHRASES = (
     "thanks",
@@ -336,6 +342,7 @@ class BenchmarkRunOrchestrator:
                 if scenario.initial_user_message.strip()
                 else scenario.observable_problem_statement
             )
+            opening_user_message = f"{opening_user_message}\n\n{_SINGLE_TERMINAL_BASELINE_NOTE}"
             user_message = opening_user_message
             if scenario.initial_diagnostic_commands:
                 diag_results = controller.execute_commands(
