@@ -303,12 +303,12 @@ Preferred future:
 
 - Status: `Watch`
 - Owner: [orchestration/evidence_pool.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/evidence_pool.py)
-- Code: `_mark_scope_exhaustion()`, `check_gate()`
+- Code: `_mark_scope_exhaustion()`
 
 What it does:
 
 - marks repeated low/zero usefulness as soft or hard exhausted
-- returns retrieval-state signals such as `allow_net_new_only`, `require_reason`, or `block`
+- surfaces those flags in the `EVIDENCE POOL SUMMARY` block injected into the next prompt so the model can pivot to `web_search` or change scope on its own
 - keeps repeated same-scope retrieval executable while preserving net-new exclusions and trace metadata
 
 Why it exists:
@@ -318,35 +318,35 @@ Why it exists:
 
 Risks:
 
-- can spend extra retrieval calls if the model ignores exhaustion signals
-- can still bias the model through signal wording even though search is allowed
+- can spend extra retrieval calls if the model ignores the prompt-level exhaustion cue
+- exhaustion is a hint, not a wall — overly aggressive RAG retries are mitigated only by prompt steering and the per-turn tool budget
 
 Preferred future:
 
 - keep observable through `evidence_pool_update` and `retrieval_signal`
 - tune with router runtime tests and real debug traces
 
-### Web Fallback Allowance
+### Web Search Availability
 
-- Status: `Accepted`, `Watch`
-- Owner: [orchestration/evidence_pool.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/evidence_pool.py)
-- Code: `historian_web_fallback_allowed()`
+- Status: `Accepted`
+- Owner: [providers/anthropic_caller.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/providers/anthropic_caller.py), [providers/openAI_caller.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/providers/openAI_caller.py)
 
 What it does:
 
-- allows Historian web fallback only when retrieval is exhausted or latest usefulness is `low` / `zero`
+- offers native `web_search` to the responder and to every Magi role except Arbiter on every tool-loop turn (Magi closing stays toolless by design)
+- prompts steer RAG-first for project-local material; the model picks `web_search` for anything outside the corpus
 
 Why it exists:
 
-- keeps local RAG primary and makes web search fallback behavior explicit
+- web fallback used to be gated by a router callback (`historian_web_fallback_allowed`) and split across two injection paths; both responder and Magi now use one provider tool loop with one always-on tool surface
 
 Risks:
 
-- can delay web search when local docs are stale but not obviously exhausted
+- the model can over-use `web_search` for questions answerable from RAG; mitigated by prompt steering rather than hard gates
 
 Preferred future:
 
-- keep conservative
+- if web overuse shows up in traces, address it via prompt or per-turn rate limit, not by reintroducing a fallback decider
 - revisit after freshness metadata is fully used by retrieval and answer synthesis
 
 ### Repeat Reason And Gap Type Vocabularies

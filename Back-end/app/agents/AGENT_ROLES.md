@@ -20,18 +20,15 @@ The system employs several specialized agents to handle specific phases of the r
 - **Memory Resolver**: Merges extracted candidates with existing project memory, resolving conflicts and updating stale information.
 - **Summarizers**: Create concise representations of conversation history or retrieved documents to maintain context efficiency.
 
-## Regular Responder Mini-Protocol
+## Regular Responder Tool Surface
 
-The normal responder now borrows MAGI's search discipline without becoming MAGI.
+The normal responder runs a single provider tool loop — same shape every Magi role uses.
 
-- the router owns a lightweight `DECIDE_NEXT_STEP -> SEARCH -> EVALUATE_TOOL_RESULT -> FINALIZE_RESPONSE` mini-protocol for non-MAGI turns
-- before any regular-responder retrieval or web lookup, the model must choose `answer_now`, `ask_focused_follow_up_questions`, `search`, or `web_lookup`
-- search decisions must include explicit justification for the router, including `evidence_gap`, `unresolved_gap`, and why the current evidence is insufficient
-- `gap_type` may optionally identify a `procedural_doc_gap`, `environment_fact_gap`, or `confirmation_gap`
-- after each responder search, the model must evaluate what new evidence was added, what gap was reduced if any, and whether another search is still justified
-- the router and evidence pool remain the authority on whether another search is allowed; the evaluation step also supplies qualitative gap-progress feedback for regular-chat usefulness scoring
-- when the unresolved gap is mainly about the user's real environment, the responder should prefer 1 to 3 tightly related follow-up questions instead of speculative extra retrieval
-- repeated same-scope responder retrieval requires a named `repeat_reason`
+- tools available every turn: `search_rag_database`, `search_conversation_history`, native `web_search`, and the optional memory-store tools when a memory store is wired up
+- the model picks: RAG for project-local questions, `web_search` for anything outside the corpus, answer when it has enough
+- `search_rag_database` accepts an optional `progress_assessment` field on 2nd-or-later calls in the same turn — the model uses it to evaluate the prior search; the router forwards it to `EvidencePool.apply_qualitative_evaluation` before running the new retrieval
+- `evidence_gap`, `gap_type`, and `repeat_reason` remain on the schema as optional structured hints used for evidence-pool memo and prompt-side scope tracking, not as gates
+- when the unresolved gap is mainly about the user's environment, the responder should prefer 1 to 3 tightly focused follow-up questions instead of speculative extra retrieval
 
 ## Magi System (Multi-Agent Deliberation)
 
@@ -79,17 +76,16 @@ Roles that attempt retrieval on an exhausted scope receive a router-owned `retri
 - `expand_beyond_covered_region`
 - `fill_named_unresolved_gap`
 
-Current MAGI rule:
+Current rule:
 
-- soft exhaustion signals `require_reason`
-- hard exhaustion signals `block`
-- the normal responder uses the same evidence-pool machinery, but through its own router-owned mini-protocol and without changing MAGI's role contracts or prompts
+- the evidence pool is a memo, not a gate — it records queries, scopes, usefulness, covered regions, and exclusions; it never blocks or rejects a tool call
+- both the regular responder and every Magi role except Arbiter share the same provider tool loop and the same `_handle_responder_tool_call`; soft/hard exhaustion now manifests only through the `EVIDENCE POOL SUMMARY` block injected into the next prompt
+- on a 2nd-or-later `search_rag_database` call in the same turn, the model passes `progress_assessment` describing the prior search; the handler forwards it to `EvidencePool.apply_qualitative_evaluation` before running the new retrieval
 
-Current Historian fallback rule:
+Current Historian web rule:
 
-- Historian keeps local corpus retrieval first
-- provider-native web search may be enabled only for Historian opening/discussion rounds
-- that fallback is router-controlled and only appears after local low-usefulness or exhausted retrieval state
+- Historian (and Eager / Skeptic) gets native `web_search` on every opening and discussion round; closing stays toolless
+- prompts steer RAG-first for project-local material; the model picks `web_search` for anything outside the corpus
 
 ## Traceability
 

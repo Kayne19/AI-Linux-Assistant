@@ -45,14 +45,12 @@ If a behavior materially changes the lifecycle of a turn, it belongs in the rout
 
 Current regular-chat rule:
 
-- the normal responder now runs as a router-owned bounded protocol
-- provider adapters return a single model step at a time
-- before any regular-responder retrieval or web lookup, the router now requires a named responder decision step that chooses `answer_now`, `ask_focused_follow_up_questions`, `search`, or `web_lookup`
-- search decisions must carry explicit justification fields such as `evidence_gap`, `unresolved_gap`, and `why_current_evidence_is_insufficient`; `gap_type` may further distinguish procedural-doc, environment-fact, and confirmation gaps
-- after each router-executed responder search, the router requires a responder evaluation step before any further search is considered
-- repeated same-scope responder retrieval emits evidence-pool signals such as `require_reason` or `block`, but these are prompt-level cues rather than hard blockers
-- the router keeps retrieval progressive through coverage exclusions, qualitative evaluation, and the total tool budget; it does not finalize early solely because RAG made no progress
-- Magi remains separately bounded by its explicit deliberation phases and keeps the shared tool-result text contract unchanged
+- the FSM bounds the chat (`classify -> retrieve_context -> generate_response -> update_history -> memory`); within `generate_response` the responder (or a Magi role) runs a normal provider tool loop
+- the responder and every Magi role except Arbiter share the same tool surface — `search_rag_database`, `search_conversation_history`, native `web_search`, and the optional memory-store tools — and the same `_handle_responder_tool_call` handler
+- `web_search` is always offered to the model; the model decides RAG-first vs. web-first based on the question, with no router-side fallback gate
+- on a 2nd-or-later `search_rag_database` call in the same turn, the model passes `progress_assessment` describing the prior search, and the handler forwards that to `EvidencePool.apply_qualitative_evaluation` before running the new retrieval
+- the evidence pool stays a memo: it tracks queries, covered regions, and exclusions used to dedupe and to compose a "you've already searched X" block in the next role prompt; it does not gate or block tool calls
+- Magi keeps its discrete phases (opening / discussion / closing / arbiter); only closing is toolless
 
 ### 1a. Durable Run State Owns Concurrency Policy
 
@@ -212,12 +210,10 @@ Evidence pool responsibilities (router-owned):
 - derive run-scoped retrieval scopes from labels plus normalized `evidence_gap` / unresolved gap state instead of raw query text alone
 - track covered region keys so downstream calls exclude already-delivered pages
 - classify each retrieval outcome: `delivered_new_evidence`, `cache_hit`, `reused_known_evidence`, `no_new_evidence`, `search_exhausted_for_scope`
-- record model-supplied usefulness as `high`, `medium`, `low`, or `zero` relative to the active evidence gap
-- track soft/hard scope exhaustion from repeated low-value outcomes
-- signal repeated same-scope retrieval state for both the normal responder and MAGI via `allow`, `allow_net_new_only`, `require_reason`, or `block`
-- preserve those signals for the normal responder mini-protocol without changing MAGI's own role contracts
+- record model-supplied usefulness as `high`, `medium`, `low`, or `zero` relative to the active evidence gap — applied via `apply_qualitative_evaluation`, fed by the `progress_assessment` field on `search_rag_database` from the 2nd call onward
+- track soft/hard scope exhaustion from repeated low-value outcomes for memo purposes; the pool no longer gates or blocks tool calls
 - emit `evidence_pool_update` after every retrieval so the stream can reflect coverage state
-- build a short `EVIDENCE POOL SUMMARY` block injected into MAGI role prompts
+- build a short `EVIDENCE POOL SUMMARY` block injected into responder and Magi role prompts so the model sees what's already been searched
 
 Retrieval pipeline responsibilities (search-pipeline-owned):
 
