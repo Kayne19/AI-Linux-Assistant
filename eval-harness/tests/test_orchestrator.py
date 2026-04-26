@@ -1292,7 +1292,8 @@ def test_judge_job_blinds_subject_identity() -> None:
     judge = FakeJudge()
     result = JudgeJobOrchestrator(judge=judge, store=store).run(benchmark_run_id=benchmark.id)
 
-    assert len(result.judge_item_ids) == 1
+    # run() now produces 1 absolute row + 1 aggregate row per subject.
+    assert len(result.judge_item_ids) == 2
     assert len(judge.requests) == 1
     request = judge.requests[0]
     assert request.blind_label == "candidate-1"
