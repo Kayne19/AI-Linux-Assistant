@@ -5,13 +5,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from .base import BlindJudge
-from .schema import blind_judge_schema, normalize_blind_judge_payload
+from ._prompts import build_absolute_instructions, build_pairwise_instructions
+from .schema import (
+    blind_judge_absolute_schema,
+    blind_judge_pairwise_schema,
+    normalize_blind_judge_payload,
+    normalize_pairwise_judge_payload,
+)
 from ..models import BlindJudgeRequest, BlindJudgeResult, PairwiseJudgeRequest, PairwiseJudgeResult
 from ..openai_responses import OpenAIResponsesClient, OpenAIResponsesClientConfig
 
 
 def _blind_judge_schema() -> dict[str, Any]:
-    return blind_judge_schema()
+    return blind_judge_absolute_schema()
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,7 @@ class OpenAIResponsesBlindJudge(BlindJudge):
                 request_timeout_seconds=config.request_timeout_seconds,
                 max_output_tokens=config.max_output_tokens,
                 reasoning_effort=config.reasoning_effort,
+                temperature=0.0,
             )
         )
 
@@ -59,18 +66,25 @@ class OpenAIResponsesBlindJudge(BlindJudge):
 
     def grade(self, request: BlindJudgeRequest) -> BlindJudgeResult:
         payload = self._request_json_schema(
-            instructions=(
-                "You are a blind benchmark judge. Grade the transcript against the rubric without inferring system identity. "
-                "Return structured data with blind_label, summary, and scores. "
-                "The scores field must be an array with one item per rubric entry. "
-                "Each item must contain the rubric text unchanged in criterion and an integer score."
-            ),
+            instructions=build_absolute_instructions(request.rubric),
             user_input=json.dumps(request.to_dict(), indent=2),
             schema_name="blind_judge_result",
-            schema=_blind_judge_schema(),
+            schema=blind_judge_absolute_schema(),
             schema_description="Blind benchmark grading result.",
         )
         return BlindJudgeResult.from_dict(normalize_blind_judge_payload(payload, blind_label=request.blind_label))
 
     def compare(self, request: PairwiseJudgeRequest) -> PairwiseJudgeResult:
-        raise NotImplementedError("phase 2")
+        payload = self._request_json_schema(
+            instructions=build_pairwise_instructions(request.rubric),
+            user_input=json.dumps(request.to_dict(), indent=2),
+            schema_name="pairwise_judge_result",
+            schema=blind_judge_pairwise_schema(),
+            schema_description="Blind benchmark pairwise verdict.",
+        )
+        normalized = normalize_pairwise_judge_payload(
+            payload,
+            blind_label_a=request.blind_label_a,
+            blind_label_b=request.blind_label_b,
+        )
+        return PairwiseJudgeResult.from_dict(normalized)

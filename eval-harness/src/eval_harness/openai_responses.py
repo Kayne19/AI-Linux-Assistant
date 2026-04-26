@@ -25,6 +25,7 @@ class OpenAIResponsesClientConfig:
     request_timeout_seconds: float | None = None
     max_output_tokens: int | None = None
     reasoning_effort: str | None = None
+    temperature: float | None = None
 
 
 @dataclass(frozen=True)
@@ -214,12 +215,16 @@ class OpenAIResponsesClient:
         user: str | None = None,
         metadata: dict[str, Any] | None = None,
         background: bool = False,
+        temperature: float | None = None,
     ) -> Any:
         request_kwargs: dict[str, Any] = {
             "model": self.config.model,
             "instructions": instructions,
             "input": self._normalize_input_items(input_items),
         }
+        resolved_temperature = self.config.temperature if temperature is None else temperature
+        if resolved_temperature is not None:
+            request_kwargs["temperature"] = resolved_temperature
         resolved_max_output_tokens = self.config.max_output_tokens if max_output_tokens is None else max_output_tokens
         if resolved_max_output_tokens is not None:
             request_kwargs["max_output_tokens"] = resolved_max_output_tokens

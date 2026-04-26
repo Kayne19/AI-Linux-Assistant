@@ -18,6 +18,7 @@ class GoogleGenAIStructuredOutputClientConfig:
     request_timeout_seconds: float | None = None
     max_output_tokens: int | None = None
     reasoning_effort: str | None = None
+    temperature: float | None = None
 
 
 class GoogleGenAIStructuredOutputClient:
@@ -56,6 +57,8 @@ class GoogleGenAIStructuredOutputClient:
         resolved_max_output_tokens = self.config.max_output_tokens if max_output_tokens is None else max_output_tokens
         if resolved_max_output_tokens is not None:
             config["max_output_tokens"] = resolved_max_output_tokens
+        if self.config.temperature is not None:
+            config["temperature"] = self.config.temperature
         response = self.client.models.generate_content(
             model=self.config.model,
             contents=user_input,

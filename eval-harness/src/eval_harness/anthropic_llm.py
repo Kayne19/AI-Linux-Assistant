@@ -17,6 +17,7 @@ class AnthropicStructuredOutputClientConfig:
     request_timeout_seconds: float | None = None
     max_output_tokens: int | None = None
     reasoning_effort: str | None = None
+    temperature: float | None = None
 
 
 class AnthropicStructuredOutputClient:
@@ -61,6 +62,8 @@ class AnthropicStructuredOutputClient:
             ],
             "tool_choice": {"type": "tool", "name": schema_name},
         }
+        if self.config.temperature is not None:
+            request_kwargs["temperature"] = self.config.temperature
         response = self.client.messages.create(**request_kwargs)
         for block in getattr(response, "content", []) or []:
             if getattr(block, "type", None) == "tool_use" and getattr(block, "name", "") == schema_name:
