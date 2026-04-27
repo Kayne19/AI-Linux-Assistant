@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .base import InteractiveSession, SandboxController, SandboxControllerFactory
+from ..aws_auth import preflight_aws
 from ..backends.base import SandboxHandle
 from ..models import CommandExecutionResult, utc_now_iso
 
@@ -145,12 +146,20 @@ class SsmController(SandboxController):
 
     name = "ssm"
 
-    def __init__(self, config: SsmControllerConfig, *, ssm_client: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: SsmControllerConfig,
+        *,
+        ssm_client: Any | None = None,
+        skip_preflight: bool = False,
+    ) -> None:
         self.config = config
         self._interactive_sessions: dict[str, SsmInteractiveSession] = {}
         if ssm_client is not None:
             self._ssm = ssm_client
         else:
+            if not skip_preflight:
+                preflight_aws()
             self._ssm = None  # lazily initialised on first use
 
     def _client(self) -> Any:
@@ -300,4 +309,6 @@ class SsmControllerFactory(SandboxControllerFactory):
             default_session_key=session_key,
             command_timeout_seconds=self.config.command_timeout_seconds,
         )
-        return SsmController(controller_config, ssm_client=self._ssm_client)
+        # Skip preflight for sub-controllers opened from an already-initialised
+        # factory — preflight runs once at factory construction time instead.
+        return SsmController(controller_config, ssm_client=self._ssm_client, skip_preflight=True)

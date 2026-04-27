@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+from ..aws_auth import preflight_aws
+
 
 @dataclass(frozen=True)
 class AwsPackerBuildRequest:
@@ -129,7 +131,10 @@ def build_golden_ami(
     request: AwsPackerBuildRequest,
     *,
     output_stream: TextIO | None = None,
+    skip_preflight: bool = False,
 ) -> AwsPackerBuildResult:
+    if not skip_preflight:
+        preflight_aws(require_packer=True, require_aws_cli=True)
     stream = output_stream or sys.stderr
     subprocess_env = os.environ.copy()
     subprocess_env.update(_load_exported_aws_credentials())

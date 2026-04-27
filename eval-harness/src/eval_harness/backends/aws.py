@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from .aws_packer import AwsPackerBuildRequest, build_golden_ami
 from .base import SandboxBackend, SandboxHandle
+from ..aws_auth import preflight_aws, resolve_aws_profile
 from ..runtime.ssm import wait_for_ssm_online
 
 try:
@@ -83,10 +84,14 @@ class AwsEc2Backend(SandboxBackend):
         ec2_client: Any | None = None,
         ssm_client: Any | None = None,
         golden_image_builder: Callable[[AwsPackerBuildRequest], Any] = build_golden_ami,
+        skip_preflight: bool = False,
     ):
         if ec2_client is None or ssm_client is None:
             _require_boto3()
+        if not skip_preflight and ec2_client is None:
+            preflight_aws()
         self.config = config
+        profile, _region = resolve_aws_profile()
         self.ec2 = ec2_client or boto3.client("ec2", region_name=config.region)
         self.ssm = ssm_client or boto3.client("ssm", region_name=config.region)
         self._golden_image_builder = golden_image_builder
