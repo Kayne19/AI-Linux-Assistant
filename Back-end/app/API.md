@@ -53,7 +53,8 @@ Public eval-harness note:
 
 - the eval harness talks to this backend API directly
 - it does not need the React frontend to be exposed
-- the supported public path is normal bearer-token auth against the existing protected routes
+- the supported public path is Auth0 M2M (client-credentials) tokens sent as normal `Authorization: Bearer` headers
+- protected routes accept M2M tokens identically to user tokens — there is no separate code path; the verifier and user-provisioning logic handle both transparently
 
 ### Projects
 

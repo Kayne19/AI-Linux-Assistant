@@ -96,6 +96,13 @@ def test_subject_adapter_selection_supports_ai_linux_assistant_http_and_openai_c
                 "ai_linux_assistant_http": {
                     "type": "ai_linux_assistant_http",
                     "base_url": "https://ai.example.invalid",
+                    "auth0_m2m": {
+                        "token_url": "https://tenant.example.invalid/oauth/token",
+                        "audience": "https://api.example.invalid",
+                        "clients_by_subject": {
+                            "regular": {"client_id": "rid", "client_secret": "rsec"},
+                        },
+                    },
                 },
                 "openai_chatgpt": {
                     "type": "openai_chatgpt",

@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-import base64
-import json
-
-import pytest
-
 from eval_harness.adapters.ai_linux_assistant_http import AILinuxAssistantHttpConfig, AILinuxAssistantHttpSession
-from eval_harness.adapters.base import AdapterError
+from eval_harness.adapters.auth0_m2m import Auth0M2MConfig, ClientCreds
 from eval_harness.models import RunEvent, RunEventType, SubjectSpec, TurnSeed
 
 
-def _jwt_with_exp(exp: int) -> str:
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).decode().rstrip("=")
-    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
-    return f"{header}.{payload}."
+def _m2m_config_for_subjects(*subject_names: str) -> Auth0M2MConfig:
+    return Auth0M2MConfig(
+        token_url="https://tenant.example.invalid/oauth/token",
+        audience="https://api.example.invalid",
+        clients_by_subject={
+            name: ClientCreds(client_id=f"{name}-id", client_secret=f"{name}-secret")
+            for name in subject_names
+        },
+    )
 
 
 class FakeAILinuxAssistantHttpSession(AILinuxAssistantHttpSession):
@@ -27,6 +27,13 @@ class FakeAILinuxAssistantHttpSession(AILinuxAssistantHttpSession):
             benchmark_run_id=benchmark_run_id,
             subject=subject,
         )
+
+    def _build_token_provider(self):
+        class _StaticProvider:
+            def get_access_token(self_inner) -> str:
+                return "static-test-token"
+
+        return _StaticProvider()
 
     def _request_json(self, method: str, path: str, *, payload: dict | None = None):
         self.requests.append((method.upper(), path, dict(payload) if payload is not None else None))
@@ -57,7 +64,10 @@ class FakeAILinuxAssistantHttpSession(AILinuxAssistantHttpSession):
 
 
 def test_ai_linux_assistant_http_session_keeps_only_context_seed_and_user_request() -> None:
-    config = AILinuxAssistantHttpConfig(base_url="https://example.invalid")
+    config = AILinuxAssistantHttpConfig(
+        base_url="https://example.invalid",
+        auth0_m2m=_m2m_config_for_subjects("magi-full"),
+    )
     subject = SubjectSpec(
         subject_name="magi-full",
         adapter_type="ai_linux_assistant_http",
@@ -88,7 +98,10 @@ def test_ai_linux_assistant_http_session_keeps_only_context_seed_and_user_reques
 
 
 def test_ai_linux_assistant_http_session_abort_cancels_active_run() -> None:
-    config = AILinuxAssistantHttpConfig(base_url="https://example.invalid")
+    config = AILinuxAssistantHttpConfig(
+        base_url="https://example.invalid",
+        auth0_m2m=_m2m_config_for_subjects("regular"),
+    )
     subject = SubjectSpec(
         subject_name="regular",
         adapter_type="ai_linux_assistant_http",
@@ -109,17 +122,3 @@ def test_ai_linux_assistant_http_session_abort_cancels_active_run() -> None:
     assert ("POST", "/runs/run-1/cancel", {}) in session.requests
 
 
-def test_ai_linux_assistant_http_session_rejects_expired_bearer_token() -> None:
-    config = AILinuxAssistantHttpConfig(base_url="https://example.invalid")
-    subject = SubjectSpec(
-        subject_name="regular",
-        adapter_type="ai_linux_assistant_http",
-        adapter_config={"bearer_token": _jwt_with_exp(1)},
-    )
-
-    with pytest.raises(AdapterError, match="expired bearer token"):
-        FakeAILinuxAssistantHttpSession(
-            config=config,
-            benchmark_run_id="bench-1",
-            subject=subject,
-        )

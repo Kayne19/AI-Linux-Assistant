@@ -82,15 +82,19 @@ Important:
 
 ## Auth Model For Eval Harness
 
-The public eval-harness path currently expects copied Auth0 user access tokens, sent as normal bearer tokens to the backend API.
+The supported public-benchmark auth path is Auth0 M2M (client-credentials grant). The harness obtains short-lived access tokens automatically and refreshes them mid-run — no manual token pasting is required.
 
-Recommended harness env/config:
+Required harness env/config:
 
 - `EVAL_HARNESS_AI_API_BASE_URL=https://api.<your-domain>`
-- either `default_bearer_token`
-- or `bearer_tokens_by_subject`
+- six M2M client credentials in `eval-harness/.env`:
+  - `EVAL_HARNESS_REGULAR_CLIENT_ID` / `EVAL_HARNESS_REGULAR_CLIENT_SECRET`
+  - `EVAL_HARNESS_MAGI_LITE_CLIENT_ID` / `EVAL_HARNESS_MAGI_LITE_CLIENT_SECRET`
+  - `EVAL_HARNESS_MAGI_FULL_CLIENT_ID` / `EVAL_HARNESS_MAGI_FULL_CLIENT_SECRET`
 
-Do not rely on `legacy_bootstrap_usernames_by_subject` against a public API.
+Each client maps to one benchmark subject and becomes its own backend user. Create three M2M applications in the Auth0 dashboard and authorize each for the backend API audience.
+
+Do not enable legacy bootstrap auth on a public API deployment.
 
 ## Cloudflare Tunnel
 

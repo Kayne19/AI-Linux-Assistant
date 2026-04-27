@@ -88,9 +88,29 @@ Identity mapping rules:
 
 Eval-harness note:
 
-- the harness can call the public backend API with copied Auth0 user access tokens
-- those tokens are still sent as normal `Authorization: Bearer ...` headers
+- the harness calls the public backend API using Auth0 M2M tokens obtained via the client-credentials grant
+- those tokens are sent as normal `Authorization: Bearer ...` headers — no separate code path exists for M2M
 - this is preferable to enabling the legacy bootstrap path on a public deployment
+
+## M2M / Service Principals
+
+The backend accepts Auth0 client-credentials tokens on every protected route without any additional code path.
+
+Key points:
+
+- grant type: `client_credentials`
+- `sub` shape: `<client_id>@clients` (no email or profile claims are present)
+- the verifier (`Back-end/app/auth/auth0.py`) validates RS256 signature, issuer, audience, and expiry identically for both user and M2M tokens
+- `find_or_create_auth_user` in `postgres_app_store.py` keys on `(auth_provider, auth_subject)` and provisions a service-principal User row automatically when a new M2M client connects — no manual DB seeding is required
+- each M2M client becomes its own distinct backend user, which preserves subject isolation and avoids sharing the per-user active-run cap
+
+**Auth0 setup (one M2M application per benchmark subject):**
+
+1. In the Auth0 Dashboard, create a Machine to Machine application for each subject (e.g., `eval-regular`, `eval-magi-lite`, `eval-magi-full`).
+2. Under each application's APIs tab, authorize it for the backend audience (`AUTH0_AUDIENCE`).
+3. Copy the `client_id` and `client_secret` into `eval-harness/.env` under the corresponding `EVAL_HARNESS_*_CLIENT_ID` / `EVAL_HARNESS_*_CLIENT_SECRET` vars.
+
+**Deferred:** scope-level or client-level allowlisting is intentionally not enforced in the current revision. Any authorized M2M client can call all normal protected routes. Restricting by scope or audience grant is a planned follow-up.
 
 ## Protected Routes
 

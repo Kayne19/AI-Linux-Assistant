@@ -75,10 +75,17 @@
       "poll_interval_seconds": 1,
       "poll_timeout_seconds": 1800,
       "project_name_prefix": "eval-harness",
-      "bearer_tokens_by_subject": {
-        "regular": "env:EVAL_HARNESS_REGULAR_TOKEN",
-        "magi-lite": "env:EVAL_HARNESS_MAGI_LITE_TOKEN",
-        "magi-full": "env:EVAL_HARNESS_MAGI_FULL_TOKEN"
+      "auth0_m2m": {
+        "token_url": "https://dev-zmpl3ep7fvg568c0.us.auth0.com/oauth/token",
+        "audience": "https://ai-linux-assistant-api.local",
+        "refresh_skew_seconds": 60,
+        "scope": null,
+        "organization": null,
+        "clients_by_subject": {
+          "regular":   { "client_id": "env:EVAL_HARNESS_REGULAR_CLIENT_ID",   "client_secret": "env:EVAL_HARNESS_REGULAR_CLIENT_SECRET" },
+          "magi-lite": { "client_id": "env:EVAL_HARNESS_MAGI_LITE_CLIENT_ID", "client_secret": "env:EVAL_HARNESS_MAGI_LITE_CLIENT_SECRET" },
+          "magi-full": { "client_id": "env:EVAL_HARNESS_MAGI_FULL_CLIENT_ID", "client_secret": "env:EVAL_HARNESS_MAGI_FULL_CLIENT_SECRET" }
+        }
       }
     },
     "openai_chatgpt": {

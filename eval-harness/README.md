@@ -312,9 +312,38 @@ The CLI autoloads that file from the harness root.
 For the public AI Linux Assistant API path:
 
 - point `EVAL_HARNESS_AI_API_BASE_URL` at the public backend hostname, for example `https://api.<your-domain>`
-- use copied Auth0 user access tokens in `bearer_tokens_by_subject` or `default_bearer_token`
-- bearer tokens that decode to an expired JWT `exp` are rejected during adapter session startup, before the benchmark fan-out begins
-- do not rely on `legacy_bootstrap_usernames_by_subject` against a public deployment
+- authenticate using Auth0 M2M credentials — the harness fetches and refreshes tokens automatically, so no manual JWT pasting is needed
+- do not rely on legacy bootstrap auth against a public deployment
+
+### M2M Auth Setup
+
+The harness uses the Auth0 client-credentials grant, with one M2M application per benchmark subject. This keeps each subject isolated as its own backend user and avoids sharing the per-user active-run cap.
+
+**Auth0 steps (one-time):**
+
+1. In the Auth0 Dashboard, create three Machine to Machine applications:
+   - `eval-regular`
+   - `eval-magi-lite`
+   - `eval-magi-full`
+2. Under each application's APIs tab, authorize it for the backend API audience (the value in `AUTH0_AUDIENCE` on the backend).
+3. Copy each application's `client_id` and `client_secret` into `eval-harness/.env`.
+
+**Required env vars in `eval-harness/.env`:**
+
+```
+EVAL_HARNESS_REGULAR_CLIENT_ID=<set-me>
+EVAL_HARNESS_REGULAR_CLIENT_SECRET=<set-me>
+EVAL_HARNESS_MAGI_LITE_CLIENT_ID=<set-me>
+EVAL_HARNESS_MAGI_LITE_CLIENT_SECRET=<set-me>
+EVAL_HARNESS_MAGI_FULL_CLIENT_ID=<set-me>
+EVAL_HARNESS_MAGI_FULL_CLIENT_SECRET=<set-me>
+```
+
+These are referenced from the example configs via `env:EVAL_HARNESS_*` placeholders. Do not commit real secrets.
+
+**Token lifecycle:** the harness caches each token and re-fetches it automatically when it is within `refresh_skew_seconds` (default 60) of expiry. Long benchmark runs survive token-expiry boundaries without intervention.
+
+**Rotating a client secret:** update the secret in the Auth0 Dashboard, then update the corresponding `EVAL_HARNESS_*_CLIENT_SECRET` in `eval-harness/.env`. The running harness picks up the new secret on the next token refresh cycle. No benchmark restart is needed mid-run as long as the old secret is still valid when the harness last fetched a token.
 
 Initialize the eval-harness schema:
 
@@ -460,7 +489,7 @@ For the `ai_linux_assistant_http` subject adapter:
 
 - the harness talks to the backend API only, not the React frontend
 - the minimum public flow is create project, create chat, create run, poll run, and poll run events
-- bearer-token auth is the recommended public path
+- Auth0 M2M (client-credentials) is the supported public auth path; configure `auth0_m2m` in the adapter config and supply credentials via env vars
 
 For the `openai_chatgpt` subject adapter:
 
