@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from .adapters.ai_linux_assistant_http import AILinuxAssistantHttpAdapter, AILinuxAssistantHttpConfig
+from .adapters.auth0_m2m import Auth0M2MConfig, ClientCreds
 from .adapters.openai_chatgpt import OpenAIChatGPTAdapter, OpenAIChatGPTConfig
 from .artifacts import ArtifactStore, PostgresArtifactExporter
 from .backends.aws import AwsEc2Backend, AwsEc2BackendConfig, AwsTargetImageConfig
@@ -309,22 +310,38 @@ def _subject_adapters_from_config(config: dict[str, Any]) -> dict[str, SubjectAd
         adapter_payload = dict(adapter_config or {})
         resolved_type = str(adapter_payload.get("type", adapter_type))
         if resolved_type == "ai_linux_assistant_http":
+            raw_m2m = adapter_payload.get("auth0_m2m")
+            if raw_m2m is None:
+                raise ValueError(
+                    "subject_adapters.ai_linux_assistant_http is missing the required 'auth0_m2m' block. "
+                    "See the example config and set EVAL_HARNESS_<SUBJECT>_CLIENT_ID / "
+                    "EVAL_HARNESS_<SUBJECT>_CLIENT_SECRET environment variables."
+                )
+            raw_m2m = _resolve_env_placeholders(dict(raw_m2m))
+            raw_clients = dict(raw_m2m.get("clients_by_subject", {}) or {})
+            clients_by_subject: dict[str, ClientCreds] = {}
+            for subj, creds_raw in raw_clients.items():
+                creds = _resolve_env_placeholders(dict(creds_raw or {}))
+                clients_by_subject[str(subj)] = ClientCreds(
+                    client_id=str(creds["client_id"]),
+                    client_secret=str(creds["client_secret"]),
+                )
+            m2m_config = Auth0M2MConfig(
+                token_url=str(raw_m2m["token_url"]),
+                audience=str(raw_m2m["audience"]),
+                clients_by_subject=clients_by_subject,
+                refresh_skew_seconds=int(raw_m2m.get("refresh_skew_seconds", 60)),
+                scope=str(raw_m2m["scope"]) if raw_m2m.get("scope") else None,
+                organization=str(raw_m2m["organization"]) if raw_m2m.get("organization") else None,
+            )
             adapters[adapter_type] = AILinuxAssistantHttpAdapter(
                 AILinuxAssistantHttpConfig(
                     base_url=str(adapter_payload["base_url"]),
+                    auth0_m2m=m2m_config,
                     request_timeout_seconds=float(adapter_payload.get("request_timeout_seconds", 30.0)),
                     poll_interval_seconds=float(adapter_payload.get("poll_interval_seconds", 1.0)),
                     poll_timeout_seconds=float(adapter_payload.get("poll_timeout_seconds", 1800.0)),
                     project_name_prefix=str(adapter_payload.get("project_name_prefix", "eval-harness")),
-                    default_bearer_token=adapter_payload.get("default_bearer_token"),
-                    bearer_tokens_by_subject={
-                        str(key): str(value)
-                        for key, value in dict(adapter_payload.get("bearer_tokens_by_subject", {}) or {}).items()
-                    },
-                    legacy_bootstrap_usernames_by_subject={
-                        str(key): str(value)
-                        for key, value in dict(adapter_payload.get("legacy_bootstrap_usernames_by_subject", {}) or {}).items()
-                    },
                 )
             )
             continue

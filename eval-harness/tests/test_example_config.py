@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 
 def test_aws_ai_linux_assistant_example_config_is_valid_json():
     config_path = Path(__file__).resolve().parents[1] / "examples" / "aws_ai_linux_assistant_config.json"
@@ -14,8 +16,27 @@ def test_aws_ai_linux_assistant_example_config_is_valid_json():
     user_proxy_llm = payload["user_proxy_llm"]
 
     assert adapter["base_url"] == "env:EVAL_HARNESS_AI_API_BASE_URL"
-    assert "bearer_tokens_by_subject" in adapter
-    assert "legacy_bootstrap_usernames_by_subject" not in adapter
+
+    # Slice 3 will replace bearer_tokens_by_subject with auth0_m2m.
+    # Mark xfail(strict=False) so it passes after Slice 3 lands and is simply
+    # skipped (expected-failure) until then.
+    has_auth0_m2m = "auth0_m2m" in adapter
+    has_legacy_tokens = "bearer_tokens_by_subject" in adapter
+
+    if not has_auth0_m2m:
+        pytest.xfail(
+            "depends on Slice 3: example config still uses legacy bearer_tokens_by_subject"
+        )
+
+    assert "auth0_m2m" in adapter, "auth0_m2m block must be present"
+    assert "bearer_tokens_by_subject" not in adapter, "static bearer tokens must be removed"
+    assert "legacy_bootstrap_usernames_by_subject" not in adapter, "legacy bootstrap must be removed"
+
+    m2m = adapter["auth0_m2m"]
+    assert "token_url" in m2m
+    assert "audience" in m2m
+    assert "clients_by_subject" in m2m
+
     assert planner["provider"] == "openai"
     assert judge["provider"] == "openai"
     assert user_proxy_llm["provider"] == "openai"

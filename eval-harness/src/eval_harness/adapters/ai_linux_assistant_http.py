@@ -1,38 +1,17 @@
 from __future__ import annotations
 
-import base64
-import json
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
 import requests
 
+from .auth0_m2m import Auth0M2MConfig, Auth0M2MTokenProvider, ClientCreds
 from .base import AdapterError, SubjectAdapter, SubjectSession
 from ..models import AdapterTurnResult, RunEvent, RunEventType, SubjectSpec, TurnSeed
 
 TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
-
-
-def _decode_unverified_jwt_exp(token: str) -> int | None:
-    parts = token.split(".")
-    if len(parts) != 3 or not parts[1]:
-        return None
-    payload = parts[1]
-    padding = "=" * (-len(payload) % 4)
-    try:
-        decoded = base64.urlsafe_b64decode(payload + padding)
-        parsed = json.loads(decoded.decode("utf-8"))
-    except (ValueError, json.JSONDecodeError):
-        return None
-    exp = parsed.get("exp")
-    if isinstance(exp, int):
-        return exp
-    if isinstance(exp, float):
-        return int(exp)
-    return None
 
 
 def _extract_message_text(message_payload: dict[str, Any]) -> str:
@@ -70,13 +49,11 @@ def _event_payload(payload: dict[str, Any], event_type: RunEventType) -> dict[st
 @dataclass(frozen=True)
 class AILinuxAssistantHttpConfig:
     base_url: str
+    auth0_m2m: Auth0M2MConfig
     request_timeout_seconds: float = 30.0
     poll_interval_seconds: float = 1.0
     poll_timeout_seconds: float = 1800.0
     project_name_prefix: str = "eval-harness"
-    default_bearer_token: str | None = None
-    bearer_tokens_by_subject: dict[str, str] = field(default_factory=dict)
-    legacy_bootstrap_usernames_by_subject: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         base_url = self.base_url.strip().rstrip("/")
@@ -89,32 +66,6 @@ class AILinuxAssistantHttpConfig:
             raise ValueError("poll_interval_seconds must be greater than 0")
         if self.poll_timeout_seconds <= 0:
             raise ValueError("poll_timeout_seconds must be greater than 0")
-        cleaned_default_token = (self.default_bearer_token or "").strip() or None
-        object.__setattr__(self, "default_bearer_token", cleaned_default_token)
-        object.__setattr__(
-            self,
-            "bearer_tokens_by_subject",
-            {
-                str(key).strip(): str(value).strip()
-                for key, value in self.bearer_tokens_by_subject.items()
-                if str(key).strip() and str(value).strip()
-            },
-        )
-        object.__setattr__(
-            self,
-            "legacy_bootstrap_usernames_by_subject",
-            {
-                str(key).strip(): str(value).strip()
-                for key, value in self.legacy_bootstrap_usernames_by_subject.items()
-                if str(key).strip() and str(value).strip()
-            },
-        )
-
-
-@dataclass(frozen=True)
-class _SubjectAuth:
-    bearer_token: str | None
-    legacy_bootstrap_username: str | None
 
 
 class AILinuxAssistantHttpSession(SubjectSession):
@@ -136,44 +87,39 @@ class AILinuxAssistantHttpSession(SubjectSession):
         self.pending_context_seed: tuple[TurnSeed, ...] = ()
         self.seed_strategy = "none"
         self.latest_run_id = ""
-        self.auth = self._resolve_auth()
-        self._validate_bearer_token_preflight()
+        self._token_provider = self._build_token_provider()
         self.default_mode = str(
             self.subject.adapter_config.get("magi_mode", self.subject.metadata.get("magi_mode", "off"))
         ).strip() or "off"
         self._ensure_workspace()
 
-    def _resolve_auth(self) -> _SubjectAuth:
-        bearer_token = self.subject.adapter_config.get(
-            "bearer_token",
-            self.config.bearer_tokens_by_subject.get(self.subject.subject_name, self.config.default_bearer_token),
+    def _build_token_provider(self) -> Auth0M2MTokenProvider:
+        m2m = self.config.auth0_m2m
+        subject_name = self.subject.subject_name
+        creds = m2m.clients_by_subject.get(subject_name)
+        if creds is None:
+            configured = list(m2m.clients_by_subject.keys())
+            raise AdapterError(
+                f"Subject {subject_name!r} is not configured in auth0_m2m.clients_by_subject. "
+                f"Configured subjects: {configured}. "
+                "Add client_id/client_secret for this subject to the config."
+            )
+        return Auth0M2MTokenProvider(
+            token_url=m2m.token_url,
+            audience=m2m.audience,
+            client_id=creds.client_id,
+            client_secret=creds.client_secret,
+            scope=m2m.scope,
+            organization=m2m.organization,
+            refresh_skew_seconds=m2m.refresh_skew_seconds,
         )
-        legacy_bootstrap_username = self.subject.adapter_config.get(
-            "legacy_bootstrap_username",
-            self.config.legacy_bootstrap_usernames_by_subject.get(self.subject.subject_name),
-        )
-        return _SubjectAuth(
-            bearer_token=(str(bearer_token).strip() or None) if bearer_token is not None else None,
-            legacy_bootstrap_username=(str(legacy_bootstrap_username).strip() or None)
-            if legacy_bootstrap_username is not None
-            else None,
-        )
-
-    def _validate_bearer_token_preflight(self) -> None:
-        if not self.auth.bearer_token:
-            return
-        exp = _decode_unverified_jwt_exp(self.auth.bearer_token)
-        if exp is None:
-            return
-        if datetime.now(timezone.utc).timestamp() >= exp:
-            expired_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
-            raise AdapterError(f"Subject {self.subject.subject_name} has an expired bearer token (exp={expired_at}).")
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Accept": "application/json"}
-        if self.auth.bearer_token:
-            headers["Authorization"] = f"Bearer {self.auth.bearer_token}"
-        return headers
+        token = self._token_provider.get_access_token()
+        return {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+        }
 
     def _request_json(self, method: str, path: str, *, payload: dict[str, Any] | None = None) -> Any:
         url = f"{self.config.base_url}/{path.lstrip('/')}"
@@ -190,10 +136,6 @@ class AILinuxAssistantHttpSession(SubjectSession):
 
         if response.status_code >= 400:
             detail = response.text.strip()
-            if response.status_code == 503 and self.auth.legacy_bootstrap_username and not self.auth.bearer_token:
-                raise AdapterError(
-                    "Legacy bootstrap succeeded, but authenticated routes still require bearer auth on this deployment."
-                )
             raise AdapterError(f"HTTP {response.status_code} for {method.upper()} {path}: {detail}")
 
         if not response.text.strip():
@@ -204,9 +146,6 @@ class AILinuxAssistantHttpSession(SubjectSession):
             raise AdapterError(f"Expected JSON from {method.upper()} {path}, got {response.text[:200]!r}") from exc
 
     def _ensure_workspace(self) -> None:
-        if self.auth.legacy_bootstrap_username:
-            self._request_json("POST", "/auth/bootstrap", payload={"username": self.auth.legacy_bootstrap_username})
-
         project_payload = self._request_json(
             "POST",
             "/projects",
