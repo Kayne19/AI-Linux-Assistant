@@ -58,4 +58,5 @@ lancedb_data/
 
 .claude/
 .gemini/
+.pi-lens/
 graphify-out/
