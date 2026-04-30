@@ -3,10 +3,16 @@ import json
 import os
 import re
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 
 REGISTRY_PATH = Path(__file__).resolve().with_name("routing_domains.json")
+
+
+def _lock_path():
+    return REGISTRY_PATH.with_name(REGISTRY_PATH.name + ".lock")
+
 
 DEFAULT_REGISTRY = {
     "domains": [
@@ -96,10 +102,8 @@ def save_registry(registry):
         tmp = None
     finally:
         if tmp is not None and os.path.exists(tmp):
-            try:
+            with suppress(OSError):
                 os.unlink(tmp)
-            except OSError:
-                pass
 
 
 def _normalize_registry(registry):
@@ -165,7 +169,7 @@ def merge_domain_suggestion(suggestion):
         return False, "missing label"
 
     REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    lock_fd = os.open(REGISTRY_PATH, os.O_RDONLY | os.O_CREAT, 0o644)
+    lock_fd = os.open(_lock_path(), os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
