@@ -66,8 +66,8 @@ class _TestWorkerService(ChatRunWorkerService):
         del run
         return _FakeRouter()
 
-    def _queue_auto_name_run(self, run, turn):
-        del run, turn
+    def _queue_auto_name_run(self, run, turn, claimed_worker_id):
+        del run, turn, claimed_worker_id
         return None
 
 
@@ -91,7 +91,9 @@ def test_worker_allows_resumed_paused_magi_run_with_existing_event_history_to_co
         pause_state={"resume_checkpoint": {"round": 1, "after_role_count": 3}},
         event_payload={"message": "Run paused."},
     )
-    resumed = run_store.resume_paused_run(run.id, input_text="extra fact", input_kind="fact")
+    resumed = run_store.resume_paused_run(
+        run.id, input_text="extra fact", input_kind="fact"
+    )
     claimed = run_store.claim_next_run("worker-2", lease_seconds=30)
 
     assert resumed.id == run.id
@@ -105,7 +107,9 @@ def test_worker_allows_resumed_paused_magi_run_with_existing_event_history_to_co
     service._handle_claimed_run(claimed, "worker-2")
 
     finished = run_store._get_run(run.id)
-    assert finished.status == "completed"
+    assert finished.status == "completed", (
+        f"Run failed with error: {finished.error_message}"
+    )
     assert finished.error_message == ""
 
     runs, total = run_store.list_runs_for_chat(chat.id, page=1, page_size=10)

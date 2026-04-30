@@ -285,6 +285,7 @@ class PostgresMemoryStore:
                 for row in raw["preferences"]
             ],
             "session_summary": raw["state_map"].get("session_summary", ""),
+            "fact_timestamps": self._fact_timestamp_snapshot or {},
         }
 
     def format_snapshot(self, snapshot):

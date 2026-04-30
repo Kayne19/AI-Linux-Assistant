@@ -4,6 +4,7 @@ The ``sub`` claim for M2M tokens takes the form ``<client_id>@clients`` with
 no email / name / profile claims.  ``find_or_create_auth_user`` provisions a
 fresh user row transparently, keyed on ``(auth_provider, auth_subject)``.
 """
+
 from __future__ import annotations
 
 import base64
@@ -12,14 +13,15 @@ import os
 import tempfile
 import time
 
-import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from auth.auth0 import Auth0AccessTokenVerifier, AuthVerificationError
+from jwt import PyJWK
+
+from auth.auth0 import Auth0AccessTokenVerifier
 from persistence.database import Base
 from persistence.postgres_app_store import PostgresAppStore
 from persistence.postgres_models import User
@@ -32,12 +34,15 @@ from sqlalchemy.orm import sessionmaker
 # JWT helpers (mirrors test_auth0_auth.py approach)
 # ---------------------------------------------------------------------------
 
+
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
 def _json_b64url(payload) -> str:
-    return _b64url(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    return _b64url(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
 
 
 def _rsa_jwk(public_key, kid="m2m-key"):
@@ -88,6 +93,7 @@ def _build_stores():
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_verifier_accepts_client_credentials_jwt():
     """A JWT with sub='abcd1234@clients' and no profile claims must be accepted."""
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -110,8 +116,7 @@ def test_verifier_accepts_client_credentials_jwt():
         domain="tenant.example.com",
         issuer="https://tenant.example.com/",
         audience="https://api.example.com",
-        http_get=lambda url, timeout=0: _Response({"keys": [jwk]}),
-        time_fn=lambda: now,
+        signing_key=PyJWK(jwk),
     )
 
     claims = verifier.verify_access_token(token)
@@ -163,7 +168,9 @@ def test_protected_route_provisions_service_principal_user():
     # Verify the User row in the DB is keyed on (auth_provider, auth_subject).
     with session_factory() as session:
         stored = session.scalar(
-            __import__("sqlalchemy").select(User).where(
+            __import__("sqlalchemy")
+            .select(User)
+            .where(
                 User.auth_provider == "auth0",
                 User.auth_subject == m2m_sub,
             )

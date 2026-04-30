@@ -144,7 +144,14 @@ class FakeMemoryStore:
             "constraints": [],
             "preferences": [],
             "session_summary": "",
+            "fact_timestamps": {},
         }
+
+    def load_snapshot_fresh(self):
+        return self.load_snapshot()
+
+    def is_snapshot_stale(self):
+        return False
 
     def commit_resolution(
         self, resolution, user_question="", assistant_response="", chat_session_id=""
@@ -337,7 +344,7 @@ def test_router_preserves_retrieved_blocks_and_full_memory_payloads():
             "page_label": "Page 4",
             "text": "apt install foo",
         }
-    ]
+    ], turn.tool_events
     memory_extracted = next(
         event for event in turn.tool_events if event["type"] == "memory_extracted"
     )
@@ -1304,7 +1311,9 @@ def test_router_auto_names_first_turn_after_memory_commit():
 
     router.ask_question("docker permission denied")
 
-    assert chat_store.updated_titles == [("session-123", "Docker permissions fix")]
+    assert chat_store.updated_titles == [("session-123", "Docker permissions fix")], (
+        router.last_turn.tool_events
+    )
     assert RouterState.AUTO_NAME.name in router.last_turn.state_trace
     assert router.last_turn.state_trace[-2:] == [
         RouterState.AUTO_NAME.name,

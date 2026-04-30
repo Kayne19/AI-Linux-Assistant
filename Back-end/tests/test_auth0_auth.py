@@ -2,6 +2,8 @@ import base64
 import json
 import time
 
+from jwt import PyJWK
+
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
@@ -13,7 +15,9 @@ def _b64url(data: bytes) -> str:
 
 
 def _json_b64url(payload) -> str:
-    return _b64url(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    return _b64url(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
 
 
 def _rsa_jwk(public_key, kid="test-key"):
@@ -35,21 +39,8 @@ def _sign_token(private_key, payload, kid="test-key"):
     return f"{signing_input.decode('ascii')}.{_b64url(signature)}"
 
 
-class _Response:
-    def __init__(self, payload):
-        self._payload = payload
-        self.headers = {"Cache-Control": "max-age=600"}
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self._payload
-
-
 def test_auth0_verifier_accepts_valid_access_token():
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    jwk = _rsa_jwk(private_key.public_key())
     now = int(time.time())
     token = _sign_token(
         private_key,
@@ -66,8 +57,7 @@ def test_auth0_verifier_accepts_valid_access_token():
         domain="tenant.example.com",
         issuer="https://tenant.example.com/",
         audience="https://api.example.com",
-        http_get=lambda url, timeout=0: _Response({"keys": [jwk]}),
-        time_fn=lambda: now,
+        signing_key=PyJWK(_rsa_jwk(private_key.public_key())),
     )
 
     claims = verifier.verify_access_token(token)
@@ -78,14 +68,12 @@ def test_auth0_verifier_accepts_valid_access_token():
 
 def test_auth0_verifier_rejects_wrong_audience_and_expired_tokens():
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    jwk = _rsa_jwk(private_key.public_key())
     now = int(time.time())
     verifier = Auth0AccessTokenVerifier(
         domain="tenant.example.com",
         issuer="https://tenant.example.com/",
         audience="https://api.example.com",
-        http_get=lambda url, timeout=0: _Response({"keys": [jwk]}),
-        time_fn=lambda: now,
+        signing_key=PyJWK(_rsa_jwk(private_key.public_key())),
     )
 
     wrong_audience = _sign_token(
@@ -125,14 +113,12 @@ def test_auth0_verifier_rejects_wrong_audience_and_expired_tokens():
 def test_auth0_verifier_rejects_bad_signature():
     first_private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     second_private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    jwk = _rsa_jwk(first_private_key.public_key())
     now = int(time.time())
     verifier = Auth0AccessTokenVerifier(
         domain="tenant.example.com",
         issuer="https://tenant.example.com/",
         audience="https://api.example.com",
-        http_get=lambda url, timeout=0: _Response({"keys": [jwk]}),
-        time_fn=lambda: now,
+        signing_key=PyJWK(_rsa_jwk(first_private_key.public_key())),
     )
     token = _sign_token(
         second_private_key,

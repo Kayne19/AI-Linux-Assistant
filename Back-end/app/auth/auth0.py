@@ -1,9 +1,8 @@
 import re
-import time
-from typing import Any, Callable
+from typing import Any
 
 import jwt
-from jwt import PyJWKClient, PyJWKClientError
+from jwt import PyJWK, PyJWKClient, PyJWKClientError
 
 import requests
 
@@ -51,14 +50,12 @@ class Auth0AccessTokenVerifier:
         issuer: str | None = None,
         audience: str | None = None,
         timeout_seconds: float = 5.0,
-        http_get: Callable[..., Any] | None = None,
-        time_fn: Callable[[], float] | None = None,
+        signing_key: PyJWK | None = None,
     ):
         self.domain = (domain or SETTINGS.auth0_domain or "").strip()
         self.audience = (audience or SETTINGS.auth0_audience or "").strip()
         self.timeout_seconds = max(0.5, float(timeout_seconds))
-        self._http_get = http_get or requests.get
-        self._time_fn = time_fn or time.time
+        self._signing_key = signing_key
 
         # Issuer normalization: Auth0 issuers end with a trailing slash.
         raw_issuer = (issuer or SETTINGS.auth0_issuer or "").strip()
@@ -98,15 +95,17 @@ class Auth0AccessTokenVerifier:
         if not token or token.count(".") != 2:
             raise AuthVerificationError("Malformed bearer token.")
 
-        try:
-            jwks_client = self._get_jwks_client()
-            signing_key = jwks_client.get_signing_key_from_jwt(token)
-        except PyJWKClientError as exc:
-            raise AuthVerificationError(
-                "Signing key was not found in Auth0 JWKS."
-            ) from exc
-        except Exception as exc:
-            raise AuthVerificationError("Unable to fetch Auth0 JWKS.") from exc
+        signing_key = self._signing_key
+        if signing_key is None:
+            try:
+                jwks_client = self._get_jwks_client()
+                signing_key = jwks_client.get_signing_key_from_jwt(token)
+            except PyJWKClientError as exc:
+                raise AuthVerificationError(
+                    "Signing key was not found in Auth0 JWKS."
+                ) from exc
+            except Exception as exc:
+                raise AuthVerificationError("Unable to fetch Auth0 JWKS.") from exc
 
         try:
             claims = jwt.decode(

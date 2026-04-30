@@ -315,7 +315,7 @@ class OpenAICaller:
                 stream_cumulative = 0
                 with self.client.responses.stream(**request_kwargs) as stream:
                     for event in stream:
-                        if getattr(event, "type", None) == "response.output.text.delta":
+                        if getattr(event, "type", None) == "response.output_text.delta":
                             delta = getattr(event, "delta", "")
                             stream_cumulative += len(delta)
 

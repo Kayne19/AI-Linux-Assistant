@@ -17,7 +17,9 @@ def _iso(value):
 class InMemoryMemoryStore:
     def __init__(self, project_id="in-memory", shared_state=None):
         self.project_id = str(project_id)
-        self._shared_state = shared_state if shared_state is not None else self._new_state()
+        self._shared_state = (
+            shared_state if shared_state is not None else self._new_state()
+        )
 
     def _new_state(self):
         return {
@@ -135,6 +137,12 @@ class InMemoryMemoryStore:
                 for row in preferences
             ],
             "session_summary": self._read_state("session_summary"),
+            "fact_timestamps": {
+                fact["fact_key"]: fact.get("updated_at")
+                or fact.get("observed_at")
+                or ""
+                for fact in profile_facts
+            },
         }
 
     def format_snapshot(self, snapshot):
@@ -157,7 +165,11 @@ class InMemoryMemoryStore:
         for fact in facts:
             key = fact["fact_key"]
             value = fact["fact_value"]
-            promoted_rank = PROMOTED_FACT_KEYS.index(key) if key in PROMOTED_FACT_KEYS else len(PROMOTED_FACT_KEYS)
+            promoted_rank = (
+                PROMOTED_FACT_KEYS.index(key)
+                if key in PROMOTED_FACT_KEYS
+                else len(PROMOTED_FACT_KEYS)
+            )
             relevance = _relevance_score(query_tokens, f"{key} {value}")
             scored.append((relevance, -promoted_rank, key, fact))
         scored.sort(reverse=True)
@@ -187,7 +199,9 @@ class InMemoryMemoryStore:
             lines.append(f"- {label}: {fact['fact_value']}")
         return "\n".join(lines)
 
-    def get_relevant_memory(self, query, max_profile_facts=10, max_issues=3, max_attempts=5):
+    def get_relevant_memory(
+        self, query, max_profile_facts=10, max_issues=3, max_attempts=5
+    ):
         query_tokens = _tokenize(query)
         profile_facts = self._select_profile_facts(
             self.get_system_facts(),
@@ -210,10 +224,16 @@ class InMemoryMemoryStore:
                 "source_type": row["source_type"],
                 "last_seen_at": _iso(row["last_seen_at"]),
             }
-            issue["relevance"] = _relevance_score(query_tokens, f"{row['title']} {row['summary']} {row['category']}")
+            issue["relevance"] = _relevance_score(
+                query_tokens, f"{row['title']} {row['summary']} {row['category']}"
+            )
             active_issues.append(issue)
         active_issues.sort(
-            key=lambda item: (1 if item["status"] == "open" else 0, item["relevance"], item["last_seen_at"]),
+            key=lambda item: (
+                1 if item["status"] == "open" else 0,
+                item["relevance"],
+                item["last_seen_at"],
+            ),
             reverse=True,
         )
         active_issues = active_issues[:max_issues]
@@ -281,7 +301,10 @@ class InMemoryMemoryStore:
     def list_candidates(self, max_results=25):
         rows = sorted(
             self._shared_state["candidates"],
-            key=lambda item: (item.get("updated_at") or "", item.get("created_at") or ""),
+            key=lambda item: (
+                item.get("updated_at") or "",
+                item.get("created_at") or "",
+            ),
             reverse=True,
         )[:max_results]
         return [
@@ -302,7 +325,8 @@ class InMemoryMemoryStore:
 
     def _replace_active_candidates(self, items):
         preserved_history = [
-            row for row in self._shared_state["candidates"]
+            row
+            for row in self._shared_state["candidates"]
             if row.get("status") == "superseded"
         ]
         now = _utc_now()
@@ -328,14 +352,19 @@ class InMemoryMemoryStore:
             payload = item.get("payload", {}) or {}
             matching_row = next(
                 (
-                    row for row in self._shared_state["candidates"]
+                    row
+                    for row in self._shared_state["candidates"]
                     if row.get("status") == "superseded"
-                    and row.get("item_type", "unknown") == item.get("item_type", "unknown")
+                    and row.get("item_type", "unknown")
+                    == item.get("item_type", "unknown")
                     and row.get("item_key", "") == item.get("item_key", "")
                     and row.get("reason", "") == item.get("reason", "")
-                    and float(row.get("confidence", 0.5) or 0.5) == float(item.get("confidence", 0.5) or 0.5)
-                    and row.get("source_type", "model") == item.get("source_type", "model")
-                    and row.get("source_ref", "conversation") == item.get("source_ref", "conversation")
+                    and float(row.get("confidence", 0.5) or 0.5)
+                    == float(item.get("confidence", 0.5) or 0.5)
+                    and row.get("source_type", "model")
+                    == item.get("source_type", "model")
+                    and row.get("source_ref", "conversation")
+                    == item.get("source_ref", "conversation")
                     and row.get("payload", {}) == payload
                 ),
                 None,
@@ -359,7 +388,9 @@ class InMemoryMemoryStore:
                 }
             )
 
-    def format_debug_dump(self, query="system profile attempts issues preferences", max_candidates=20):
+    def format_debug_dump(
+        self, query="system profile attempts issues preferences", max_candidates=20
+    ):
         sections = []
 
         profile = self.format_system_profile()
@@ -380,12 +411,19 @@ class InMemoryMemoryStore:
                 summary = ""
                 item_type = item.get("item_type")
                 if item_type == "fact":
-                    summary = f"{payload.get('fact_key', '')}={payload.get('fact_value', '')}"
+                    summary = (
+                        f"{payload.get('fact_key', '')}={payload.get('fact_value', '')}"
+                    )
                 elif item_type == "issue":
                     summary = payload.get("title", "")
                 elif item_type == "attempt":
                     summary = " | ".join(
-                        part for part in [payload.get("action", ""), payload.get("command", ""), payload.get("outcome", "")]
+                        part
+                        for part in [
+                            payload.get("action", ""),
+                            payload.get("command", ""),
+                            payload.get("outcome", ""),
+                        ]
                         if part
                     )
                 elif item_type == "constraint":
@@ -418,12 +456,16 @@ class InMemoryMemoryStore:
             return ""
         lines = []
         for _, _, row in scored[: max(1, min(int(max_results), 8))]:
-            lines.append(f"[{row['status']}] {row['title']} | {row['category']} | {row['summary']}")
+            lines.append(
+                f"[{row['status']}] {row['title']} | {row['category']} | {row['summary']}"
+            )
         return "\n".join(lines)
 
     def search_attempts(self, query, max_results=5):
         query_tokens = _tokenize(query)
-        issue_titles = {row["id"]: row["title"] for row in self._shared_state["issues"].values()}
+        issue_titles = {
+            row["id"]: row["title"] for row in self._shared_state["issues"].values()
+        }
         rows = sorted(
             self._shared_state["attempts"],
             key=lambda item: item.get("created_at") or "",
@@ -432,7 +474,15 @@ class InMemoryMemoryStore:
         scored = []
         for row in rows:
             issue_title = issue_titles.get(row.get("issue_id"), "")
-            text = " ".join([row["action"], row["command"], row["outcome"], row["status"], issue_title])
+            text = " ".join(
+                [
+                    row["action"],
+                    row["command"],
+                    row["outcome"],
+                    row["status"],
+                    issue_title,
+                ]
+            )
             score = _relevance_score(query_tokens, text)
             if query_tokens and score == 0:
                 continue
@@ -442,11 +492,17 @@ class InMemoryMemoryStore:
             return ""
         lines = []
         for _, _, row, issue_title in scored[: max(1, min(int(max_results), 8))]:
-            parts = [part for part in [row["action"], row["command"], row["outcome"], issue_title] if part]
+            parts = [
+                part
+                for part in [row["action"], row["command"], row["outcome"], issue_title]
+                if part
+            ]
             lines.append(" | ".join(parts))
         return "\n".join(lines)
 
-    def commit_resolution(self, resolution, user_question="", assistant_response=""):
+    def commit_resolution(
+        self, resolution, user_question="", assistant_response="", chat_session_id=None
+    ):
         del user_question
         del assistant_response
         committed = getattr(resolution, "committed", None) or {}
@@ -479,7 +535,10 @@ class InMemoryMemoryStore:
                         "fact_value": value,
                         "source_type": fact.get("source_type", row["source_type"]),
                         "source_ref": fact.get("source_ref", row["source_ref"]),
-                        "confidence": float(fact.get("confidence", row["confidence"]) or row["confidence"]),
+                        "confidence": float(
+                            fact.get("confidence", row["confidence"])
+                            or row["confidence"]
+                        ),
                         "verified": bool(fact.get("verified", row["verified"])),
                         "observed_at": now,
                         "updated_at": now,
@@ -518,7 +577,10 @@ class InMemoryMemoryStore:
                         "status": issue.get("status", row["status"]),
                         "source_type": issue.get("source_type", row["source_type"]),
                         "source_ref": issue.get("source_ref", row["source_ref"]),
-                        "confidence": float(issue.get("confidence", row["confidence"]) or row["confidence"]),
+                        "confidence": float(
+                            issue.get("confidence", row["confidence"])
+                            or row["confidence"]
+                        ),
                         "last_seen_at": now,
                     }
                 )
@@ -565,7 +627,9 @@ class InMemoryMemoryStore:
             else:
                 row.update(
                     {
-                        "source_type": constraint.get("source_type", row["source_type"]),
+                        "source_type": constraint.get(
+                            "source_type", row["source_type"]
+                        ),
                         "source_ref": constraint.get("source_ref", row["source_ref"]),
                         "last_seen_at": now,
                     }
@@ -591,14 +655,24 @@ class InMemoryMemoryStore:
             else:
                 row.update(
                     {
-                        "source_type": preference.get("source_type", row["source_type"]),
+                        "source_type": preference.get(
+                            "source_type", row["source_type"]
+                        ),
                         "source_ref": preference.get("source_ref", row["source_ref"]),
                         "last_seen_at": now,
                     }
                 )
 
-        active_candidate_items = [item for item in candidates + conflicts if item.get("status") != "superseded"]
-        superseded_items = [item for item in conflicts if item.get("status") == "superseded"]
+        active_candidate_items = [
+            item
+            for item in candidates + conflicts
+            if item.get("status") != "superseded"
+        ]
+        superseded_items = [
+            item for item in conflicts if item.get("status") == "superseded"
+        ]
         self._replace_active_candidates(active_candidate_items)
         self._upsert_superseded_history(superseded_items)
-        self._write_state("session_summary", getattr(resolution, "session_summary", "") or "")
+        self._write_state(
+            "session_summary", getattr(resolution, "session_summary", "") or ""
+        )

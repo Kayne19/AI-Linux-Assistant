@@ -105,6 +105,10 @@ def _extract_final_answer_incremental(accumulated_text):
             result_chars.append(ch)
             result_chars.append(accumulated_text[pos + 1])
             pos += 2
+        elif ch == "\\":
+            # Boundary: backslash is the last character in this chunk.
+            # Leave pos parked so the next chunk can resolve the escape.
+            break
         elif ch == '"':
             # Closing quote — complete string value found
             break

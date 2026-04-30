@@ -147,13 +147,23 @@ class LanceDBStore:
 
     def delete_by_id_prefix(self, prefix: str) -> int:
         """Delete rows whose 'id' column starts with *prefix*."""
-        escaped = prefix.replace("'", "''")
-        return self.delete_by_predicate(f"id LIKE '{escaped}%'")
+        escaped = (
+            prefix.replace("\\", "\\\\")
+            .replace("'", "''")
+            .replace("_", "\\_")
+            .replace("%", "\\%")
+        )
+        return self.delete_by_predicate(f"id LIKE '{escaped}%' ESCAPE '\\'")
 
     def count_rows_by_id_prefix(self, prefix: str) -> int:
         """Count rows whose 'id' column starts with *prefix*."""
-        escaped = prefix.replace("'", "''")
-        return self.count_rows_matching(f"id LIKE '{escaped}%'")
+        escaped = (
+            prefix.replace("\\", "\\\\")
+            .replace("'", "''")
+            .replace("_", "\\_")
+            .replace("%", "\\%")
+        )
+        return self.count_rows_matching(f"id LIKE '{escaped}%' ESCAPE '\\'")
 
     def rebuild_fts_index(self, field_name: str = "search_text"):
         self.open_table().create_fts_index(field_name, replace=True)

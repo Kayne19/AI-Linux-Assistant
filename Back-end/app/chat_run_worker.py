@@ -654,8 +654,8 @@ class ChatRunWorkerService:
             ) == AUTO_NAME_RUN_KIND:
                 self._complete_background_run(run, claimed_worker_id, turn)
             else:
-                self._complete_run(run, claimed_worker_id, turn)
                 self._queue_auto_name_run(run, turn, claimed_worker_id)
+                self._complete_run(run, claimed_worker_id, turn)
         except RunOwnershipLostError:
             try:
                 delta_buffer.flush()

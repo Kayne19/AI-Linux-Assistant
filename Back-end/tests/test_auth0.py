@@ -1,6 +1,8 @@
 import base64
 import json
 
+from jwt import PyJWK
+
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
@@ -12,13 +14,17 @@ def _b64url(value: bytes) -> str:
 
 
 def _json_b64(value) -> str:
-    return _b64url(json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    return _b64url(
+        json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
 
 
 def _public_jwk(private_key, kid="test-key"):
     public_numbers = private_key.public_key().public_numbers()
     modulus = public_numbers.n.to_bytes((public_numbers.n.bit_length() + 7) // 8, "big")
-    exponent = public_numbers.e.to_bytes((public_numbers.e.bit_length() + 7) // 8, "big")
+    exponent = public_numbers.e.to_bytes(
+        (public_numbers.e.bit_length() + 7) // 8, "big"
+    )
     return {
         "kty": "RSA",
         "kid": kid,
@@ -27,18 +33,6 @@ def _public_jwk(private_key, kid="test-key"):
         "n": _b64url(modulus),
         "e": _b64url(exponent),
     }
-
-
-class _FakeJwksResponse:
-    def __init__(self, payload):
-        self._payload = payload
-        self.headers = {}
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self._payload
 
 
 def _sign_token(private_key, claims, kid="test-key"):
@@ -55,15 +49,13 @@ def test_auth0_verifier_accepts_valid_access_token():
         "sub": "auth0|user-1",
         "aud": "https://ai-linux-assistant-api",
         "exp": 2_000_000_000,
-        "iat": 1_900_000_000,
     }
     token = _sign_token(private_key, claims)
     verifier = Auth0AccessTokenVerifier(
         domain="tenant.example.com",
         issuer="https://tenant.example.com/",
         audience="https://ai-linux-assistant-api",
-        time_fn=lambda: 1_950_000_000,
-        http_get=lambda _url, timeout=5.0: _FakeJwksResponse({"keys": [_public_jwk(private_key)]}),
+        signing_key=PyJWK(_public_jwk(private_key)),
     )
 
     verified_claims = verifier.verify_access_token(token)
@@ -84,8 +76,7 @@ def test_auth0_verifier_rejects_wrong_audience():
         domain="tenant.example.com",
         issuer="https://tenant.example.com/",
         audience="https://ai-linux-assistant-api",
-        time_fn=lambda: 1_950_000_000,
-        http_get=lambda _url, timeout=5.0: _FakeJwksResponse({"keys": [_public_jwk(private_key)]}),
+        signing_key=PyJWK(_public_jwk(private_key)),
     )
 
     try:
@@ -96,6 +87,8 @@ def test_auth0_verifier_rejects_wrong_audience():
 
 
 def test_auth0_verifier_rejects_expired_or_bad_signature_tokens():
+    import time
+
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     expired_token = _sign_token(
         private_key,
@@ -103,15 +96,14 @@ def test_auth0_verifier_rejects_expired_or_bad_signature_tokens():
             "iss": "https://tenant.example.com/",
             "sub": "auth0|user-3",
             "aud": "https://ai-linux-assistant-api",
-            "exp": 1_800_000_000,
+            "exp": int(time.time()) - 3600,
         },
     )
     verifier = Auth0AccessTokenVerifier(
         domain="tenant.example.com",
         issuer="https://tenant.example.com/",
         audience="https://ai-linux-assistant-api",
-        time_fn=lambda: 1_950_000_000,
-        http_get=lambda _url, timeout=5.0: _FakeJwksResponse({"keys": [_public_jwk(private_key)]}),
+        signing_key=PyJWK(_public_jwk(private_key)),
     )
 
     try:
@@ -129,7 +121,9 @@ def test_auth0_verifier_rejects_expired_or_bad_signature_tokens():
             "exp": 2_000_000_000,
         },
     )
-    bad_signature_token = valid_token.rsplit(".", 1)[0] + "." + _b64url(b"not-a-real-signature")
+    bad_signature_token = (
+        valid_token.rsplit(".", 1)[0] + "." + _b64url(b"not-a-real-signature")
+    )
     try:
         verifier.verify_access_token(bad_signature_token)
         assert False, "expected signature failure"

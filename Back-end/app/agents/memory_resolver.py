@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 MUTABLE_FACT_KEYS = {
     "os.distribution",
@@ -175,9 +176,10 @@ class MemoryResolver:
             session_summary=extracted.get("session_summary", "")
         )
         profile = snapshot.get("profile", {})
+        fact_timestamps = snapshot.get("fact_timestamps", {})
 
         for fact in extracted.get("facts", []):
-            self._resolve_fact(fact, profile, resolution)
+            self._resolve_fact(fact, profile, fact_timestamps, resolution)
 
         for issue in extracted.get("issues", []):
             self._resolve_issue(issue, resolution)
@@ -193,7 +195,7 @@ class MemoryResolver:
 
         return resolution
 
-    def _resolve_fact(self, fact, profile, resolution):
+    def _resolve_fact(self, fact, profile, fact_timestamps, resolution):
         key = fact.get("fact_key", "")
         value = fact.get("fact_value", "")
         if not key or not value:
@@ -230,6 +232,29 @@ class MemoryResolver:
                 and self.conflict_staleness_days is not None
                 and confidence >= self.fact_commit_confidence
             ):
+                # Only auto-resolve if the existing fact is older than conflict_staleness_days
+                existing_ts = fact_timestamps.get(key, "") if fact_timestamps else ""
+                is_stale = False
+                if existing_ts:
+                    try:
+                        fact_dt = datetime.fromisoformat(existing_ts)
+                        cutoff = datetime.now(timezone.utc) - timedelta(
+                            days=self.conflict_staleness_days
+                        )
+                        is_stale = fact_dt < cutoff
+                    except (ValueError, TypeError):
+                        pass
+                if not is_stale:
+                    # Not stale enough; surface as conflict instead
+                    resolution.conflicts.append(
+                        _candidate_entry(
+                            "fact",
+                            fact,
+                            reason=f"conflicts_with_existing:{existing_value}",
+                            status="conflicted",
+                        )
+                    )
+                    return
                 resolution.conflicts.append(
                     _candidate_entry(
                         "fact",

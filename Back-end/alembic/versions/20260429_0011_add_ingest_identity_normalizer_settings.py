@@ -1,15 +1,15 @@
 """add ingest_identity_normalizer settings columns
 
-Revision ID: 20260429_0010
-Revises: 20260412_0009
+Revision ID: 20260429_0011
+Revises: 20260429_0010
 Create Date: 2026-04-29 00:10:00
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "20260429_0010"
-down_revision = "20260412_0009"
+revision = "20260429_0011"
+down_revision = "20260429_0010"
 branch_labels = None
 depends_on = None
 
