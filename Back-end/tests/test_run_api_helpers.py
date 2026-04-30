@@ -85,7 +85,7 @@ def test_terminal_event_payload_prefers_durable_done_event():
         },
     )
 
-    payload = _terminal_event_payload(run_store, run.id, run_store.get_run(run.id), _StubAppStore())
+    payload = _terminal_event_payload(run_store, run.id, run_store._get_run(run.id), _StubAppStore())
 
     assert payload is not None
     assert payload["type"] == "done"
@@ -111,7 +111,7 @@ def test_terminal_event_payload_prefers_durable_cancelled_event():
     )
     run_store.cancel_queued_run(run.id, error_message="Run cancelled.")
 
-    payload = _terminal_event_payload(run_store, run.id, run_store.get_run(run.id), _StubAppStore())
+    payload = _terminal_event_payload(run_store, run.id, run_store._get_run(run.id), _StubAppStore())
 
     assert payload is not None
     assert payload["type"] == "cancelled"

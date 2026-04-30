@@ -16,7 +16,9 @@ from providers.step_protocol import ProviderToolCall
 
 
 class FakeAnthropicBlock:
-    def __init__(self, block_type, text=None, name=None, block_id=None, tool_input=None):
+    def __init__(
+        self, block_type, text=None, name=None, block_id=None, tool_input=None
+    ):
         self.type = block_type
         self.text = text
         self.name = name
@@ -25,10 +27,14 @@ class FakeAnthropicBlock:
 
 
 class FakeAnthropicResponse:
-    def __init__(self, text="", tool_calls=None, stop_reason="end_turn", web_search_requests=0):
+    def __init__(
+        self, text="", tool_calls=None, stop_reason="end_turn", web_search_requests=0
+    ):
         self.content = []
         self.stop_reason = stop_reason
-        self.usage = SimpleNamespace(server_tool_use=SimpleNamespace(web_search_requests=web_search_requests))
+        self.usage = SimpleNamespace(
+            server_tool_use=SimpleNamespace(web_search_requests=web_search_requests)
+        )
         if text:
             self.content.append(FakeAnthropicBlock("text", text=text))
         for tool_call in tool_calls or []:
@@ -210,7 +216,10 @@ def test_openai_worker_includes_native_web_search_and_emits_event():
     worker.client = FakeOpenAIClient(
         [
             FakeOpenAIResponse(
-                output=[FakeOpenAIWebSearchCall(), FakeOpenAIToolCall("lookup", "{\"q\":\"one\"}", "call_1")]
+                output=[
+                    FakeOpenAIWebSearchCall(),
+                    FakeOpenAIToolCall("lookup", '{"q":"one"}', "call_1"),
+                ]
             ),
             FakeOpenAIResponse(output_text="final answer"),
         ]
@@ -230,7 +239,18 @@ def test_openai_worker_includes_native_web_search_and_emits_event():
         system_prompt="sys",
         user_message="user",
         history=[],
-        tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+        tools=[
+            {
+                "name": "lookup",
+                "description": "test",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            }
+        ],
         tool_handler=tool_handler,
         enable_web_search=True,
         event_listener=event_listener,
@@ -249,7 +269,7 @@ def test_openai_worker_start_text_step_returns_tool_calls_without_internal_loop(
     worker.client = FakeOpenAIClient(
         [
             FakeOpenAIResponse(
-                output=[FakeOpenAIToolCall("lookup", "{\"q\":\"one\"}", "call_1")],
+                output=[FakeOpenAIToolCall("lookup", '{"q":"one"}', "call_1")],
                 output_text="",
             ),
             FakeOpenAIResponse(output_text="should not be consumed"),
@@ -262,12 +282,25 @@ def test_openai_worker_start_text_step_returns_tool_calls_without_internal_loop(
         system_prompt="sys",
         user_message="user",
         history=[],
-        tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+        tools=[
+            {
+                "name": "lookup",
+                "description": "test",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            }
+        ],
         event_listener=lambda event_type, payload: events.append((event_type, payload)),
     )
 
     assert [tool_call.name for tool_call in step.tool_calls] == ["lookup"]
-    assert step.tool_calls[0] == ProviderToolCall(name="lookup", arguments={"q": "one"}, call_id="call_1")
+    assert step.tool_calls[0] == ProviderToolCall(
+        name="lookup", arguments={"q": "one"}, call_id="call_1"
+    )
     assert len(worker.client.responses.calls) == 1
     assert ("request_submitted", {"round": 0}) in events
 
@@ -285,7 +318,14 @@ def test_openai_worker_continue_text_step_submits_router_tool_results():
     step = worker.continue_text_step(
         system_prompt="sys",
         session_state={"response_id": "resp_prev"},
-        tool_results=[{"call_id": "call_1", "name": "lookup", "arguments": {"q": "one"}, "output": "tool result"}],
+        tool_results=[
+            {
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": {"q": "one"},
+                "output": "tool result",
+            }
+        ],
         tools=[],
         enable_web_search=False,
     )
@@ -313,8 +353,14 @@ def test_openai_worker_normalizes_optional_tool_fields_for_strict_schemas():
                     "additionalProperties": False,
                     "properties": {
                         "query": {"type": "string"},
-                        "relevant_documents": {"type": "array", "items": {"type": "string"}},
-                        "repeat_reason": {"type": "string", "enum": ["contradiction_check"]},
+                        "relevant_documents": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "repeat_reason": {
+                            "type": "string",
+                            "enum": ["contradiction_check"],
+                        },
                         "evidence_gap": {"type": "string"},
                     },
                     "required": ["query", "relevant_documents"],
@@ -344,7 +390,9 @@ def test_openai_worker_requests_native_structured_output_when_schema_is_provided
     worker = openai_module.OpenAICaller.__new__(openai_module.OpenAICaller)
     worker.model = "fake-openai"
     worker.reasoning_effort = None
-    worker.client = FakeOpenAIClient([FakeOpenAIResponse(output_text='{"answer":"ok"}')])
+    worker.client = FakeOpenAIClient(
+        [FakeOpenAIResponse(output_text='{"answer":"ok"}')]
+    )
 
     response = worker.generate_text(
         system_prompt="sys",
@@ -375,8 +423,12 @@ def test_openai_worker_warns_and_falls_back_when_native_structured_output_fails(
     worker = openai_module.OpenAICaller.__new__(openai_module.OpenAICaller)
     worker.model = "fake-openai"
     worker.reasoning_effort = None
-    worker.client = FakeOpenAIClient([FakeOpenAIResponse(output_text='{"answer":"fallback"}')])
-    worker.client.responses.errors.append(RuntimeError("structured outputs unsupported"))
+    worker.client = FakeOpenAIClient(
+        [FakeOpenAIResponse(output_text='{"answer":"fallback"}')]
+    )
+    worker.client.responses.errors.append(
+        RuntimeError("structured outputs unsupported")
+    )
     events = []
 
     response = worker.generate_text(
@@ -416,8 +468,16 @@ def test_google_worker_repeats_tool_rounds_until_completion():
     worker.model = "fake-gemini"
     worker.client = FakeGoogleClient(
         responses=[
-            FakeGoogleResponse(function_calls=[FakeGoogleFunctionCall("lookup", {"q": "one"}, "call_1")]),
-            FakeGoogleResponse(function_calls=[FakeGoogleFunctionCall("lookup", {"q": "two"}, "call_2")]),
+            FakeGoogleResponse(
+                function_calls=[
+                    FakeGoogleFunctionCall("lookup", {"q": "one"}, "call_1")
+                ]
+            ),
+            FakeGoogleResponse(
+                function_calls=[
+                    FakeGoogleFunctionCall("lookup", {"q": "two"}, "call_2")
+                ]
+            ),
             FakeGoogleResponse(text="final answer"),
         ]
     )
@@ -436,7 +496,18 @@ def test_google_worker_repeats_tool_rounds_until_completion():
         system_prompt="sys",
         user_message="user",
         history=[],
-        tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+        tools=[
+            {
+                "name": "lookup",
+                "description": "test",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            }
+        ],
         tool_handler=tool_handler,
         max_tool_rounds=4,
         event_listener=event_listener,
@@ -453,7 +524,11 @@ def test_google_worker_start_text_step_returns_tool_calls_without_internal_loop(
     worker.model = "fake-gemini"
     worker.client = FakeGoogleClient(
         responses=[
-            FakeGoogleResponse(function_calls=[FakeGoogleFunctionCall("lookup", {"q": "one"}, "call_1")]),
+            FakeGoogleResponse(
+                function_calls=[
+                    FakeGoogleFunctionCall("lookup", {"q": "one"}, "call_1")
+                ]
+            ),
             FakeGoogleResponse(text="should not be consumed"),
         ]
     )
@@ -464,12 +539,25 @@ def test_google_worker_start_text_step_returns_tool_calls_without_internal_loop(
         system_prompt="sys",
         user_message="user",
         history=[],
-        tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+        tools=[
+            {
+                "name": "lookup",
+                "description": "test",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            }
+        ],
         event_listener=lambda event_type, payload: events.append((event_type, payload)),
     )
 
     assert [tool_call.name for tool_call in step.tool_calls] == ["lookup"]
-    assert step.tool_calls[0] == ProviderToolCall(name="lookup", arguments={"q": "one"}, call_id="call_1")
+    assert step.tool_calls[0] == ProviderToolCall(
+        name="lookup", arguments={"q": "one"}, call_id="call_1"
+    )
     assert len(worker.client.models.calls) == 1
     assert ("request_submitted", {"round": 0}) in events
 
@@ -488,10 +576,28 @@ def test_google_worker_continue_text_step_submits_router_tool_results():
         session_state={
             "contents": [
                 {"role": "user", "parts": [{"text": "user"}]},
-                {"role": "model", "parts": [{"function_call": {"name": "lookup", "args": {"q": "one"}, "id": "call_1"}}]},
+                {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "function_call": {
+                                "name": "lookup",
+                                "args": {"q": "one"},
+                                "id": "call_1",
+                            }
+                        }
+                    ],
+                },
             ]
         },
-        tool_results=[{"call_id": "call_1", "name": "lookup", "arguments": {"q": "one"}, "output": "tool result"}],
+        tool_results=[
+            {
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": {"q": "one"},
+                "output": "tool result",
+            }
+        ],
         tools=[],
         enable_web_search=False,
     )
@@ -515,7 +621,9 @@ def test_google_worker_continue_text_step_submits_router_tool_results():
 def test_google_worker_requests_native_structured_output_when_schema_is_provided():
     worker = google_module.GoogleCaller.__new__(google_module.GoogleCaller)
     worker.model = "fake-gemini"
-    worker.client = FakeGoogleClient(responses=[FakeGoogleResponse(text='{"answer":"ok"}')])
+    worker.client = FakeGoogleClient(
+        responses=[FakeGoogleResponse(text='{"answer":"ok"}')]
+    )
 
     response = worker.generate_text(
         system_prompt="sys",
@@ -540,7 +648,9 @@ def test_google_worker_requests_native_structured_output_when_schema_is_provided
 def test_google_worker_warns_and_falls_back_when_native_structured_output_fails():
     worker = google_module.GoogleCaller.__new__(google_module.GoogleCaller)
     worker.model = "fake-gemini"
-    worker.client = FakeGoogleClient(responses=[FakeGoogleResponse(text='{"answer":"fallback"}')])
+    worker.client = FakeGoogleClient(
+        responses=[FakeGoogleResponse(text='{"answer":"fallback"}')]
+    )
     worker.client.models.errors.append(RuntimeError("structured outputs unsupported"))
     events = []
 
@@ -629,8 +739,12 @@ def test_anthropic_worker_repeats_tool_rounds_until_completion():
     worker.model = "fake-claude"
     worker.client = FakeAnthropicClient(
         [
-            FakeAnthropicResponse(tool_calls=[{"id": "toolu_1", "name": "lookup", "input": {"q": "one"}}]),
-            FakeAnthropicResponse(tool_calls=[{"id": "toolu_2", "name": "lookup", "input": {"q": "two"}}]),
+            FakeAnthropicResponse(
+                tool_calls=[{"id": "toolu_1", "name": "lookup", "input": {"q": "one"}}]
+            ),
+            FakeAnthropicResponse(
+                tool_calls=[{"id": "toolu_2", "name": "lookup", "input": {"q": "two"}}]
+            ),
             FakeAnthropicResponse(text="final answer"),
         ]
     )
@@ -649,7 +763,18 @@ def test_anthropic_worker_repeats_tool_rounds_until_completion():
         system_prompt="sys",
         user_message="user",
         history=[],
-        tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+        tools=[
+            {
+                "name": "lookup",
+                "description": "test",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            }
+        ],
         tool_handler=tool_handler,
         max_tool_rounds=4,
         event_listener=event_listener,
@@ -686,7 +811,10 @@ def test_anthropic_worker_includes_native_web_search_and_emits_event():
 
     assert response == "web-backed answer"
     assert worker.client.messages.calls[0]["tools"][-1]["type"] == "web_search_20250305"
-    assert ("web_search_used", {"provider": "anthropic", "count": 1, "round": 0}) in events
+    assert (
+        "web_search_used",
+        {"provider": "anthropic", "count": 1, "round": 0},
+    ) in events
 
 
 def test_anthropic_worker_requests_native_structured_output_when_schema_is_provided():
@@ -715,18 +843,37 @@ def test_anthropic_worker_requests_native_structured_output_when_schema_is_provi
     assert request["output_config"]["format"]["schema"]["required"] == ["answer"]
 
 
+def _stream_from_response(response_dict):
+    """Convert a single Ollama response dict into a streaming chunk iterator."""
+    yield {"message": response_dict.get("message", {}), "done": True}
+
+
 def test_local_worker_repeats_tool_rounds_until_completion():
     original_chat = local_module.ollama.chat
     calls = []
     responses = [
-        {"message": {"content": "", "tool_calls": [{"function": {"name": "lookup", "arguments": {"q": "one"}}}]}},
-        {"message": {"content": "", "tool_calls": [{"function": {"name": "lookup", "arguments": {"q": "two"}}}]}},
+        {
+            "message": {
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "lookup", "arguments": {"q": "one"}}}
+                ],
+            }
+        },
+        {
+            "message": {
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "lookup", "arguments": {"q": "two"}}}
+                ],
+            }
+        },
         {"message": {"content": "final answer", "tool_calls": []}},
     ]
 
     def fake_chat(**kwargs):
         calls.append(kwargs)
-        return responses.pop(0)
+        return _stream_from_response(responses.pop(0))
 
     local_module.ollama.chat = fake_chat
     try:
@@ -745,7 +892,18 @@ def test_local_worker_repeats_tool_rounds_until_completion():
             system_prompt="sys",
             user_message="user",
             history=[],
-            tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+            tools=[
+                {
+                    "name": "lookup",
+                    "description": "test",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": False,
+                    },
+                }
+            ],
             tool_handler=tool_handler,
             max_tool_rounds=4,
             event_listener=event_listener,
@@ -765,7 +923,9 @@ def test_local_worker_warns_and_falls_back_for_structured_output_requests():
 
     def fake_chat(**kwargs):
         calls.append(kwargs)
-        return {"message": {"content": '{"answer":"local"}', "tool_calls": []}}
+        return _stream_from_response(
+            {"message": {"content": '{"answer":"local"}', "tool_calls": []}}
+        )
 
     local_module.ollama.chat = fake_chat
     try:
@@ -784,7 +944,9 @@ def test_local_worker_warns_and_falls_back_for_structured_output_requests():
                 "properties": {"answer": {"type": "string"}},
                 "required": ["answer"],
             },
-            event_listener=lambda event_type, payload: events.append((event_type, payload)),
+            event_listener=lambda event_type, payload: events.append(
+                (event_type, payload)
+            ),
         )
 
         assert response == '{"answer":"local"}'
@@ -834,10 +996,14 @@ def test_anthropic_worker_stream_emits_text_deltas():
 def test_anthropic_worker_stream_handles_tool_rounds():
     worker = anthropic_module.AnthropicCaller.__new__(anthropic_module.AnthropicCaller)
     worker.model = "fake-claude"
-    worker.client = FakeAnthropicClient([
-        FakeAnthropicResponse(tool_calls=[{"id": "toolu_1", "name": "lookup", "input": {"q": "one"}}]),
-        FakeAnthropicResponse(text="streamed final answer"),
-    ])
+    worker.client = FakeAnthropicClient(
+        [
+            FakeAnthropicResponse(
+                tool_calls=[{"id": "toolu_1", "name": "lookup", "input": {"q": "one"}}]
+            ),
+            FakeAnthropicResponse(text="streamed final answer"),
+        ]
+    )
 
     tool_calls = []
     events = []
@@ -853,7 +1019,18 @@ def test_anthropic_worker_stream_handles_tool_rounds():
         system_prompt="sys",
         user_message="user",
         history=[],
-        tools=[{"name": "lookup", "description": "test", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}],
+        tools=[
+            {
+                "name": "lookup",
+                "description": "test",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            }
+        ],
         tool_handler=tool_handler,
         max_tool_rounds=4,
         event_listener=event_listener,

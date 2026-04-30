@@ -16,13 +16,16 @@ BACKEND_DIR = ROOT_DIR / "Back-end"
 FRONTEND_DIR = ROOT_DIR / "Front-end"
 
 # Load Back-end/.env before reading env vars so REDIS_URL and others are available.
-_dotenv_path = BACKEND_DIR / ".env"
-if _dotenv_path.exists():
-    try:
-        from dotenv import load_dotenv as _load_dotenv
-        _load_dotenv(_dotenv_path)
-    except ImportError:
-        pass
+# Use the project's canonical .env resolution so the same file is picked up as
+# the backend entry points.
+_sys_path_restore = sys.path.copy()
+try:
+    sys.path.insert(0, str(BACKEND_DIR / "app"))
+    from utils.env import load_project_dotenv  # noqa: E402
+
+    load_project_dotenv(start_dir=BACKEND_DIR)
+finally:
+    sys.path[:] = _sys_path_restore
 
 BACKEND_HOST = os.getenv("AILA_BACKEND_HOST", "0.0.0.0")
 BACKEND_PORT = os.getenv("AILA_BACKEND_PORT", "8000")
@@ -108,7 +111,9 @@ def _ensure_port_available(host: str, port: str, label: str, hint: str) -> None:
         raise SystemExit(f"{label} port {port} is already in use on {host}. {hint}")
 
 
-def _spawn_process(label: str, command: list[str], cwd: Path, env: dict[str, str]) -> subprocess.Popen[str]:
+def _spawn_process(
+    label: str, command: list[str], cwd: Path, env: dict[str, str]
+) -> subprocess.Popen[str]:
     process = subprocess.Popen(
         command,
         cwd=str(cwd),
@@ -144,7 +149,9 @@ def _maybe_start_redis(backend_env: dict[str, str]) -> "subprocess.Popen[str] | 
     if not redis_url:
         return None
     if shutil.which("redis-server") is None:
-        print(f"[redis] REDIS_URL is set but redis-server not found on PATH — live fanout disabled")
+        print(
+            "[redis] REDIS_URL is set but redis-server not found on PATH — live fanout disabled"
+        )
         return None
     if _redis_already_running(redis_url):
         print(f"[redis] Redis already running at {redis_url}")
@@ -152,7 +159,9 @@ def _maybe_start_redis(backend_env: dict[str, str]) -> "subprocess.Popen[str] | 
     parsed = urlparse(redis_url)
     port = str(parsed.port or 6379)
     print(f"[redis] Starting redis-server on port {port}")
-    return _spawn_process("redis", ["redis-server", "--port", port], ROOT_DIR, backend_env)
+    return _spawn_process(
+        "redis", ["redis-server", "--port", port], ROOT_DIR, backend_env
+    )
 
 
 def _terminate_process(process: subprocess.Popen[str], label: str) -> None:
@@ -175,7 +184,9 @@ def main() -> None:
 
     backend_env = os.environ.copy()
     existing_pythonpath = backend_env.get("PYTHONPATH", "").strip()
-    backend_env["PYTHONPATH"] = "app" if not existing_pythonpath else f"app{os.pathsep}{existing_pythonpath}"
+    backend_env["PYTHONPATH"] = (
+        "app" if not existing_pythonpath else f"app{os.pathsep}{existing_pythonpath}"
+    )
 
     frontend_env = os.environ.copy()
     frontend_env.setdefault("BROWSER", "none")
@@ -231,7 +242,9 @@ def main() -> None:
         start_workers = True
 
     if not any((start_backend, start_frontend, start_workers)):
-        raise SystemExit("Nothing selected to start. Remove the skip flags or choose a mode like --frontend-only.")
+        raise SystemExit(
+            "Nothing selected to start. Remove the skip flags or choose a mode like --frontend-only."
+        )
 
     if start_frontend:
         _require_command("npm")
@@ -268,7 +281,9 @@ def main() -> None:
 
     processes: list[tuple[str, subprocess.Popen[str]]] = []
 
-    redis_proc = _maybe_start_redis(backend_env) if (start_backend or start_workers) else None
+    redis_proc = (
+        _maybe_start_redis(backend_env) if (start_backend or start_workers) else None
+    )
     if redis_proc is not None:
         processes.append(("redis", redis_proc))
 
@@ -276,14 +291,18 @@ def main() -> None:
         backend = _spawn_process("backend", backend_command, BACKEND_DIR, backend_env)
         processes.append(("backend", backend))
     if start_frontend:
-        frontend = _spawn_process("frontend", frontend_command, FRONTEND_DIR, frontend_env)
+        frontend = _spawn_process(
+            "frontend", frontend_command, FRONTEND_DIR, frontend_env
+        )
         processes.append(("frontend", frontend))
     if start_workers:
         for worker_index in range(CHAT_WORKER_PROCESS_COUNT):
             worker_env = backend_env.copy()
             worker_env["CHAT_RUN_WORKER_ID"] = f"{CHAT_WORKER_ID}-{worker_index + 1}"
             worker_env.setdefault("CHAT_RUN_WORKER_CONCURRENCY", "1")
-            worker = _spawn_process(f"worker-{worker_index + 1}", worker_command, BACKEND_DIR, worker_env)
+            worker = _spawn_process(
+                f"worker-{worker_index + 1}", worker_command, BACKEND_DIR, worker_env
+            )
             processes.append((f"worker-{worker_index + 1}", worker))
 
     def _shutdown(*_args) -> None:

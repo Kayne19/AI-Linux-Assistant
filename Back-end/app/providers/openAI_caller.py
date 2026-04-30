@@ -18,14 +18,7 @@ from providers.openai_request_builder import (
     make_schema_nullable,
 )
 
-try:
-    from dotenv import load_dotenv
-except (
-    ImportError
-):  # pragma: no cover - optional dependency in some test/runtime environments
-
-    def load_dotenv():
-        return False
+from utils.env import load_project_dotenv
 
 
 try:
@@ -38,7 +31,7 @@ except (
 
 class OpenAICaller:
     def __init__(self, model, reasoning_effort=None):
-        load_dotenv()
+        load_project_dotenv()
         if OpenAI is None:
             raise RuntimeError(
                 "OpenAI SDK is not installed. Install the 'openai' package to use this provider."
@@ -316,33 +309,52 @@ class OpenAICaller:
         self, request_kwargs, event_listener=None, round_number=0, max_retries=12
     ):
         attempt = 0
+        total_emitted = 0
         while True:
-            emitted_text = False
             try:
+                stream_cumulative = 0
                 with self.client.responses.stream(**request_kwargs) as stream:
                     for event in stream:
-                        if getattr(event, "type", None) == "response.output_text.delta":
-                            emitted_text = True
+                        if getattr(event, "type", None) == "response.output.text.delta":
+                            delta = getattr(event, "delta", "")
+                            stream_cumulative += len(delta)
+
+                            if stream_cumulative <= total_emitted:
+                                continue
+
+                            if total_emitted > 0:
+                                previous_stream_len = stream_cumulative - len(delta)
+                                if previous_stream_len < total_emitted:
+                                    overlap = total_emitted - previous_stream_len
+                                    delta = delta[overlap:]
+
+                            total_emitted = stream_cumulative
                             if event_listener is not None:
                                 event_listener(
                                     "text_delta",
                                     {
                                         "provider": "openai",
                                         "round": round_number,
-                                        "delta": getattr(event, "delta", ""),
+                                        "delta": delta,
                                     },
                                 )
                     return stream.get_final_response()
             except Exception as exc:
                 attempt += 1
-                if (
-                    emitted_text
-                    or not self._is_rate_limit_error(exc)
-                    or attempt > max_retries
-                ):
+                if not self._is_rate_limit_error(exc) or attempt > max_retries:
                     raise
 
                 delay_seconds = self._extract_retry_delay_seconds(exc, attempt)
+                if total_emitted > 0 and event_listener is not None:
+                    event_listener(
+                        "stream_paused",
+                        {
+                            "provider": "openai",
+                            "round": round_number,
+                            "attempt": attempt,
+                            "delay_seconds": delay_seconds,
+                        },
+                    )
                 if event_listener is not None:
                     event_listener(
                         "rate_limit_retry",

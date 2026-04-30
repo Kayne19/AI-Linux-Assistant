@@ -1664,7 +1664,15 @@ class ModelRouter:
             return RouterState.COMMIT_MEMORY
 
         try:
-            snapshot = self.memory_store.load_snapshot()
+            is_stale = self.memory_store.is_snapshot_stale()
+            if is_stale:
+                self._emit_event(
+                    "memory_stale_snapshot",
+                    {"action": "re_resolve", "phase": "resolve"},
+                )
+                snapshot = self.memory_store.load_snapshot_fresh()
+            else:
+                snapshot = self.memory_store.load_snapshot()
             turn.memory_resolution = self.memory_resolver.resolve(
                 turn.extracted_memory, snapshot=snapshot
             )

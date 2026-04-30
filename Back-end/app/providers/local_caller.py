@@ -96,10 +96,10 @@ class LocalCaller:
             if temperature is not None:
                 request_kwargs["options"] = {"temperature": temperature}
 
-            response = ollama.chat(**request_kwargs)
+            message, model_response = self._streaming_ollama_chat(
+                request_kwargs, cancel_check
+            )
             invoke_cancel_check(cancel_check, "after_model_call")
-            message = response.get("message", {})
-            model_response = message.get("content", "")
             tool_calls = self._normalize_tool_calls(message.get("tool_calls") or [])
             tool_rounds = 0
 
@@ -159,10 +159,11 @@ class LocalCaller:
                 if temperature is not None:
                     followup_kwargs["options"] = {"temperature": temperature}
                 invoke_cancel_check(cancel_check, "before_model_call")
-                response = ollama.chat(**followup_kwargs)
+                message, response_text = self._streaming_ollama_chat(
+                    followup_kwargs, cancel_check
+                )
                 invoke_cancel_check(cancel_check, "after_model_call")
-                message = response.get("message", {})
-                model_response = message.get("content", model_response)
+                model_response = response_text or model_response
                 tool_calls = self._normalize_tool_calls(message.get("tool_calls") or [])
 
             if event_listener is not None:
@@ -171,6 +172,22 @@ class LocalCaller:
 
         except Exception as e:
             raise RuntimeError(f"Ollama Error: {str(e)}") from e
+
+    def _streaming_ollama_chat(self, request_kwargs, cancel_check=None):
+        """Streaming Ollama chat with cancellation checks between chunks.
+
+        Returns (message_dict, content_string).
+        """
+        acc_content = ""
+        message = {}
+        for chunk in ollama.chat(stream=True, **request_kwargs):
+            invoke_cancel_check(cancel_check, "during_ollama_stream")
+            chunk_message = chunk.get("message", {})
+            acc_content += chunk_message.get("content", "")
+            if chunk.get("done"):
+                message = chunk_message
+        message["content"] = acc_content or message.get("content", "")
+        return message, message["content"]
 
     def start_text_step(
         self,
@@ -214,10 +231,10 @@ class LocalCaller:
             request_kwargs["tools"] = translated_tools
         if temperature is not None:
             request_kwargs["options"] = {"temperature": temperature}
-        response = ollama.chat(**request_kwargs)
+        message, _content = self._streaming_ollama_chat(request_kwargs, cancel_check)
         invoke_cancel_check(cancel_check, "after_model_call")
         return self._step_result_from_message(
-            response.get("message", {}),
+            message,
             messages,
         )
 
@@ -259,10 +276,10 @@ class LocalCaller:
             request_kwargs["tools"] = translated_tools
         if temperature is not None:
             request_kwargs["options"] = {"temperature": temperature}
-        response = ollama.chat(**request_kwargs)
+        message, _content = self._streaming_ollama_chat(request_kwargs, cancel_check)
         invoke_cancel_check(cancel_check, "after_model_call")
         return self._step_result_from_message(
-            response.get("message", {}),
+            message,
             messages,
         )
 

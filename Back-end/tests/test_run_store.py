@@ -294,7 +294,7 @@ def test_run_store_completion_persists_messages_and_done_event():
         done_payload={"debug": {"state_trace": ["START", "DONE"]}},
     )
 
-    completed = run_store.get_run(run.id)
+    completed = run_store._get_run(run.id)
     events = run_store.list_events_after(run.id, after_seq=0)
 
     assert completed.status == "completed"
@@ -521,7 +521,7 @@ def test_worker_owned_mutations_reject_stale_worker_after_reclaim():
         assistant_role="model",
         assistant_content="world",
     )
-    final_run = run_store.get_run(run.id)
+    final_run = run_store._get_run(run.id)
 
     assert user_message.content == "hello"
     assert assistant_message.content == "world"
@@ -731,7 +731,7 @@ def test_run_store_can_complete_auto_name_runs_without_messages():
         done_payload={"debug": {"state_trace": ["AUTO_NAME", "DONE"], "tool_events": [{"type": "chat_named"}]}},
     )
 
-    completed = run_store.get_run(run.id)
+    completed = run_store._get_run(run.id)
     terminal = run_store.get_terminal_event(run.id)
 
     assert completed.status == "completed"
@@ -781,7 +781,7 @@ def test_run_store_seeds_and_replaces_normalized_inputs():
         },
     )
 
-    reloaded = run_store.get_run(claimed.id)
+    reloaded = run_store._get_run(claimed.id)
 
     assert updated["retrieval_query"] == "journalctl ssh"
     assert reloaded.normalized_inputs_json["conversation_summary_text"] == "Older summary"

@@ -16,7 +16,9 @@ def _build_run_store(redis_client=None):
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
-    return PostgresRunStore(session_factory=session_factory, redis_client=redis_client), session_factory
+    return PostgresRunStore(
+        session_factory=session_factory, redis_client=redis_client
+    ), session_factory
 
 
 def _seed_chat(session_factory, username="user", project_name="Project", title="Chat"):
@@ -37,7 +39,11 @@ def _seed_chat(session_factory, username="user", project_name="Project", title="
 
 
 def _make_run(store, session_factory, client_request_id="crid-1"):
-    user, project, chat = _seed_chat(session_factory, username=f"user-{client_request_id}", title=f"chat-{client_request_id}")
+    user, project, chat = _seed_chat(
+        session_factory,
+        username=f"user-{client_request_id}",
+        title=f"chat-{client_request_id}",
+    )
     return store.create_or_reuse_run(
         chat_session_id=chat.id,
         project_id=project.id,
@@ -85,7 +91,7 @@ def test_append_text_checkpoint_writes_event_and_accumulates_text():
     store.append_text_checkpoint(run.id, "Hello", 0)
     store.append_text_checkpoint(run.id, " world", 1)
 
-    refreshed = store.get_run(run.id)
+    refreshed = store._get_run(run.id)
     events = store.list_events_after(run.id, after_seq=0)
 
     assert refreshed.partial_assistant_text == "Hello world"
@@ -112,9 +118,11 @@ def test_append_magi_role_text_checkpoint_writes_event_without_touching_assistan
     store, session_factory = _build_run_store()
     run = _make_run(store, session_factory)
 
-    store.append_magi_role_text_checkpoint(run.id, "skeptic", "discussion", 2, "Check SMART data first", 1)
+    store.append_magi_role_text_checkpoint(
+        run.id, "skeptic", "discussion", 2, "Check SMART data first", 1
+    )
 
-    refreshed = store.get_run(run.id)
+    refreshed = store._get_run(run.id)
     events = store.list_events_after(run.id, after_seq=0)
 
     assert refreshed.partial_assistant_text == ""
@@ -131,15 +139,27 @@ def test_append_magi_role_text_checkpoint_writes_event_without_touching_assistan
 def test_should_forward_text_delta_without_checkpoint():
     from streaming.replay_filters import should_forward_text_delta
 
-    assert should_forward_text_delta({"payload": {"window": 0}}, max_checkpoint_window=-1) is True
-    assert should_forward_text_delta({"payload": {"window": 2}}, max_checkpoint_window=-1) is True
+    assert (
+        should_forward_text_delta({"payload": {"window": 0}}, max_checkpoint_window=-1)
+        is True
+    )
+    assert (
+        should_forward_text_delta({"payload": {"window": 2}}, max_checkpoint_window=-1)
+        is True
+    )
 
 
 def test_should_forward_text_delta_drops_covered_windows():
     from streaming.replay_filters import should_forward_text_delta
 
-    assert should_forward_text_delta({"payload": {"window": 0}}, max_checkpoint_window=0) is False
-    assert should_forward_text_delta({"payload": {"window": 1}}, max_checkpoint_window=0) is True
+    assert (
+        should_forward_text_delta({"payload": {"window": 0}}, max_checkpoint_window=0)
+        is False
+    )
+    assert (
+        should_forward_text_delta({"payload": {"window": 1}}, max_checkpoint_window=0)
+        is True
+    )
 
 
 def test_should_forward_text_delta_allows_legacy_payloads():
@@ -150,31 +170,55 @@ def test_should_forward_text_delta_allows_legacy_payloads():
 
 
 def test_should_forward_stream_delta_tracks_magi_role_windows_per_entry():
-    from streaming.replay_filters import register_checkpoint_window, should_forward_stream_delta
+    from streaming.replay_filters import (
+        register_checkpoint_window,
+        should_forward_stream_delta,
+    )
 
     checkpoint_windows = {}
     register_checkpoint_window(
         checkpoint_windows,
         {
             "code": "magi_role_text_checkpoint",
-            "payload": {"role": "eager", "phase": "discussion", "round": 1, "window": 0},
+            "payload": {
+                "role": "eager",
+                "phase": "discussion",
+                "round": 1,
+                "window": 0,
+            },
         },
     )
 
-    assert should_forward_stream_delta(
-        {
-            "code": "magi_role_text_delta",
-            "payload": {"role": "eager", "phase": "discussion", "round": 1, "window": 0},
-        },
-        checkpoint_windows,
-    ) is False
-    assert should_forward_stream_delta(
-        {
-            "code": "magi_role_text_delta",
-            "payload": {"role": "skeptic", "phase": "discussion", "round": 1, "window": 0},
-        },
-        checkpoint_windows,
-    ) is True
+    assert (
+        should_forward_stream_delta(
+            {
+                "code": "magi_role_text_delta",
+                "payload": {
+                    "role": "eager",
+                    "phase": "discussion",
+                    "round": 1,
+                    "window": 0,
+                },
+            },
+            checkpoint_windows,
+        )
+        is False
+    )
+    assert (
+        should_forward_stream_delta(
+            {
+                "code": "magi_role_text_delta",
+                "payload": {
+                    "role": "skeptic",
+                    "phase": "discussion",
+                    "round": 1,
+                    "window": 0,
+                },
+            },
+            checkpoint_windows,
+        )
+        is True
+    )
 
 
 def test_delta_buffer_publishes_immediately_and_flushes_in_batches():
@@ -189,7 +233,9 @@ def test_delta_buffer_publishes_immediately_and_flushes_in_batches():
         run_id=run.id,
         worker_id="worker-1",
         run_store=store,
-        redis_publish_fn=lambda run_id, delta, window: published.append((run_id, delta, window)),
+        redis_publish_fn=lambda run_id, delta, window: published.append(
+            (run_id, delta, window)
+        ),
         ownership_lost_event=threading.Event(),
         flush_interval=999,
         flush_bytes=999,
@@ -271,7 +317,9 @@ def test_magi_role_delta_buffer_publishes_live_deltas_and_flushes_absolute_check
         run_id=run.id,
         worker_id="worker-1",
         run_store=store,
-        redis_publish_fn=lambda run_id, payload, code: published.append((run_id, payload, code)),
+        redis_publish_fn=lambda run_id, payload, code: published.append(
+            (run_id, payload, code)
+        ),
         ownership_lost_event=threading.Event(),
         flush_interval=999,
         flush_bytes=999,

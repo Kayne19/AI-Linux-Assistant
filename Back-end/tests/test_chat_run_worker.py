@@ -104,7 +104,7 @@ def test_worker_allows_resumed_paused_magi_run_with_existing_event_history_to_co
     service = _TestWorkerService(run_store)
     service._handle_claimed_run(claimed, "worker-2")
 
-    finished = run_store.get_run(run.id)
+    finished = run_store._get_run(run.id)
     assert finished.status == "completed"
     assert finished.error_message == ""
 

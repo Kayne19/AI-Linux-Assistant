@@ -9,20 +9,12 @@ from providers.structured_output import (
     warning_payload,
 )
 from providers.step_protocol import ProviderStepResult, ProviderToolCall
-
-try:
-    from dotenv import load_dotenv
-except (
-    ImportError
-):  # pragma: no cover - optional dependency in some test/runtime environments
-
-    def load_dotenv():
-        return False
+from utils.env import load_project_dotenv
 
 
 class AnthropicCaller:
     def __init__(self, model):
-        load_dotenv()
+        load_project_dotenv()
         self.API_KEY = os.getenv("ANTHROPIC_API_KEY")
         self.model = model
         self.client = self._build_client()

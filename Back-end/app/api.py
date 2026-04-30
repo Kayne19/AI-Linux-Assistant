@@ -620,10 +620,10 @@ def _parse_redis_stream_payload(raw_data, run_id):
         return None
 
 
-def _wait_for_terminal_run(run_store, run_id, timeout_seconds=1800):
+def _wait_for_terminal_run(run_store, run_id, user_id, timeout_seconds=1800):
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        run = run_store.get_run(run_id)
+        run = run_store.get_run_for_user(run_id, user_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found.")
         if run.status in TERMINAL_RUN_STATUSES:
@@ -888,7 +888,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
             for chat in chat_rows
         ]
 
-    def _stream_via_redis(run_id, after_seq, redis_client):
+    def _stream_via_redis(run_id, after_seq, redis_client, user_id):
         """Subscribe to the Redis fanout channel, replay Postgres backlog first, then
         forward live Redis messages. Subscribe happens BEFORE the backlog query so no
         event can fall into the gap between the two.  Messages already covered by the
@@ -914,7 +914,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
             while True:
                 msg = ps.get_message(timeout=health_poll)
                 if msg is None:
-                    run = run_store.get_run(run_id)
+                    run = run_store.get_run_for_user(run_id, user_id)
                     if run is None:
                         yield _sse_payload(
                             {"type": "error", "message": "Run not found."}
@@ -952,14 +952,16 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
             ps.unsubscribe()
             ps.close()
 
-    def _stream_run(run_id, after_seq=0):
+    def _stream_run(run_id, after_seq=0, user_id=None):
         poll_seconds = max(0.1, float(settings.chat_run_stream_poll_ms) / 1000.0)
         redis_client = _get_redis_client()
 
         def stream():
             if redis_client is not None:
                 try:
-                    yield from _stream_via_redis(run_id, after_seq, redis_client)
+                    yield from _stream_via_redis(
+                        run_id, after_seq, redis_client, user_id
+                    )
                     return
                 except Exception:
                     pass  # fall through to Postgres polling
@@ -977,7 +979,11 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                 if terminal_sent:
                     break
 
-                run = run_store.get_run(run_id)
+                run = (
+                    run_store.get_run_for_user(run_id, user_id)
+                    if user_id is not None
+                    else run_store._get_run(run_id)
+                )
                 if run is None:
                     yield _sse_payload({"type": "error", "message": "Run not found."})
                     break
@@ -1287,7 +1293,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         run = run_store.get_run_for_user(run_id, current_user.id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found.")
-        return _stream_run(run_id, after_seq=after_seq)
+        return _stream_run(run_id, after_seq=after_seq, user_id=current_user.id)
 
     @app.post("/runs/{run_id}/cancel", response_model=ChatRunResponse)
     def cancel_run(run_id: str, current_user=Depends(_require_current_user)):
@@ -1343,7 +1349,10 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
     ):
         run = _create_or_reuse_run(chat_session_id, request, current_user.id)
         terminal_run = _wait_for_terminal_run(
-            run_store, run.id, timeout_seconds=settings.chat_run_wait_timeout_seconds
+            run_store,
+            run.id,
+            current_user.id,
+            timeout_seconds=settings.chat_run_wait_timeout_seconds,
         )
         return _run_result_or_error(terminal_run)
 
@@ -1354,7 +1363,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         current_user=Depends(_require_current_user),
     ):
         run = _create_or_reuse_run(chat_session_id, request, current_user.id)
-        return _stream_run(run.id, after_seq=0)
+        return _stream_run(run.id, after_seq=0, user_id=current_user.id)
 
     # ---------------------------------------------------------------------------
     # Admin settings routes

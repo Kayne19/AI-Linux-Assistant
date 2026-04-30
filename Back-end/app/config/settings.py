@@ -1,14 +1,8 @@
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
-except (
-    ImportError
-):  # pragma: no cover - optional dependency in some test/runtime environments
-
-    def load_dotenv():
-        return False
+from utils.env import load_project_dotenv
 
 
 @dataclass(frozen=True)
@@ -136,7 +130,7 @@ def _get_csv_env(*names):
 
 
 def load_settings():
-    load_dotenv()
+    load_project_dotenv(start_dir=Path(__file__).resolve().parent)
     provider_defaults = {
         "openai": _get_env("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
         "anthropic": _get_env("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6"),

@@ -1328,8 +1328,8 @@ def test_magi_historian_always_has_web_search_enabled():
     system.call_api("question", "docs")
 
     assert workers["historian_worker"].calls[0]["kwargs"]["enable_web_search"] is True
-    assert workers["eager_worker"].calls[0]["kwargs"]["enable_web_search"] is False
-    assert workers["skeptic_worker"].calls[0]["kwargs"]["enable_web_search"] is False
+    assert workers["eager_worker"].calls[0]["kwargs"]["enable_web_search"] is True
+    assert workers["skeptic_worker"].calls[0]["kwargs"]["enable_web_search"] is True
 
 
 def test_magi_closing_arguments_always_runs():

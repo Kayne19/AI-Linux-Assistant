@@ -300,7 +300,7 @@ class PostgresRunStore:
                 pass
         return run
 
-    def get_run(self, run_id):
+    def _get_run(self, run_id):
         with self._session() as session:
             return session.scalar(select(ChatRun).where(ChatRun.id == run_id))
 

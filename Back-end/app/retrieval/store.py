@@ -5,9 +5,30 @@ class LanceDBStore:
     def __init__(self, db_path: str, table_name: str):
         self.db_path = db_path
         self.table_name = table_name
+        self._db = None  # lazy-init, memoized
 
     def connect(self):
-        return lancedb.connect(self.db_path)
+        """Return the memoized LanceDB connection, reconnecting on error."""
+        if self._db is not None:
+            try:
+                # Cheap liveness check — list table names to verify the
+                # connection is still usable.
+                self._db.table_names()
+            except Exception:
+                self._db = None
+        if self._db is None:
+            self._db = lancedb.connect(self.db_path)
+        return self._db
+
+    def close(self):
+        """Close the memoized connection if it is open."""
+        if self._db is not None:
+            try:
+                self._db.close()
+            except Exception:
+                pass
+            finally:
+                self._db = None
 
     def table_exists(self) -> bool:
         return self.table_name in self.connect().table_names()
