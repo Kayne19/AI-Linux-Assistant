@@ -41,26 +41,48 @@ class FakeMagiWorker:
         self._call_index += 1
         return self.responses[index]
 
-    def generate_text(self, system_prompt="", user_message="", history=None, tools=None,
-                      tool_handler=None, max_tool_rounds=4, event_listener=None, **kwargs):
-        self.calls.append({
-            "system_prompt": system_prompt,
-            "user_message": user_message,
-            "tools": tools,
-            "tool_handler": tool_handler,
-            "kwargs": kwargs,
-        })
+    def generate_text(
+        self,
+        system_prompt="",
+        user_message="",
+        history=None,
+        tools=None,
+        tool_handler=None,
+        max_tool_rounds=4,
+        event_listener=None,
+        **kwargs,
+    ):
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "user_message": user_message,
+                "tools": tools,
+                "tool_handler": tool_handler,
+                "kwargs": kwargs,
+            }
+        )
         return self._next_response()
 
-    def generate_text_stream(self, system_prompt="", user_message="", history=None, tools=None,
-                             tool_handler=None, max_tool_rounds=4, event_listener=None, **kwargs):
-        self.calls.append({
-            "system_prompt": system_prompt,
-            "user_message": user_message,
-            "tools": tools,
-            "tool_handler": tool_handler,
-            "kwargs": kwargs,
-        })
+    def generate_text_stream(
+        self,
+        system_prompt="",
+        user_message="",
+        history=None,
+        tools=None,
+        tool_handler=None,
+        max_tool_rounds=4,
+        event_listener=None,
+        **kwargs,
+    ):
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "user_message": user_message,
+                "tools": tools,
+                "tool_handler": tool_handler,
+                "kwargs": kwargs,
+            }
+        )
         response = self._next_response()
         if event_listener is not None:
             for character in response:
@@ -164,9 +186,9 @@ def _make_historian_response(
         "operator_warnings": operator_warnings or [],
         "most_relevant_evidence": most_relevant_evidence,
         "most_important_gap": most_important_gap,
-        "evidence_sources": evidence_sources if evidence_sources is not None else (
-            ["memory: known context"] if grounding_strength != "absent" else []
-        ),
+        "evidence_sources": evidence_sources
+        if evidence_sources is not None
+        else (["memory: known context"] if grounding_strength != "absent" else []),
     }
     if new_information is not None:
         payload["new_information"] = new_information
@@ -183,15 +205,17 @@ def _make_eager_closing_response(
     strongest_caveat="",
     missing_decisive_artifact="",
 ):
-    return json.dumps({
-        "provisional_branch": provisional_branch,
-        "position": position,
-        "confidence": confidence,
-        "changed_since_opening": changed_since_opening,
-        "best_next_check": best_next_check,
-        "strongest_caveat": strongest_caveat,
-        "missing_decisive_artifact": missing_decisive_artifact,
-    })
+    return json.dumps(
+        {
+            "provisional_branch": provisional_branch,
+            "position": position,
+            "confidence": confidence,
+            "changed_since_opening": changed_since_opening,
+            "best_next_check": best_next_check,
+            "strongest_caveat": strongest_caveat,
+            "missing_decisive_artifact": missing_decisive_artifact,
+        }
+    )
 
 
 def _make_skeptic_closing_response(
@@ -203,15 +227,17 @@ def _make_skeptic_closing_response(
     falsifying_check="",
     blocking_missing_artifact="",
 ):
-    return json.dumps({
-        "target_branch": target_branch,
-        "position": position,
-        "confidence": confidence,
-        "changed_since_opening": changed_since_opening,
-        "strongest_objection": strongest_objection,
-        "falsifying_check": falsifying_check,
-        "blocking_missing_artifact": blocking_missing_artifact,
-    })
+    return json.dumps(
+        {
+            "target_branch": target_branch,
+            "position": position,
+            "confidence": confidence,
+            "changed_since_opening": changed_since_opening,
+            "strongest_objection": strongest_objection,
+            "falsifying_check": falsifying_check,
+            "blocking_missing_artifact": blocking_missing_artifact,
+        }
+    )
 
 
 def _make_historian_closing_response(
@@ -224,16 +250,18 @@ def _make_historian_closing_response(
     most_relevant_evidence="",
     most_important_gap="",
 ):
-    return json.dumps({
-        "evaluated_branch": evaluated_branch,
-        "position": position,
-        "confidence": confidence,
-        "changed_since_opening": changed_since_opening,
-        "grounding_strength": grounding_strength,
-        "branch_support_status": branch_support_status,
-        "most_relevant_evidence": most_relevant_evidence,
-        "most_important_gap": most_important_gap,
-    })
+    return json.dumps(
+        {
+            "evaluated_branch": evaluated_branch,
+            "position": position,
+            "confidence": confidence,
+            "changed_since_opening": changed_since_opening,
+            "grounding_strength": grounding_strength,
+            "branch_support_status": branch_support_status,
+            "most_relevant_evidence": most_relevant_evidence,
+            "most_important_gap": most_important_gap,
+        }
+    )
 
 
 def _make_arbiter_response(
@@ -249,17 +277,19 @@ def _make_arbiter_response(
 ):
     if primary_issue is None:
         primary_issue = winning_branch
-    return json.dumps({
-        "primary_issue": primary_issue,
-        "immediate_obligation": immediate_obligation,
-        "decision_mode": decision_mode,
-        "uncertainty_level": uncertainty_level,
-        "winning_branch": winning_branch,
-        "strongest_surviving_objection": strongest_surviving_objection,
-        "missing_decisive_artifact": missing_decisive_artifact,
-        "evidence_sources": evidence_sources or [],
-        "final_answer": final_answer,
-    })
+    return json.dumps(
+        {
+            "primary_issue": primary_issue,
+            "immediate_obligation": immediate_obligation,
+            "decision_mode": decision_mode,
+            "uncertainty_level": uncertainty_level,
+            "winning_branch": winning_branch,
+            "strongest_surviving_objection": strongest_surviving_objection,
+            "missing_decisive_artifact": missing_decisive_artifact,
+            "evidence_sources": evidence_sources or [],
+            "final_answer": final_answer,
+        }
+    )
 
 
 def _build_magi(
@@ -279,8 +309,12 @@ def _build_magi(
 
     eager = MagiEager(worker=eager_worker, tools=tools, tool_handler=tool_handler)
     skeptic = MagiSkeptic(worker=skeptic_worker, tools=tools, tool_handler=tool_handler)
-    historian = MagiHistorian(worker=historian_worker, tools=tools, tool_handler=tool_handler)
-    arbiter = MagiArbiter(worker=arbiter_worker, tools=[], tool_handler=None, max_tool_rounds=0)
+    historian = MagiHistorian(
+        worker=historian_worker, tools=tools, tool_handler=tool_handler
+    )
+    arbiter = MagiArbiter(
+        worker=arbiter_worker, tools=[], tool_handler=None, max_tool_rounds=0
+    )
 
     events = []
     states = []
@@ -301,12 +335,17 @@ def _build_magi(
         event_listener=on_event,
         pause_check=pause_check,
     )
-    return system, events, states, {
-        "eager_worker": eager_worker,
-        "skeptic_worker": skeptic_worker,
-        "historian_worker": historian_worker,
-        "arbiter_worker": arbiter_worker,
-    }
+    return (
+        system,
+        events,
+        states,
+        {
+            "eager_worker": eager_worker,
+            "skeptic_worker": skeptic_worker,
+            "historian_worker": historian_worker,
+            "arbiter_worker": arbiter_worker,
+        },
+    )
 
 
 def test_magi_produces_response_from_all_roles():
@@ -317,7 +356,9 @@ def test_magi_produces_response_from_all_roles():
                 provisional_branch="disk-vs-inode",
                 key_claims=["df output should separate blocks from inodes"],
             ),
-            _make_eager_closing_response(position="Still favor the disk-vs-inode branch."),
+            _make_eager_closing_response(
+                position="Still favor the disk-vs-inode branch."
+            ),
         ],
         skeptic_text=[
             _make_skeptic_response(
@@ -326,7 +367,9 @@ def test_magi_produces_response_from_all_roles():
                 strongest_objection="The branch could miss inode exhaustion.",
                 falsifying_check="Run df -i.",
             ),
-            _make_skeptic_closing_response(position="The inode objection survives until df -i is checked."),
+            _make_skeptic_closing_response(
+                position="The inode objection survives until df -i is checked."
+            ),
         ],
         historian_text=[
             _make_historian_response(
@@ -336,7 +379,9 @@ def test_magi_produces_response_from_all_roles():
                 attempt_history=["prior attempt: cleared logs"],
                 most_relevant_evidence="History shows a previous /var saturation event.",
             ),
-            _make_historian_closing_response(position="History still supports checking disk and inode usage first."),
+            _make_historian_closing_response(
+                position="History still supports checking disk and inode usage first."
+            ),
         ],
         arbiter_text=_make_arbiter_response(
             final_answer="Check df -h and df -i to distinguish between block exhaustion and inode exhaustion.",
@@ -346,9 +391,14 @@ def test_magi_produces_response_from_all_roles():
         max_discussion_rounds=0,
     )
 
-    response = system.call_api("disk is full", "some docs", memory_snapshot_text="OS: Debian 12")
+    response = system.call_api(
+        "disk is full", "some docs", memory_snapshot_text="OS: Debian 12"
+    )
 
-    assert response == "Check df -h and df -i to distinguish between block exhaustion and inode exhaustion."
+    assert (
+        response
+        == "Check df -h and df -i to distinguish between block exhaustion and inode exhaustion."
+    )
     assert len(workers["eager_worker"].calls) >= 2
     assert len(workers["skeptic_worker"].calls) >= 2
     assert len(workers["historian_worker"].calls) >= 2
@@ -360,7 +410,9 @@ def test_magi_emits_phase_events_in_order():
         eager_text=[_make_eager_response(), _make_eager_closing_response()],
         skeptic_text=[_make_skeptic_response(), _make_skeptic_closing_response()],
         historian_text=[_make_historian_response(), _make_historian_closing_response()],
-        arbiter_text=_make_arbiter_response(final_answer="final", decision_mode="consensus"),
+        arbiter_text=_make_arbiter_response(
+            final_answer="final", decision_mode="consensus"
+        ),
         max_discussion_rounds=0,
     )
 
@@ -371,8 +423,17 @@ def test_magi_emits_phase_events_in_order():
     assert events[0][1]["phase"] == "opening_arguments"
     assert "magi_synthesis_complete" in event_codes
 
-    role_starts = [event for event in events if event[0] == "magi_role_start" and event[1].get("phase") == "opening_arguments"]
-    assert [event[1]["role"] for event in role_starts] == ["eager", "skeptic", "historian"]
+    role_starts = [
+        event
+        for event in events
+        if event[0] == "magi_role_start"
+        and event[1].get("phase") == "opening_arguments"
+    ]
+    assert [event[1]["role"] for event in role_starts] == [
+        "eager",
+        "skeptic",
+        "historian",
+    ]
 
     state_names = [state for state, _ in states]
     assert MagiState.OPENING_ARGUMENTS in state_names
@@ -421,7 +482,9 @@ def test_magi_discussion_stops_early_when_forced_roles_only_report_reasoned_no_d
                 new_information=False,
                 no_delta_reason="no_grounding_change",
             ),
-            _make_historian_closing_response(grounding_strength="weak", branch_support_status="weakens"),
+            _make_historian_closing_response(
+                grounding_strength="weak", branch_support_status="weakens"
+            ),
         ],
         arbiter_text=_make_arbiter_response(final_answer="final"),
         max_discussion_rounds=3,
@@ -429,7 +492,11 @@ def test_magi_discussion_stops_early_when_forced_roles_only_report_reasoned_no_d
 
     system.call_api("question", "")
 
-    round_events = [payload for event_type, payload in events if event_type == "magi_discussion_round"]
+    round_events = [
+        payload
+        for event_type, payload in events
+        if event_type == "magi_discussion_round"
+    ]
     assert len(round_events) == 1
     assert round_events[0]["early_stop"] is True
     assert round_events[0]["contributors"] == []
@@ -437,7 +504,8 @@ def test_magi_discussion_stops_early_when_forced_roles_only_report_reasoned_no_d
     assert round_events[0]["unresolved_issue"]
 
     discussion_completes = [
-        payload for event_type, payload in events
+        payload
+        for event_type, payload in events
         if event_type == "magi_role_complete" and payload.get("phase") == "discussion"
     ]
     assert len(discussion_completes) == 3
@@ -463,15 +531,37 @@ def test_magi_discussion_bounded_by_max_rounds():
         ],
         skeptic_text=[
             _make_skeptic_response(target_branch="branch-a"),
-            _make_skeptic_response(position="A sharper objection emerged.", target_branch="branch-a", new_information=True),
-            _make_skeptic_response(position="Another falsifier matters.", target_branch="branch-a", new_information=True),
+            _make_skeptic_response(
+                position="A sharper objection emerged.",
+                target_branch="branch-a",
+                new_information=True,
+            ),
+            _make_skeptic_response(
+                position="Another falsifier matters.",
+                target_branch="branch-a",
+                new_information=True,
+            ),
             _make_skeptic_closing_response(),
         ],
         historian_text=[
-            _make_historian_response(grounding_strength="weak", branch_support_status="weakens"),
-            _make_historian_response(position="Grounding improved slightly.", grounding_strength="weak", branch_support_status="weakens", new_information=True),
-            _make_historian_response(position="Docs add one more fact.", grounding_strength="weak", branch_support_status="weakens", new_information=True),
-            _make_historian_closing_response(grounding_strength="weak", branch_support_status="weakens"),
+            _make_historian_response(
+                grounding_strength="weak", branch_support_status="weakens"
+            ),
+            _make_historian_response(
+                position="Grounding improved slightly.",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                new_information=True,
+            ),
+            _make_historian_response(
+                position="Docs add one more fact.",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                new_information=True,
+            ),
+            _make_historian_closing_response(
+                grounding_strength="weak", branch_support_status="weakens"
+            ),
         ],
         arbiter_text=_make_arbiter_response(final_answer="final"),
         max_discussion_rounds=2,
@@ -479,7 +569,11 @@ def test_magi_discussion_bounded_by_max_rounds():
 
     system.call_api("question", "")
 
-    round_events = [payload for event_type, payload in events if event_type == "magi_discussion_round"]
+    round_events = [
+        payload
+        for event_type, payload in events
+        if event_type == "magi_discussion_round"
+    ]
     assert len(round_events) == 2
     assert round_events[0]["round"] == 1
     assert round_events[1]["round"] == 2
@@ -487,8 +581,14 @@ def test_magi_discussion_bounded_by_max_rounds():
 
 def test_magi_skips_discussion_when_openings_align_and_grounding_is_strong():
     system, events, states, _ = _build_magi(
-        eager_text=[_make_eager_response(provisional_branch="same branch"), _make_eager_closing_response()],
-        skeptic_text=[_make_skeptic_response(target_branch="same branch"), _make_skeptic_closing_response()],
+        eager_text=[
+            _make_eager_response(provisional_branch="same branch"),
+            _make_eager_closing_response(),
+        ],
+        skeptic_text=[
+            _make_skeptic_response(target_branch="same branch"),
+            _make_skeptic_closing_response(),
+        ],
         historian_text=[
             _make_historian_response(
                 evaluated_branch="same branch",
@@ -505,7 +605,11 @@ def test_magi_skips_discussion_when_openings_align_and_grounding_is_strong():
 
     system.call_api("question", "")
 
-    gate_event = next(payload for event_type, payload in events if event_type == "magi_discussion_gate")
+    gate_event = next(
+        payload
+        for event_type, payload in events
+        if event_type == "magi_discussion_gate"
+    )
     round_events = [event for event in events if event[0] == "magi_discussion_round"]
 
     assert gate_event["force_discussion"] is False
@@ -517,7 +621,10 @@ def test_magi_skips_discussion_when_openings_align_and_grounding_is_strong():
 
 def test_magi_forces_one_discussion_round_when_openings_diverge():
     system, events, _, _ = _build_magi(
-        eager_text=[_make_eager_response(provisional_branch="branch eager"), _make_eager_closing_response()],
+        eager_text=[
+            _make_eager_response(provisional_branch="branch eager"),
+            _make_eager_closing_response(),
+        ],
         skeptic_text=[
             _make_skeptic_response(
                 target_branch="branch eager",
@@ -525,15 +632,26 @@ def test_magi_forces_one_discussion_round_when_openings_diverge():
             ),
             _make_skeptic_closing_response(),
         ],
-        historian_text=[_make_historian_response(evaluated_branch="branch eager"), _make_historian_closing_response()],
+        historian_text=[
+            _make_historian_response(evaluated_branch="branch eager"),
+            _make_historian_closing_response(),
+        ],
         arbiter_text=_make_arbiter_response(final_answer="final"),
         max_discussion_rounds=1,
     )
 
     system.call_api("question", "")
 
-    gate_event = next(payload for event_type, payload in events if event_type == "magi_discussion_gate")
-    round_events = [payload for event_type, payload in events if event_type == "magi_discussion_round"]
+    gate_event = next(
+        payload
+        for event_type, payload in events
+        if event_type == "magi_discussion_gate"
+    )
+    round_events = [
+        payload
+        for event_type, payload in events
+        if event_type == "magi_discussion_round"
+    ]
 
     assert gate_event["force_discussion"] is True
     assert gate_event["materially_divergent_openings"] is True
@@ -544,8 +662,14 @@ def test_magi_forces_one_discussion_round_when_openings_diverge():
 
 def test_magi_forces_one_discussion_round_when_grounding_is_absent():
     system, events, _, _ = _build_magi(
-        eager_text=[_make_eager_response(provisional_branch="same branch"), _make_eager_closing_response()],
-        skeptic_text=[_make_skeptic_response(target_branch="same branch"), _make_skeptic_closing_response()],
+        eager_text=[
+            _make_eager_response(provisional_branch="same branch"),
+            _make_eager_closing_response(),
+        ],
+        skeptic_text=[
+            _make_skeptic_response(target_branch="same branch"),
+            _make_skeptic_closing_response(),
+        ],
         historian_text=[
             _make_historian_response(
                 evaluated_branch="same branch",
@@ -554,7 +678,9 @@ def test_magi_forces_one_discussion_round_when_grounding_is_absent():
                 doc_support=["docs are silent"],
                 most_important_gap="Need grounded evidence.",
             ),
-            _make_historian_closing_response(grounding_strength="absent", branch_support_status="absent"),
+            _make_historian_closing_response(
+                grounding_strength="absent", branch_support_status="absent"
+            ),
         ],
         arbiter_text=_make_arbiter_response(final_answer="final"),
         max_discussion_rounds=1,
@@ -562,8 +688,16 @@ def test_magi_forces_one_discussion_round_when_grounding_is_absent():
 
     system.call_api("question", "")
 
-    gate_event = next(payload for event_type, payload in events if event_type == "magi_discussion_gate")
-    round_events = [payload for event_type, payload in events if event_type == "magi_discussion_round"]
+    gate_event = next(
+        payload
+        for event_type, payload in events
+        if event_type == "magi_discussion_gate"
+    )
+    round_events = [
+        payload
+        for event_type, payload in events
+        if event_type == "magi_discussion_round"
+    ]
 
     assert gate_event["force_discussion"] is True
     assert gate_event["grounding_strength"] == "absent"
@@ -575,14 +709,30 @@ def test_magi_can_pause_after_discussion_round_and_resume_with_user_intervention
     system, events, _, _ = _build_magi(
         eager_text=[
             _make_eager_response(provisional_branch="branch-a"),
-            _make_eager_response(position="Round 1 eager delta", provisional_branch="branch-a", new_information=True),
-            _make_eager_response(position="Round 2 eager delta", provisional_branch="branch-a", new_information=True),
+            _make_eager_response(
+                position="Round 1 eager delta",
+                provisional_branch="branch-a",
+                new_information=True,
+            ),
+            _make_eager_response(
+                position="Round 2 eager delta",
+                provisional_branch="branch-a",
+                new_information=True,
+            ),
             _make_eager_closing_response(provisional_branch="branch-a"),
         ],
         skeptic_text=[
             _make_skeptic_response(target_branch="branch-a"),
-            _make_skeptic_response(position="Round 1 skeptic delta", target_branch="branch-a", new_information=True),
-            _make_skeptic_response(position="Round 2 skeptic delta", target_branch="branch-a", new_information=True),
+            _make_skeptic_response(
+                position="Round 1 skeptic delta",
+                target_branch="branch-a",
+                new_information=True,
+            ),
+            _make_skeptic_response(
+                position="Round 2 skeptic delta",
+                target_branch="branch-a",
+                new_information=True,
+            ),
             _make_skeptic_closing_response(target_branch="branch-a"),
         ],
         historian_text=[
@@ -637,27 +787,40 @@ def test_magi_can_pause_after_discussion_round_and_resume_with_user_intervention
 
     assert response == "final answer"
     intervention_index = next(
-        index for index, entry in enumerate(system.last_council_entries)
+        index
+        for index, entry in enumerate(system.last_council_entries)
         if entry.get("entry_kind") == "user_intervention"
     )
     round_two_index = next(
-        index for index, entry in enumerate(system.last_council_entries)
+        index
+        for index, entry in enumerate(system.last_council_entries)
         if entry.get("phase") == "discussion" and entry.get("round") == 2
     )
     assert intervention_index < round_two_index
-    assert any(event_type == "magi_discussion_round" and payload.get("round") == 1 for event_type, payload in events)
+    assert any(
+        event_type == "magi_discussion_round" and payload.get("round") == 1
+        for event_type, payload in events
+    )
 
 
 def test_magi_can_queue_pause_during_openings_and_resume_before_first_discussion_role():
     system, events, _, workers = _build_magi(
         eager_text=[
             _make_eager_response(provisional_branch="branch-a"),
-            _make_eager_response(position="Round 1 eager delta", provisional_branch="branch-a", new_information=True),
+            _make_eager_response(
+                position="Round 1 eager delta",
+                provisional_branch="branch-a",
+                new_information=True,
+            ),
             _make_eager_closing_response(provisional_branch="branch-a"),
         ],
         skeptic_text=[
             _make_skeptic_response(target_branch="branch-a"),
-            _make_skeptic_response(position="Round 1 skeptic delta", target_branch="branch-a", new_information=True),
+            _make_skeptic_response(
+                position="Round 1 skeptic delta",
+                target_branch="branch-a",
+                new_information=True,
+            ),
             _make_skeptic_closing_response(target_branch="branch-a"),
         ],
         historian_text=[
@@ -678,7 +841,9 @@ def test_magi_can_queue_pause_during_openings_and_resume_before_first_discussion
         ],
         arbiter_text=_make_arbiter_response(final_answer="final answer"),
         max_discussion_rounds=1,
-        pause_check=lambda checkpoint: checkpoint == "before_magi_role:eager:discussion:1",
+        pause_check=lambda checkpoint: (
+            checkpoint == "before_magi_role:eager:discussion:1"
+        ),
     )
 
     try:
@@ -694,7 +859,8 @@ def test_magi_can_queue_pause_during_openings_and_resume_before_first_discussion
         "next_role_index": 0,
     }
     discussion_role_starts = [
-        payload for event_type, payload in events
+        payload
+        for event_type, payload in events
         if event_type == "magi_role_start" and payload.get("phase") == "discussion"
     ]
     assert discussion_role_starts == []
@@ -719,11 +885,13 @@ def test_magi_can_queue_pause_during_openings_and_resume_before_first_discussion
     assert "USER INTERVENTION SINCE PAUSE" in eager_discussion_call["user_message"]
     assert "The server is Debian 12." in eager_discussion_call["user_message"]
     intervention_index = next(
-        index for index, entry in enumerate(system.last_council_entries)
+        index
+        for index, entry in enumerate(system.last_council_entries)
         if entry.get("entry_kind") == "user_intervention"
     )
     first_discussion_index = next(
-        index for index, entry in enumerate(system.last_council_entries)
+        index
+        for index, entry in enumerate(system.last_council_entries)
         if entry.get("phase") == "discussion" and entry.get("entry_kind") == "role"
     )
     assert intervention_index < first_discussion_index
@@ -733,12 +901,20 @@ def test_magi_pause_does_not_mark_error_state():
     system, _, states, _ = _build_magi(
         eager_text=[
             _make_eager_response(provisional_branch="branch-a"),
-            _make_eager_response(position="Round 1 eager delta", provisional_branch="branch-a", new_information=True),
+            _make_eager_response(
+                position="Round 1 eager delta",
+                provisional_branch="branch-a",
+                new_information=True,
+            ),
             _make_eager_closing_response(provisional_branch="branch-a"),
         ],
         skeptic_text=[
             _make_skeptic_response(target_branch="branch-a"),
-            _make_skeptic_response(position="Round 1 skeptic delta", target_branch="branch-a", new_information=True),
+            _make_skeptic_response(
+                position="Round 1 skeptic delta",
+                target_branch="branch-a",
+                new_information=True,
+            ),
             _make_skeptic_closing_response(target_branch="branch-a"),
         ],
         historian_text=[
@@ -759,7 +935,9 @@ def test_magi_pause_does_not_mark_error_state():
         ],
         arbiter_text=_make_arbiter_response(final_answer="final answer"),
         max_discussion_rounds=1,
-        pause_check=lambda checkpoint: checkpoint == "before_magi_role:eager:discussion:1",
+        pause_check=lambda checkpoint: (
+            checkpoint == "before_magi_role:eager:discussion:1"
+        ),
     )
 
     try:
@@ -816,9 +994,18 @@ def test_magi_arbiter_uses_chatbot_prompt():
 
 def test_magi_arbiter_metadata_is_required_internal_structure():
     system, events, _, _ = _build_magi(
-        eager_text=[_make_eager_response(provisional_branch="branch"), _make_eager_closing_response(provisional_branch="branch")],
-        skeptic_text=[_make_skeptic_response(target_branch="branch"), _make_skeptic_closing_response(target_branch="branch")],
-        historian_text=[_make_historian_response(evaluated_branch="branch"), _make_historian_closing_response(evaluated_branch="branch")],
+        eager_text=[
+            _make_eager_response(provisional_branch="branch"),
+            _make_eager_closing_response(provisional_branch="branch"),
+        ],
+        skeptic_text=[
+            _make_skeptic_response(target_branch="branch"),
+            _make_skeptic_closing_response(target_branch="branch"),
+        ],
+        historian_text=[
+            _make_historian_response(evaluated_branch="branch"),
+            _make_historian_closing_response(evaluated_branch="branch"),
+        ],
         arbiter_text=_make_arbiter_response(
             final_answer="final answer",
             primary_issue="real framing",
@@ -835,18 +1022,43 @@ def test_magi_arbiter_metadata_is_required_internal_structure():
 
     assert response == "real framing. final answer"
     assert system.last_arbiter_metadata["primary_issue"] == "real framing"
-    assert system.last_arbiter_metadata["immediate_obligation"] == "stop changing config blindly"
+    assert (
+        system.last_arbiter_metadata["immediate_obligation"]
+        == "stop changing config blindly"
+    )
     assert system.last_arbiter_metadata["decision_mode"] == "consensus"
     assert system.last_arbiter_metadata["uncertainty_level"] == "low"
-    synthesis_event = next(payload for event_type, payload in events if event_type == "magi_synthesis_complete")
+    synthesis_event = next(
+        payload
+        for event_type, payload in events
+        if event_type == "magi_synthesis_complete"
+    )
     assert synthesis_event["primary_issue"] == "real framing"
     assert synthesis_event["winning_branch"] == "branch"
 
 
 def test_magi_historian_weak_absent_and_conflicted_grounding_are_valid_results():
-    weak = MagiHistorian(worker=FakeMagiWorker(_make_historian_response(grounding_strength="weak", branch_support_status="weakens")))
-    absent = MagiHistorian(worker=FakeMagiWorker(_make_historian_response(grounding_strength="absent", branch_support_status="absent")))
-    conflicted = MagiHistorian(worker=FakeMagiWorker(_make_historian_response(grounding_strength="conflicted", branch_support_status="conflicted")))
+    weak = MagiHistorian(
+        worker=FakeMagiWorker(
+            _make_historian_response(
+                grounding_strength="weak", branch_support_status="weakens"
+            )
+        )
+    )
+    absent = MagiHistorian(
+        worker=FakeMagiWorker(
+            _make_historian_response(
+                grounding_strength="absent", branch_support_status="absent"
+            )
+        )
+    )
+    conflicted = MagiHistorian(
+        worker=FakeMagiWorker(
+            _make_historian_response(
+                grounding_strength="conflicted", branch_support_status="conflicted"
+            )
+        )
+    )
 
     weak_result = weak.opening_argument("question", "", None, "")
     absent_result = absent.opening_argument("question", "", None, "")
@@ -873,19 +1085,37 @@ def test_magi_role_json_parse_fallback():
 
 def test_magi_role_complete_events_include_text():
     system, events, _, _ = _build_magi(
-        eager_text=[_make_eager_response(position="disk is probably full"), _make_eager_closing_response()],
-        skeptic_text=[_make_skeptic_response(position="check inodes too"), _make_skeptic_closing_response()],
-        historian_text=[_make_historian_response(position="logs were cleared before"), _make_historian_closing_response()],
+        eager_text=[
+            _make_eager_response(position="disk is probably full"),
+            _make_eager_closing_response(),
+        ],
+        skeptic_text=[
+            _make_skeptic_response(position="check inodes too"),
+            _make_skeptic_closing_response(),
+        ],
+        historian_text=[
+            _make_historian_response(position="logs were cleared before"),
+            _make_historian_closing_response(),
+        ],
         arbiter_text=_make_arbiter_response(final_answer="final"),
         max_discussion_rounds=0,
     )
 
     system.call_api("question", "")
 
-    complete_events = [payload for event_type, payload in events if event_type == "magi_role_complete" and payload.get("phase") == "opening_arguments"]
+    complete_events = [
+        payload
+        for event_type, payload in events
+        if event_type == "magi_role_complete"
+        and payload.get("phase") == "opening_arguments"
+    ]
     assert len(complete_events) == 3
-    eager_event = next(payload for payload in complete_events if payload["role"] == "eager")
-    skeptic_event = next(payload for payload in complete_events if payload["role"] == "skeptic")
+    eager_event = next(
+        payload for payload in complete_events if payload["role"] == "eager"
+    )
+    skeptic_event = next(
+        payload for payload in complete_events if payload["role"] == "skeptic"
+    )
     assert "disk is probably full" in eager_event["text"]
     assert eager_event["position_length"] > 0
     assert "check inodes too" in skeptic_event["text"]
@@ -893,9 +1123,18 @@ def test_magi_role_complete_events_include_text():
 
 def test_magi_role_text_delta_events_emit_visible_position_text_only():
     system, events, _, _ = _build_magi(
-        eager_text=[_make_eager_response(position="disk is probably full"), _make_eager_closing_response()],
-        skeptic_text=[_make_skeptic_response(position="check inodes too"), _make_skeptic_closing_response()],
-        historian_text=[_make_historian_response(position="logs were cleared before"), _make_historian_closing_response()],
+        eager_text=[
+            _make_eager_response(position="disk is probably full"),
+            _make_eager_closing_response(),
+        ],
+        skeptic_text=[
+            _make_skeptic_response(position="check inodes too"),
+            _make_skeptic_closing_response(),
+        ],
+        historian_text=[
+            _make_historian_response(position="logs were cleared before"),
+            _make_historian_closing_response(),
+        ],
         arbiter_text=_make_arbiter_response(final_answer="final"),
         max_discussion_rounds=0,
     )
@@ -935,28 +1174,41 @@ def test_magi_role_streamer_ignores_partial_provider_text_deltas():
     for char in '{"position":"final claim after tool check","confidence":"high"}':
         listener("text_delta", {"delta": char})
 
-    delta_events = [payload for event_type, payload in events if event_type == "magi_role_text_delta"]
+    delta_events = [
+        payload
+        for event_type, payload in events
+        if event_type == "magi_role_text_delta"
+    ]
     assert delta_events == []
 
 
 def test_magi_arbiter_stream_emits_final_text_once_after_stream_completion():
     worker = FakeMagiWorker(_make_arbiter_response(final_answer="final arbiter answer"))
     events = []
-    arbiter = MagiArbiter(worker=worker, event_listener=lambda event_type, payload: events.append((event_type, payload)))
+    arbiter = MagiArbiter(
+        worker=worker,
+        event_listener=lambda event_type, payload: events.append((event_type, payload)),
+    )
 
     response = arbiter.synthesize_stream("question", "docs", None, "", "transcript")
 
     assert response["final_answer"] == "final arbiter answer"
-    text_deltas = [payload["delta"] for event_type, payload in events if event_type == "text_delta"]
-    assert text_deltas == ["final arbiter answer"]
+    text_deltas = [
+        payload["delta"] for event_type, payload in events if event_type == "text_delta"
+    ]
+    # With incremental streaming, the arbiter emits final_answer content as it
+    # arrives from the provider. The concatenated deltas must reconstruct the full answer.
+    assert "".join(text_deltas) == "final arbiter answer"
 
 
 def test_magi_role_requests_native_structured_output_for_all_phases():
-    worker = FakeMagiWorker([
-        _make_eager_response(),
-        _make_eager_response(new_information=True),
-        _make_eager_closing_response(),
-    ])
+    worker = FakeMagiWorker(
+        [
+            _make_eager_response(),
+            _make_eager_response(new_information=True),
+            _make_eager_closing_response(),
+        ]
+    )
     eager = MagiEager(worker=worker)
 
     eager.opening_argument("question", "", None, "")
@@ -965,7 +1217,9 @@ def test_magi_role_requests_native_structured_output_for_all_phases():
 
     assert len(worker.calls) == 3
     assert all(call["kwargs"]["structured_output"] is True for call in worker.calls)
-    assert all(call["kwargs"]["output_schema"]["type"] == "object" for call in worker.calls)
+    assert all(
+        call["kwargs"]["output_schema"]["type"] == "object" for call in worker.calls
+    )
 
 
 def test_magi_arbiter_requests_native_structured_output():
@@ -982,12 +1236,23 @@ def test_magi_discussion_rounds_receive_full_evidence_bundle_not_just_transcript
     system, _, _, workers = _build_magi(
         eager_text=[
             _make_eager_response(provisional_branch="host-package-conflict"),
-            _make_eager_response(position="Need one more check.", provisional_branch="host-package-conflict", new_information=True),
+            _make_eager_response(
+                position="Need one more check.",
+                provisional_branch="host-package-conflict",
+                new_information=True,
+            ),
             _make_eager_closing_response(),
         ],
         skeptic_text=[
-            _make_skeptic_response(target_branch="host-package-conflict", strongest_objection="Maybe the environment assumption is wrong."),
-            _make_skeptic_response(position="Still need the exact package state.", target_branch="host-package-conflict", new_information=True),
+            _make_skeptic_response(
+                target_branch="host-package-conflict",
+                strongest_objection="Maybe the environment assumption is wrong.",
+            ),
+            _make_skeptic_response(
+                position="Still need the exact package state.",
+                target_branch="host-package-conflict",
+                new_information=True,
+            ),
             _make_skeptic_closing_response(),
         ],
         historian_text=[
@@ -1006,7 +1271,9 @@ def test_magi_discussion_rounds_receive_full_evidence_bundle_not_just_transcript
                 new_information=False,
                 no_delta_reason="no_grounding_change",
             ),
-            _make_historian_closing_response(grounding_strength="weak", branch_support_status="weakens"),
+            _make_historian_closing_response(
+                grounding_strength="weak", branch_support_status="weakens"
+            ),
         ],
         arbiter_text=_make_arbiter_response(final_answer="final"),
         max_discussion_rounds=1,
@@ -1035,8 +1302,13 @@ def test_magi_discussion_rounds_receive_full_evidence_bundle_not_just_transcript
 
 def test_magi_role_prompts_include_reasoning_discipline_and_high_ambiguity_mode():
     assert "Keep a small differential in mind" in MAGI_EAGER_SYSTEM_PROMPT
-    assert "do NOT choose the winning branch".lower() in MAGI_SKEPTIC_SYSTEM_PROMPT.lower()
-    assert "Treat weak, absent, or conflicted grounding as valid outcomes" in MAGI_HISTORIAN_SYSTEM_PROMPT
+    assert (
+        "do NOT choose the winning branch".lower() in MAGI_SKEPTIC_SYSTEM_PROMPT.lower()
+    )
+    assert (
+        "Treat weak, absent, or conflicted grounding as valid outcomes"
+        in MAGI_HISTORIAN_SYSTEM_PROMPT
+    )
     assert "Judgment / interpersonal / high-ambiguity mode" in MAGI_EAGER_SYSTEM_PROMPT
     assert "preserve issue hierarchy" in MAGI_ARBITER_PROMPT.lower()
     assert "Role integrity matters" in MAGI_REASONING_CONSTITUTION
@@ -1056,8 +1328,8 @@ def test_magi_historian_always_has_web_search_enabled():
     system.call_api("question", "docs")
 
     assert workers["historian_worker"].calls[0]["kwargs"]["enable_web_search"] is True
-    assert workers["eager_worker"].calls[0]["kwargs"]["enable_web_search"] is False
-    assert workers["skeptic_worker"].calls[0]["kwargs"]["enable_web_search"] is False
+    assert workers["eager_worker"].calls[0]["kwargs"]["enable_web_search"] is True
+    assert workers["skeptic_worker"].calls[0]["kwargs"]["enable_web_search"] is True
 
 
 def test_magi_closing_arguments_always_runs():
@@ -1075,8 +1347,17 @@ def test_magi_closing_arguments_always_runs():
     assert len(workers["skeptic_worker"].calls) >= 2
     assert len(workers["historian_worker"].calls) >= 2
 
-    closing_starts = [payload for event_type, payload in events if event_type == "magi_role_start" and payload.get("phase") == "closing_arguments"]
-    assert [payload["role"] for payload in closing_starts] == ["eager", "skeptic", "historian"]
+    closing_starts = [
+        payload
+        for event_type, payload in events
+        if event_type == "magi_role_start"
+        and payload.get("phase") == "closing_arguments"
+    ]
+    assert [payload["role"] for payload in closing_starts] == [
+        "eager",
+        "skeptic",
+        "historian",
+    ]
 
 
 def test_magi_closing_args_included_in_arbiter_transcript():
@@ -1091,7 +1372,9 @@ def test_magi_closing_args_included_in_arbiter_transcript():
         ],
         historian_text=[
             _make_historian_response(position="opening grounding"),
-            _make_historian_closing_response(position="my definitive historian grounding"),
+            _make_historian_closing_response(
+                position="my definitive historian grounding"
+            ),
         ],
         arbiter_text=_make_arbiter_response(final_answer="final"),
         max_discussion_rounds=0,
@@ -1138,13 +1421,28 @@ def test_magi_last_council_entries_populated_after_call():
         ],
         skeptic_text=[
             _make_skeptic_response(position="opening objection"),
-            _make_skeptic_response(position="discussion objection", new_information=True),
+            _make_skeptic_response(
+                position="discussion objection", new_information=True
+            ),
             _make_skeptic_closing_response(position="closing objection"),
         ],
         historian_text=[
-            _make_historian_response(position="opening grounding", grounding_strength="weak", branch_support_status="weakens"),
-            _make_historian_response(position="discussion grounding", grounding_strength="weak", branch_support_status="weakens", new_information=True),
-            _make_historian_closing_response(position="closing grounding", grounding_strength="weak", branch_support_status="weakens"),
+            _make_historian_response(
+                position="opening grounding",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+            ),
+            _make_historian_response(
+                position="discussion grounding",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                new_information=True,
+            ),
+            _make_historian_closing_response(
+                position="closing grounding",
+                grounding_strength="weak",
+                branch_support_status="weakens",
+            ),
         ],
         arbiter_text=_make_arbiter_response(final_answer="final"),
         max_discussion_rounds=1,
@@ -1157,7 +1455,9 @@ def test_magi_last_council_entries_populated_after_call():
     assert len(entries) > 0
     assert "opening_arguments" in [entry["phase"] for entry in entries]
     assert "closing_arguments" in [entry["phase"] for entry in entries]
-    assert set(entry["role"] for entry in entries if entry["phase"] == "opening_arguments") == {"eager", "skeptic", "historian"}
+    assert set(
+        entry["role"] for entry in entries if entry["phase"] == "opening_arguments"
+    ) == {"eager", "skeptic", "historian"}
     for entry in entries:
         assert "role" in entry
         assert "phase" in entry
@@ -1166,13 +1466,19 @@ def test_magi_last_council_entries_populated_after_call():
 
 
 def test_magi_skeptic_breach_fields_are_ignored_by_role_aware_parser():
-    skeptic = MagiSkeptic(worker=FakeMagiWorker(json.dumps({
-        "target_branch": "branch-a",
-        "position": "The framing may be wrong.",
-        "counterframe": "The real issue is a boundary problem.",
-        "winning_branch": "branch-b",
-        "final_answer": "Choose branch-b now.",
-    })))
+    skeptic = MagiSkeptic(
+        worker=FakeMagiWorker(
+            json.dumps(
+                {
+                    "target_branch": "branch-a",
+                    "position": "The framing may be wrong.",
+                    "counterframe": "The real issue is a boundary problem.",
+                    "winning_branch": "branch-b",
+                    "final_answer": "Choose branch-b now.",
+                }
+            )
+        )
+    )
 
     result = skeptic.opening_argument("question", "", None, "")
 
@@ -1184,14 +1490,20 @@ def test_magi_skeptic_breach_fields_are_ignored_by_role_aware_parser():
 
 
 def test_magi_historian_breach_fields_are_ignored_by_role_aware_parser():
-    historian = MagiHistorian(worker=FakeMagiWorker(json.dumps({
-        "evaluated_branch": "branch-a",
-        "position": "Docs are silent, so grounding is weak.",
-        "grounding_strength": "weak",
-        "branch_support_status": "weakens",
-        "winning_branch": "branch-a",
-        "final_answer": "Do branch-a anyway.",
-    })))
+    historian = MagiHistorian(
+        worker=FakeMagiWorker(
+            json.dumps(
+                {
+                    "evaluated_branch": "branch-a",
+                    "position": "Docs are silent, so grounding is weak.",
+                    "grounding_strength": "weak",
+                    "branch_support_status": "weakens",
+                    "winning_branch": "branch-a",
+                    "final_answer": "Do branch-a anyway.",
+                }
+            )
+        )
+    )
 
     result = historian.opening_argument("question", "", None, "")
 
@@ -1204,12 +1516,16 @@ def test_magi_historian_breach_fields_are_ignored_by_role_aware_parser():
 
 
 def test_magi_arbiter_hierarchy_preserves_primary_issue_before_branch():
-    arbiter = MagiArbiter(worker=FakeMagiWorker(_make_arbiter_response(
-        primary_issue="The agreement boundary is unclear",
-        immediate_obligation="Clarify the boundary before choosing a tactic",
-        winning_branch="defer the tactical choice",
-        final_answer="Use the best current branch once the tactical choice is clearer.",
-    )))
+    arbiter = MagiArbiter(
+        worker=FakeMagiWorker(
+            _make_arbiter_response(
+                primary_issue="The agreement boundary is unclear",
+                immediate_obligation="Clarify the boundary before choosing a tactic",
+                winning_branch="defer the tactical choice",
+                final_answer="Use the best current branch once the tactical choice is clearer.",
+            )
+        )
+    )
 
     result = arbiter.synthesize("question", "docs", None, "", "transcript")
 
@@ -1227,7 +1543,9 @@ def test_magi_judgment_mode_structure_survives_into_arbiter_transcript():
                 immediate_obligation="Clarify the boundary before choosing a tactic",
                 provisional_branch="clarify-before-confronting",
             ),
-            _make_eager_closing_response(provisional_branch="clarify-before-confronting"),
+            _make_eager_closing_response(
+                provisional_branch="clarify-before-confronting"
+            ),
         ],
         skeptic_text=[
             _make_skeptic_response(
@@ -1256,15 +1574,43 @@ def test_magi_judgment_mode_structure_survives_into_arbiter_transcript():
     system.call_api("Should I confront them now or clarify boundaries first?", "")
 
     arbiter_call = workers["arbiter_worker"].calls[0]
-    assert '"primary_issue": "Trust and agreement boundaries are unclear"' in arbiter_call["user_message"]
-    assert '"immediate_obligation": "Clarify the boundary before choosing a tactic"' in arbiter_call["user_message"]
-    assert '"provisional_branch": "clarify-before-confronting"' in arbiter_call["user_message"]
+    assert (
+        '"primary_issue": "Trust and agreement boundaries are unclear"'
+        in arbiter_call["user_message"]
+    )
+    assert (
+        '"immediate_obligation": "Clarify the boundary before choosing a tactic"'
+        in arbiter_call["user_message"]
+    )
+    assert (
+        '"provisional_branch": "clarify-before-confronting"'
+        in arbiter_call["user_message"]
+    )
 
 
 def test_magi_closing_role_shape_preservation():
-    eager = MagiEager(worker=FakeMagiWorker(_make_eager_closing_response(strongest_caveat="Evidence is still thin.")))
-    skeptic = MagiSkeptic(worker=FakeMagiWorker(_make_skeptic_closing_response(strongest_objection="The causal claim is still unproven.", falsifying_check="Get the failing log line.")))
-    historian = MagiHistorian(worker=FakeMagiWorker(_make_historian_closing_response(grounding_strength="weak", branch_support_status="weakens", most_relevant_evidence="Docs are silent.")))
+    eager = MagiEager(
+        worker=FakeMagiWorker(
+            _make_eager_closing_response(strongest_caveat="Evidence is still thin.")
+        )
+    )
+    skeptic = MagiSkeptic(
+        worker=FakeMagiWorker(
+            _make_skeptic_closing_response(
+                strongest_objection="The causal claim is still unproven.",
+                falsifying_check="Get the failing log line.",
+            )
+        )
+    )
+    historian = MagiHistorian(
+        worker=FakeMagiWorker(
+            _make_historian_closing_response(
+                grounding_strength="weak",
+                branch_support_status="weakens",
+                most_relevant_evidence="Docs are silent.",
+            )
+        )
+    )
 
     eager_result = eager.closing_argument("question", "transcript")
     skeptic_result = skeptic.closing_argument("question", "transcript")
@@ -1278,13 +1624,25 @@ def test_magi_closing_role_shape_preservation():
 
 
 def test_magi_parser_fallbacks_normalize_optional_and_required_fields():
-    eager = MagiEager(worker=FakeMagiWorker(json.dumps({
-        "position": "Minimal eager output",
-        "provisional_branch": "branch-a",
-    })))
-    arbiter = MagiArbiter(worker=FakeMagiWorker(json.dumps({
-        "final_answer": "Need more evidence.",
-    })))
+    eager = MagiEager(
+        worker=FakeMagiWorker(
+            json.dumps(
+                {
+                    "position": "Minimal eager output",
+                    "provisional_branch": "branch-a",
+                }
+            )
+        )
+    )
+    arbiter = MagiArbiter(
+        worker=FakeMagiWorker(
+            json.dumps(
+                {
+                    "final_answer": "Need more evidence.",
+                }
+            )
+        )
+    )
 
     eager_result = eager.opening_argument("question", "", None, "")
     arbiter_result = arbiter.synthesize("question", "docs", None, "", "transcript")
@@ -1295,7 +1653,10 @@ def test_magi_parser_fallbacks_normalize_optional_and_required_fields():
     assert eager_result["missing_decisive_artifact"] == ""
 
     assert arbiter_result["primary_issue"] == "Need more evidence"
-    assert arbiter_result["immediate_obligation"] == "Advance the best current branch without losing the higher-order framing."
+    assert (
+        arbiter_result["immediate_obligation"]
+        == "Advance the best current branch without losing the higher-order framing."
+    )
     assert arbiter_result["decision_mode"] == "best_current_branch"
     assert arbiter_result["uncertainty_level"] == "medium"
 
@@ -1306,13 +1667,10 @@ def test_magi_parser_fallbacks_normalize_optional_and_required_fields():
 
 from orchestration.evidence_pool import (
     GATE_REQUIRE_REASON,
-    OUTCOME_CACHE_HIT,
     OUTCOME_EXHAUSTED,
     OUTCOME_NEW_EVIDENCE,
     OUTCOME_NO_NEW,
     OUTCOME_REUSED_KNOWN,
-    USEFULNESS_HIGH,
-    USEFULNESS_MEDIUM,
     USEFULNESS_ZERO,
     EvidencePool,
     build_evidence_scope,
@@ -1357,8 +1715,12 @@ def _make_result(source, page_start, page_end, bundle_key=None, block_key=None):
             "delivered_block_keys": [blk],
             "delivered_page_window_keys": [f"window:{source}:{page_start}-{page_end}"],
             "delivered_page_windows": [
-                {"key": f"window:{source}:{page_start}-{page_end}",
-                 "source": source, "page_start": page_start, "page_end": page_end}
+                {
+                    "key": f"window:{source}:{page_start}-{page_end}",
+                    "source": source,
+                    "page_start": page_start,
+                    "page_end": page_end,
+                }
             ],
             "excluded_seen_count": 0,
             "skipped_bundle_count": 0,
@@ -1399,12 +1761,16 @@ def test_evidence_pool_two_roles_same_source_region_second_is_reused():
     result = _make_result("Debian.pdf", 4, 6)
 
     # First call: eager role at opening
-    q1 = pool.record_query("install package", ["debian"], caller_role="eager", caller_phase="opening")
+    q1 = pool.record_query(
+        "install package", ["debian"], caller_role="eager", caller_phase="opening"
+    )
     pool.record_evidence_from_result(result, q1)
     assert q1.outcome == OUTCOME_NEW_EVIDENCE
 
     # Second call: skeptic role hits the exact same result set
-    q2 = pool.record_query("install package", ["debian"], caller_role="skeptic", caller_phase="opening")
+    q2 = pool.record_query(
+        "install package", ["debian"], caller_role="skeptic", caller_phase="opening"
+    )
     pool.record_evidence_from_result(result, q2)
     assert q2.outcome == OUTCOME_REUSED_KNOWN
 
@@ -1452,13 +1818,18 @@ def test_evidence_pool_repeated_no_progress_exhausts_scope():
     # Three consecutive empties + zero evaluations → hard exhaustion.
     for i in range(3):
         q = pool.record_query(
-            f"no results query {i}", ["debian"], caller_role="eager", evidence_gap="verify state"
+            f"no results query {i}",
+            ["debian"],
+            caller_role="eager",
+            evidence_gap="verify state",
         )
         pool.record_evidence_from_result(empty_result, q)
         assert q.outcome == OUTCOME_NO_NEW
         # Recording alone never marks exhaustion under the new contract.
         assert q.usefulness == ""
-        pool.apply_qualitative_evaluation(q, progress_assessment="no_meaningful_progress")
+        pool.apply_qualitative_evaluation(
+            q, progress_assessment="no_meaningful_progress"
+        )
         assert q.usefulness == USEFULNESS_ZERO
 
     assert "debian::verify_state" in pool.scope_state.hard_exhausted_scope_keys
@@ -1574,7 +1945,9 @@ def test_evidence_pool_gap_irrelevant_new_evidence_stays_low_value():
         evidence_gap="IP address",
     )
     pool.record_evidence_from_result(result, record)
-    pool.apply_qualitative_evaluation(record, progress_assessment="no_meaningful_progress")
+    pool.apply_qualitative_evaluation(
+        record, progress_assessment="no_meaningful_progress"
+    )
 
     assert record.usefulness == "zero"
     assert "no meaningful progress" in record.usefulness_reason
@@ -1606,9 +1979,13 @@ def test_evidence_pool_qualitative_zero_adjustment_preserves_zero_streak():
     }
 
     for index in range(2):
-        record = pool.record_query(f"query {index}", ["debian"], evidence_gap="ip address")
+        record = pool.record_query(
+            f"query {index}", ["debian"], evidence_gap="ip address"
+        )
         pool.record_evidence_from_result(empty_result, record)
-        pool.apply_qualitative_evaluation(record, progress_assessment="no_meaningful_progress")
+        pool.apply_qualitative_evaluation(
+            record, progress_assessment="no_meaningful_progress"
+        )
         assert record.usefulness == "zero"
 
     adjusted = pool.record_query("query 3", ["debian"], evidence_gap="ip address")
@@ -1616,7 +1993,9 @@ def test_evidence_pool_qualitative_zero_adjustment_preserves_zero_streak():
     assert adjusted.usefulness == ""
     assert "debian::ip_address" not in pool.scope_state.hard_exhausted_scope_keys
 
-    pool.apply_qualitative_evaluation(adjusted, progress_assessment="no_meaningful_progress")
+    pool.apply_qualitative_evaluation(
+        adjusted, progress_assessment="no_meaningful_progress"
+    )
 
     assert adjusted.usefulness == "zero"
     assert pool.scope_state.zero_value_streaks["debian::ip_address"] == 3

@@ -36,15 +36,18 @@ class PostgresMemoryStore:
         self.project_id = str(project_id)
         self.session_factory = session_factory or get_session_factory()
         self._snapshot_cache: dict | None = None
+        self._fact_timestamp_snapshot: dict[str, str] | None = None
 
     def _session(self):
         return self.session_factory()
 
     def begin_turn(self):
         self._snapshot_cache = None
+        self._fact_timestamp_snapshot = None
 
     def end_turn(self):
         self._snapshot_cache = None
+        self._fact_timestamp_snapshot = None
 
     def _load_raw_data(self):
         if self._snapshot_cache is not None:
@@ -102,6 +105,7 @@ class PostgresMemoryStore:
                     "confidence": row.confidence,
                     "verified": bool(row.verified),
                     "observed_at": _iso(row.observed_at),
+                    "updated_at": _iso(row.updated_at),
                 }
                 for row in fact_rows
             ]
@@ -158,7 +162,47 @@ class PostgresMemoryStore:
             "preferences": preferences,
             "state_map": state_map,
         }
+        if self._fact_timestamp_snapshot is None:
+            self._fact_timestamp_snapshot = {
+                row.fact_key: _iso(row.updated_at or row.observed_at)
+                for row in fact_rows
+            }
         return self._snapshot_cache
+
+    def is_snapshot_stale(self):
+        """Return True if any fact has been modified since the current turn's snapshot.
+
+        Compares fact (key, updated_at) tuples from a fresh DB read against the
+        timestamp snapshot captured at the start of this turn.
+        """
+        if self._fact_timestamp_snapshot is None:
+            return False
+        with self._session() as session:
+            fresh_rows = list(
+                session.scalars(
+                    select(ProjectFact).where(ProjectFact.project_id == self.project_id)
+                )
+            )
+        fresh_map = {
+            row.fact_key: _iso(row.updated_at or row.observed_at) for row in fresh_rows
+        }
+        snapshot_map = self._fact_timestamp_snapshot
+        if set(fresh_map.keys()) != set(snapshot_map.keys()):
+            return True
+        for key, ts in fresh_map.items():
+            if ts != snapshot_map.get(key):
+                return True
+        return False
+
+    def load_snapshot_fresh(self):
+        """Bypass the in-turn cache and load a current snapshot from the database.
+
+        Also updates the timestamp snapshot so future staleness checks reflect this
+        fresh state.
+        """
+        self._snapshot_cache = None
+        self._fact_timestamp_snapshot = None
+        return self.load_snapshot()
 
     def set_project(self, project_id):
         self.project_id = str(project_id)

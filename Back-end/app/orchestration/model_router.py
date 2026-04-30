@@ -721,7 +721,7 @@ class ModelRouter:
     def _build_magi_responder(self):
         tools = self._build_response_tools()
         tool_handler = self._handle_responder_tool_call
-        tool_rounds = self.response_tool_rounds
+        tool_rounds = self.settings.magi_tool_rounds
         eager = MagiEager(
             worker=self._build_worker(None, self.settings.magi_eager),
             tools=tools,
@@ -769,7 +769,7 @@ class ModelRouter:
     def _build_magi_lite_responder(self):
         tools = self._build_response_tools()
         tool_handler = self._handle_responder_tool_call
-        tool_rounds = self.response_tool_rounds
+        tool_rounds = self.settings.magi_tool_rounds
         eager = MagiEager(
             worker=self._build_worker(None, self.settings.magi_lite_eager),
             tools=tools,
@@ -1664,7 +1664,15 @@ class ModelRouter:
             return RouterState.COMMIT_MEMORY
 
         try:
-            snapshot = self.memory_store.load_snapshot()
+            is_stale = self.memory_store.is_snapshot_stale()
+            if is_stale:
+                self._emit_event(
+                    "memory_stale_snapshot",
+                    {"action": "re_resolve", "phase": "resolve"},
+                )
+                snapshot = self.memory_store.load_snapshot_fresh()
+            else:
+                snapshot = self.memory_store.load_snapshot()
             turn.memory_resolution = self.memory_resolver.resolve(
                 turn.extracted_memory, snapshot=snapshot
             )
@@ -1728,16 +1736,17 @@ class ModelRouter:
 
         try:
             self._check_cancel("before_auto_name")
-            raw_title = self.chat_namer.generate_text(
-                (
+            step_result = self.chat_namer.start_text_step(
+                system_prompt=(
                     "You generate short chat titles from the opening exchange. "
                     "Return only a concise 3 to 6 word title with no quotes or trailing punctuation."
                 ),
-                f"User: {user_text[:400]}\nAssistant: {assistant_text[:400]}",
+                user_message=f"User: {user_text[:400]}\nAssistant: {assistant_text[:400]}",
                 temperature=0.3,
                 max_output_tokens=30,
                 cancel_check=self.cancel_check,
             )
+            raw_title = step_result.output_text
             self._check_cancel("after_auto_name")
             title = (
                 (raw_title or "")

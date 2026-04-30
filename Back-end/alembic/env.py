@@ -11,11 +11,9 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 APP_DIR = ROOT_DIR / "app"
 sys.path.insert(0, str(APP_DIR))
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv(ROOT_DIR / ".env")
-except ImportError:
-    pass
+from utils.env import load_project_dotenv  # noqa: E402
+
+load_project_dotenv(start_dir=ROOT_DIR)
 
 from persistence.database import normalize_database_url  # noqa: E402
 from persistence.postgres_models import Base  # noqa: E402

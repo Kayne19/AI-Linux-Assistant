@@ -1,9 +1,12 @@
+import logging
 import os
 import signal
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+
+logger = logging.getLogger(__name__)
 
 from config.settings import SETTINGS, load_effective_settings
 from orchestration.normalized_inputs import build_normalized_inputs
@@ -474,7 +477,7 @@ class ChatRunWorkerService:
             },
         )
 
-    def _queue_auto_name_run(self, run, turn):
+    def _queue_auto_name_run(self, run, turn, claimed_worker_id):
         if not getattr(turn, "schedule_auto_name", False):
             return None
         if not run.chat_session_id:
@@ -497,6 +500,13 @@ class ChatRunWorkerService:
                 run_kind=AUTO_NAME_RUN_KIND,
             )
         except Exception:
+            logger.exception("Failed to queue auto-name run for run %s", run.id)
+            self._emit_event(
+                run.id,
+                claimed_worker_id,
+                "error",
+                {"message": f"auto_name_queue_failed for run {run.id}"},
+            )
             return None
 
     def _cancel_run(self, run, claimed_worker_id, message="Run cancelled."):
@@ -645,7 +655,7 @@ class ChatRunWorkerService:
                 self._complete_background_run(run, claimed_worker_id, turn)
             else:
                 self._complete_run(run, claimed_worker_id, turn)
-                self._queue_auto_name_run(run, turn)
+                self._queue_auto_name_run(run, turn, claimed_worker_id)
         except RunOwnershipLostError:
             try:
                 delta_buffer.flush()

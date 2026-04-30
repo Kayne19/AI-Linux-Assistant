@@ -18,14 +18,7 @@ from providers.openai_request_builder import (
     make_schema_nullable,
 )
 
-try:
-    from dotenv import load_dotenv
-except (
-    ImportError
-):  # pragma: no cover - optional dependency in some test/runtime environments
-
-    def load_dotenv():
-        return False
+from utils.env import load_project_dotenv
 
 
 try:
@@ -38,7 +31,7 @@ except (
 
 class OpenAICaller:
     def __init__(self, model, reasoning_effort=None):
-        load_dotenv()
+        load_project_dotenv()
         if OpenAI is None:
             raise RuntimeError(
                 "OpenAI SDK is not installed. Install the 'openai' package to use this provider."
@@ -316,33 +309,52 @@ class OpenAICaller:
         self, request_kwargs, event_listener=None, round_number=0, max_retries=12
     ):
         attempt = 0
+        total_emitted = 0
         while True:
-            emitted_text = False
             try:
+                stream_cumulative = 0
                 with self.client.responses.stream(**request_kwargs) as stream:
                     for event in stream:
-                        if getattr(event, "type", None) == "response.output_text.delta":
-                            emitted_text = True
+                        if getattr(event, "type", None) == "response.output.text.delta":
+                            delta = getattr(event, "delta", "")
+                            stream_cumulative += len(delta)
+
+                            if stream_cumulative <= total_emitted:
+                                continue
+
+                            if total_emitted > 0:
+                                previous_stream_len = stream_cumulative - len(delta)
+                                if previous_stream_len < total_emitted:
+                                    overlap = total_emitted - previous_stream_len
+                                    delta = delta[overlap:]
+
+                            total_emitted = stream_cumulative
                             if event_listener is not None:
                                 event_listener(
                                     "text_delta",
                                     {
                                         "provider": "openai",
                                         "round": round_number,
-                                        "delta": getattr(event, "delta", ""),
+                                        "delta": delta,
                                     },
                                 )
                     return stream.get_final_response()
             except Exception as exc:
                 attempt += 1
-                if (
-                    emitted_text
-                    or not self._is_rate_limit_error(exc)
-                    or attempt > max_retries
-                ):
+                if not self._is_rate_limit_error(exc) or attempt > max_retries:
                     raise
 
                 delay_seconds = self._extract_retry_delay_seconds(exc, attempt)
+                if total_emitted > 0 and event_listener is not None:
+                    event_listener(
+                        "stream_paused",
+                        {
+                            "provider": "openai",
+                            "round": round_number,
+                            "attempt": attempt,
+                            "delay_seconds": delay_seconds,
+                        },
+                    )
                 if event_listener is not None:
                     event_listener(
                         "rate_limit_retry",
@@ -667,7 +679,45 @@ class OpenAICaller:
         structured_output=False,
         output_schema=None,
     ):
-        if structured_output:
+        output_schema = require_output_schema(structured_output, output_schema)
+        translated_tools = self._maybe_append_native_web_search(
+            self._translate_tools(tools or []),
+            enable_web_search,
+        )
+        request_kwargs = self._build_request_kwargs(
+            system_prompt,
+            translated_tools,
+            temperature,
+            max_output_tokens,
+            structured_output=structured_output,
+            output_schema=output_schema,
+        )
+        request_kwargs.update(
+            self._build_prompt_cache_kwargs(
+                system_prompt,
+                translated_tools,
+                cache_config,
+            )
+        )
+        request_kwargs["input"] = self._translate_history(history or []) + [
+            {"role": "user", "content": user_message}
+        ]
+
+        invoke_cancel_check(cancel_check, "before_model_call")
+        if event_listener is not None:
+            event_listener("request_submitted", {"round": 0})
+        try:
+            response = self._stream_response_with_retries(
+                request_kwargs,
+                event_listener=event_listener,
+                round_number=0,
+            )
+        except Exception as exc:
+            if not structured_output:
+                raise
+            self._emit_structured_output_warning(
+                event_listener, output_schema, str(exc), used_prompt_fallback=True
+            )
             return self.generate_text(
                 system_prompt=system_prompt,
                 user_message=user_message,
@@ -684,35 +734,6 @@ class OpenAICaller:
                 structured_output=structured_output,
                 output_schema=output_schema,
             )
-        translated_tools = self._maybe_append_native_web_search(
-            self._translate_tools(tools or []),
-            enable_web_search,
-        )
-        request_kwargs = self._build_request_kwargs(
-            system_prompt,
-            translated_tools,
-            temperature,
-            max_output_tokens,
-        )
-        request_kwargs.update(
-            self._build_prompt_cache_kwargs(
-                system_prompt,
-                translated_tools,
-                cache_config,
-            )
-        )
-        request_kwargs["input"] = self._translate_history(history or []) + [
-            {"role": "user", "content": user_message}
-        ]
-
-        invoke_cancel_check(cancel_check, "before_model_call")
-        if event_listener is not None:
-            event_listener("request_submitted", {"round": 0})
-        response = self._stream_response_with_retries(
-            request_kwargs,
-            event_listener=event_listener,
-            round_number=0,
-        )
         invoke_cancel_check(cancel_check, "after_model_call")
         self._emit_prompt_cache_metrics_if_present(response, event_listener, 0)
         web_search_calls = self._extract_web_search_calls(response)
@@ -751,6 +772,8 @@ class OpenAICaller:
                 translated_tools,
                 temperature,
                 max_output_tokens,
+                structured_output=structured_output,
+                output_schema=output_schema,
             )
             followup_kwargs.update(
                 self._build_prompt_cache_kwargs(
@@ -767,11 +790,25 @@ class OpenAICaller:
                 event_listener("tool_results_submitted", {"round": tool_rounds})
 
             invoke_cancel_check(cancel_check, "before_model_call")
-            response = self._stream_response_with_retries(
-                followup_kwargs,
-                event_listener=event_listener,
-                round_number=tool_rounds,
-            )
+            try:
+                response = self._stream_response_with_retries(
+                    followup_kwargs,
+                    event_listener=event_listener,
+                    round_number=tool_rounds,
+                )
+            except Exception as exc:
+                if not structured_output:
+                    raise
+                self._emit_structured_output_warning(
+                    event_listener, output_schema, str(exc), used_prompt_fallback=True
+                )
+                fallback_kwargs = dict(followup_kwargs)
+                fallback_kwargs.pop("text", None)
+                response = self._create_response_with_retries(
+                    fallback_kwargs,
+                    event_listener=event_listener,
+                    round_number=tool_rounds,
+                )
             invoke_cancel_check(cancel_check, "after_model_call")
             self._emit_prompt_cache_metrics_if_present(
                 response, event_listener, tool_rounds

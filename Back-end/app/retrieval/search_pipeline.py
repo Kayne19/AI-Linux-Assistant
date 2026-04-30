@@ -1,3 +1,4 @@
+import hashlib
 import math
 import re
 from collections import Counter, defaultdict
@@ -36,7 +37,9 @@ def _doc_display_source(doc):
 
 
 def _doc_page_start(doc):
-    return coerce_page_number(doc.get("page_start")) or coerce_page_number(doc.get("page"))
+    return coerce_page_number(doc.get("page_start")) or coerce_page_number(
+        doc.get("page")
+    )
 
 
 def _doc_page_end(doc):
@@ -74,6 +77,7 @@ class RetrievalSearchPipeline:
         self._source_top_tokens = {}
         self._documents_cache = None
         self._scope_config_cache = None
+        self._embed_cache: dict[tuple[str, str], list[float]] = {}
 
     def _emit_event(self, event_type, payload):
         if self.event_listener is not None:
@@ -222,7 +226,9 @@ class RetrievalSearchPipeline:
             ranked_doc["rerank_score"] = scores[index]
             ranked.append(ranked_doc)
 
-        ranked_results = sorted(ranked, key=lambda item: item["rerank_score"], reverse=True)
+        ranked_results = sorted(
+            ranked, key=lambda item: item["rerank_score"], reverse=True
+        )
 
         if not self._source_profiles_ready:
             self._build_source_profiles()
@@ -237,7 +243,9 @@ class RetrievalSearchPipeline:
         for doc in ranked_results:
             doc["rerank_score"] += 0.2 * boosts.get(doc.get("source", "Unknown"), 0.0)
             doc["rerank_score"] += self._gap_alignment_boost(evidence_gap, doc)
-        return sorted(ranked_results, key=lambda item: item["rerank_score"], reverse=True)
+        return sorted(
+            ranked_results, key=lambda item: item["rerank_score"], reverse=True
+        )
 
     def _excluded_page_windows_by_source(self, excluded_page_windows):
         by_source = defaultdict(list)
@@ -252,16 +260,17 @@ class RetrievalSearchPipeline:
             by_source[source].append((page_start, page_end))
         return by_source
 
-    def _doc_is_excluded(self, doc, excluded_page_windows_by_source, excluded_block_keys):
+    def _doc_is_excluded(
+        self, doc, excluded_page_windows_by_source, excluded_block_keys
+    ):
         source_key = _doc_source_key(doc)
         display_source = _doc_display_source(doc)
         page_start = _doc_page_start(doc)
         page_end = _doc_page_end(doc)
         if page_start is not None and page_end is not None:
-            candidate_windows = (
-                excluded_page_windows_by_source.get(source_key, [])
-                + excluded_page_windows_by_source.get(display_source, [])
-            )
+            candidate_windows = excluded_page_windows_by_source.get(
+                source_key, []
+            ) + excluded_page_windows_by_source.get(display_source, [])
             for excluded_start, excluded_end in candidate_windows:
                 if page_start <= excluded_end and page_end >= excluded_start:
                     return True
@@ -312,7 +321,9 @@ class RetrievalSearchPipeline:
         page_start = max(1, anchor_page - self.neighbor_pages)
         page_end = max(anchor_page_end, anchor_page_end + self.neighbor_pages)
         fetch_limit = max(1000, self.max_expanded * 20)
-        if anchor_doc.get("canonical_source_id") and hasattr(self.store, "fetch_canonical_page_window"):
+        if anchor_doc.get("canonical_source_id") and hasattr(
+            self.store, "fetch_canonical_page_window"
+        ):
             fetched_raw = self.store.fetch_canonical_page_window(
                 anchor_doc.get("canonical_source_id"),
                 page_start,
@@ -335,7 +346,9 @@ class RetrievalSearchPipeline:
             {
                 page
                 for doc in fetched_docs
-                for page in range(_doc_page_start(doc) or 0, (_doc_page_end(doc) or 0) + 1)
+                for page in range(
+                    _doc_page_start(doc) or 0, (_doc_page_end(doc) or 0) + 1
+                )
                 if page >= 1 and not (anchor_page_start <= page <= anchor_page_end)
             }
         )
@@ -347,7 +360,9 @@ class RetrievalSearchPipeline:
             "anchor_row_key": anchor_row_key,
             "anchor_page": anchor_page,
             "anchor_score": anchor_score,
-            "requested_page_window_key": build_page_window_key(source_key, page_start, page_end),
+            "requested_page_window_key": build_page_window_key(
+                source_key, page_start, page_end
+            ),
             "requested_page_start": page_start,
             "requested_page_end": page_end,
             "fetched_neighbor_pages": fetched_neighbor_pages,
@@ -385,8 +400,18 @@ class RetrievalSearchPipeline:
                 "evidence_gap": evidence_gap or "",
             },
         )
-        self.metadata_store.ensure_embedding_compatibility(self.embedding_provider, require_metadata=False)
-        query_vec = self.embedding_provider.embed_query(query)
+        self.metadata_store.ensure_embedding_compatibility(
+            self.embedding_provider, require_metadata=False
+        )
+        cache_key = (
+            hashlib.sha256(query.encode("utf-8")).hexdigest(),
+            getattr(self.embedding_provider, "model_name", "default"),
+        )
+        if cache_key in self._embed_cache:
+            query_vec = self._embed_cache[cache_key]
+        else:
+            query_vec = self.embedding_provider.embed_query(query)
+            self._embed_cache[cache_key] = query_vec
         documents = self._load_documents()
         hint = build_hint(
             query=query,
@@ -399,8 +424,7 @@ class RetrievalSearchPipeline:
 
         while (
             not hint.explicit_doc_ids
-            and
-            should_widen(
+            and should_widen(
                 chosen_candidates,
                 min_hit_count=scope_config.scope_min_hit_count,
                 min_top_score=scope_config.scope_min_top_score,
@@ -411,7 +435,9 @@ class RetrievalSearchPipeline:
             hint = widen_hint(hint, step=widenings_taken)
             chosen_candidates = select_candidate_docs(hint, documents)
 
-        candidate_ids = [candidate.canonical_source_id for candidate in chosen_candidates]
+        candidate_ids = [
+            candidate.canonical_source_id for candidate in chosen_candidates
+        ]
         self._emit_event(
             "retrieval_scope_selected",
             {
@@ -439,7 +465,9 @@ class RetrievalSearchPipeline:
                 "router_hint_present": router_hint is not None,
             },
         )
-        candidates = self.store.search_hybrid_scoped(query_vec, query, self.initial_fetch, candidate_ids)
+        candidates = self.store.search_hybrid_scoped(
+            query_vec, query, self.initial_fetch, candidate_ids
+        )
         self._emit_event(
             "retrieval_candidates_found",
             {
@@ -449,21 +477,13 @@ class RetrievalSearchPipeline:
             },
         )
 
-        if sources:
-            candidates = [
-                doc for doc in candidates
-                if self._matches_allowed_titles(doc.get("source", ""), sources)
-            ]
-            self._emit_event(
-                "retrieval_sources_filtered",
-                {"count": len(candidates), "sources": list(sources or [])},
-            )
-
         if not candidates:
             self._emit_event("retrieval_no_results", {"query": query})
             return self._empty_result()
 
-        ranked_results = self._rank_candidates(query, candidates, evidence_gap=evidence_gap or "")
+        ranked_results = self._rank_candidates(
+            query, candidates, evidence_gap=evidence_gap or ""
+        )
         anchors = ranked_results[: self.final_top_k]
         anchor_pages = [
             page
@@ -481,7 +501,9 @@ class RetrievalSearchPipeline:
             },
         )
 
-        excluded_windows_by_source = self._excluded_page_windows_by_source(excluded_page_windows)
+        excluded_windows_by_source = self._excluded_page_windows_by_source(
+            excluded_page_windows
+        )
         selected_docs = []
         selected_doc_keys = set()
         bundle_summaries = []
@@ -501,7 +523,9 @@ class RetrievalSearchPipeline:
             bundle_docs = []
             for raw_doc in bundle["docs"]:
                 row_key = build_row_key(raw_doc)
-                if self._doc_is_excluded(raw_doc, excluded_windows_by_source, excluded_block_keys):
+                if self._doc_is_excluded(
+                    raw_doc, excluded_windows_by_source, excluded_block_keys
+                ):
                     excluded_seen_count += 1
                     # Record the region key so the pool can classify this as overlap/reused
                     page_start = _doc_page_start(raw_doc)
@@ -523,7 +547,9 @@ class RetrievalSearchPipeline:
                 bundle_doc["source_key"] = source
                 bundle_doc["anchor_row_key"] = bundle["anchor_row_key"]
                 bundle_doc["anchor_page"] = bundle["anchor_page"]
-                bundle_doc["requested_page_window_key"] = bundle["requested_page_window_key"]
+                bundle_doc["requested_page_window_key"] = bundle[
+                    "requested_page_window_key"
+                ]
                 bundle_doc["rerank_score"] = bundle["anchor_score"]
                 bundle_docs.append(bundle_doc)
 
@@ -531,7 +557,10 @@ class RetrievalSearchPipeline:
                 skipped_bundle_count += 1
                 continue
 
-            if selected_docs and len(selected_docs) + len(bundle_docs) > self.max_expanded:
+            if (
+                selected_docs
+                and len(selected_docs) + len(bundle_docs) > self.max_expanded
+            ):
                 skipped_bundle_count += 1
                 break
 
@@ -539,7 +568,9 @@ class RetrievalSearchPipeline:
                 {
                     page
                     for doc in bundle_docs
-                    for page in range(_doc_page_start(doc) or 0, (_doc_page_end(doc) or 0) + 1)
+                    for page in range(
+                        _doc_page_start(doc) or 0, (_doc_page_end(doc) or 0) + 1
+                    )
                     if page >= 1
                 }
             )
@@ -592,13 +623,17 @@ class RetrievalSearchPipeline:
         delivered_region_keys = []
         for window in delivered_page_windows:
             delivered_region_keys.append(
-                _build_region_key(window["source"], window["page_start"], window["page_end"])
+                _build_region_key(
+                    window["source"], window["page_start"], window["page_end"]
+                )
             )
         for block_key in delivered_block_keys:
             if block_key and ":singleton:" in block_key:
                 parts = block_key.split(":", 3)
                 if len(parts) == 4:
-                    delivered_region_keys.append(_build_region_key(parts[1], row_key=parts[3]))
+                    delivered_region_keys.append(
+                        _build_region_key(parts[1], row_key=parts[3])
+                    )
 
         retrieval_metadata = {
             "anchor_count": len(anchors),
@@ -608,7 +643,9 @@ class RetrievalSearchPipeline:
                 for src, pages in sorted(fetched_neighbor_pages_by_source.items())
             ],
             "delivered_bundle_count": len(bundle_summaries),
-            "delivered_bundle_keys": [bundle["bundle_key"] for bundle in bundle_summaries],
+            "delivered_bundle_keys": [
+                bundle["bundle_key"] for bundle in bundle_summaries
+            ],
             "delivered_block_keys": [key for key in delivered_block_keys if key],
             "delivered_page_window_keys": delivered_page_window_keys,
             "delivered_page_windows": delivered_page_windows,

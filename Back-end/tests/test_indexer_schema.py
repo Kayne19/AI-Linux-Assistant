@@ -8,11 +8,9 @@ Covers:
 """
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 
 from ingestion.indexer import (
     IngestionIndexer,
@@ -44,9 +42,40 @@ class _FakeStore:
     def rebuild_fts_index(self, field_name: str = "search_text"):
         pass
 
+    def count_rows_by_id_prefix(self, prefix: str) -> int:
+        return sum(1 for r in self.rows if r.get("id", "").startswith(prefix))
+
+    def delete_by_id_prefix(self, prefix: str) -> int:
+        before = self.count_rows_by_id_prefix(prefix)
+        self.rows = [r for r in self.rows if not r.get("id", "").startswith(prefix)]
+        return before
+
+    def count_rows_matching(self, predicate: str) -> int:
+        # Simple equality predicate: "column = 'value'"
+        import re as _re
+
+        m = _re.match(r"^(\w+)\s*=\s*'(.*)'$", predicate)
+        if not m:
+            return 0
+        col, val = m.group(1), m.group(2)
+        return sum(1 for r in self.rows if str(r.get(col, "")) == val)
+
+    def delete_by_predicate(self, predicate: str) -> int:
+        import re as _re
+
+        m = _re.match(r"^(\w+)\s*=\s*'(.*)'$", predicate)
+        if not m:
+            return 0
+        col, val = m.group(1), m.group(2)
+        before = sum(1 for r in self.rows if str(r.get(col, "")) == val)
+        self.rows = [r for r in self.rows if str(r.get(col, "")) != val]
+        return before
+
 
 class _FakeMetadataStore:
-    def ensure_embedding_compatibility(self, embedding_provider, require_metadata=False):
+    def ensure_embedding_compatibility(
+        self, embedding_provider, require_metadata=False
+    ):
         pass
 
     def write(self, embedding_provider):
@@ -85,7 +114,11 @@ def test_ingest_json_legacy_keeps_filename_as_source(tmp_path):
             {
                 "text": "hello",
                 "type": "NarrativeText",
-                "metadata": {"filename": "book.pdf", "page_number": 3, "embedding_text": "E hello"},
+                "metadata": {
+                    "filename": "book.pdf",
+                    "page_number": 3,
+                    "embedding_text": "E hello",
+                },
             }
         ],
     )
@@ -94,8 +127,8 @@ def test_ingest_json_legacy_keeps_filename_as_source(tmp_path):
 
     assert result["rows"] == 1
     row = indexer.store.rows[0]
-    assert row["source"] == "book.pdf"            # legacy
-    assert row["canonical_source_id"] == ""        # safe default
+    assert row["source"] == "book.pdf"  # legacy
+    assert row["canonical_source_id"] == ""  # safe default
     assert row["page_start"] == 3
     assert row["page_end"] == 3
     assert row["entities"] == "{}"
@@ -104,7 +137,10 @@ def test_ingest_json_legacy_keeps_filename_as_source(tmp_path):
 
 
 def test_ingest_json_legacy_returns_schema_metadata(tmp_path):
-    path = _write_elements(tmp_path, [{"text": "t", "type": "NarrativeText", "metadata": {"page_number": 1}}])
+    path = _write_elements(
+        tmp_path,
+        [{"text": "t", "type": "NarrativeText", "metadata": {"page_number": 1}}],
+    )
     indexer = _make_indexer()
     result = indexer.ingest_json(str(path))
 
@@ -115,10 +151,26 @@ def test_ingest_json_legacy_returns_schema_metadata(tmp_path):
 def test_ingest_json_legacy_chunk_ids_are_source_stable_and_unique(tmp_path):
     first = _write_elements(
         tmp_path,
-        [{"text": "t", "type": "NarrativeText", "metadata": {"filename": "a.pdf", "page_number": 1}}],
+        [
+            {
+                "text": "t",
+                "type": "NarrativeText",
+                "metadata": {"filename": "a.pdf", "page_number": 1},
+            }
+        ],
     )
     second = tmp_path / "elements_b.json"
-    second.write_text(json.dumps([{"text": "t", "type": "NarrativeText", "metadata": {"filename": "b.pdf", "page_number": 1}}]))
+    second.write_text(
+        json.dumps(
+            [
+                {
+                    "text": "t",
+                    "type": "NarrativeText",
+                    "metadata": {"filename": "b.pdf", "page_number": 1},
+                }
+            ]
+        )
+    )
 
     indexer_a = _make_indexer()
     indexer_b = _make_indexer()
@@ -234,7 +286,10 @@ def test_ingest_json_with_identity_writes_document_row(tmp_path):
 
 
 def test_ingest_json_without_documents_store_skips_doc_row(tmp_path):
-    path = _write_elements(tmp_path, [{"text": "t", "type": "NarrativeText", "metadata": {"page_number": 1}}])
+    path = _write_elements(
+        tmp_path,
+        [{"text": "t", "type": "NarrativeText", "metadata": {"page_number": 1}}],
+    )
     indexer = _make_indexer(documents_store=None)
 
     result = indexer.ingest_json(str(path), document_identity=_identity())
@@ -326,3 +381,107 @@ def test_build_ingestion_indexer_wires_documents_store(monkeypatch):
     assert result.documents_store is fake_docs
     assert result.metadata_store is fake_meta
     assert result.embedding_provider is fake_embed
+
+
+# ---------------------------------------------------------------------------
+# H4: Idempotent re-ingest
+# ---------------------------------------------------------------------------
+
+
+def test_reingest_same_source_is_skipped_by_default(tmp_path):
+    """Re-ingesting the same source without --force-reingest returns a skipped result."""
+    path = _write_elements(
+        tmp_path,
+        [
+            {
+                "text": "hello",
+                "type": "NarrativeText",
+                "metadata": {"filename": "a.pdf", "page_number": 1},
+            }
+        ],
+    )
+    indexer = _make_indexer()
+
+    # First ingest
+    result1 = indexer.ingest_json(str(path))
+    assert result1["rows"] == 1
+    assert result1.get("skipped") is None
+
+    # Second ingest — same source, no force
+    result2 = indexer.ingest_json(str(path))
+    assert result2["rows"] == 0
+    assert result2["skipped"] is True
+    assert "already exist" in result2["reason"]
+    assert len(indexer.store.rows) == 1  # no duplicate added
+
+
+def test_reingest_same_source_with_force_replaces_chunks(tmp_path):
+    """Re-ingesting with force_reingest=True deletes old chunks and inserts new ones."""
+    path = _write_elements(
+        tmp_path,
+        [
+            {
+                "text": "hello",
+                "type": "NarrativeText",
+                "metadata": {"filename": "a.pdf", "page_number": 1},
+            }
+        ],
+    )
+    indexer = _make_indexer()
+
+    indexer.ingest_json(str(path))
+    assert len(indexer.store.rows) == 1
+
+    result = indexer.ingest_json(str(path), force_reingest=True)
+    assert result["rows"] == 1
+    assert result.get("skipped") is None
+    assert len(indexer.store.rows) == 1  # replaced, not duplicated
+
+
+def test_reingest_with_identity_skips_by_default(tmp_path):
+    """When chunks already exist, re-ingest returns early and the document row is preserved."""
+    path = _write_elements(
+        tmp_path,
+        [{"text": "t", "type": "NarrativeText", "metadata": {"page_number": 1}}],
+    )
+    docs_store = _FakeStore("documents")
+    indexer = _make_indexer(documents_store=docs_store)
+    identity = _identity()
+
+    indexer.ingest_json(str(path), document_identity=identity)
+    assert len(docs_store.rows) == 1
+
+    result = indexer.ingest_json(str(path), document_identity=identity)
+    # Chunks guard fires first — early return, but doc row stays
+    assert result["skipped"] is True
+    assert len(docs_store.rows) == 1  # no duplicate
+
+
+def test_write_document_row_idempotent_by_default(tmp_path):
+    """Calling _write_document_row twice on the same identity skips the second call."""
+    docs_store = _FakeStore("documents")
+    indexer = _make_indexer(documents_store=docs_store)
+    identity = _identity()
+
+    result1 = indexer._write_document_row(identity)
+    assert result1["written"] is True
+    assert len(docs_store.rows) == 1
+
+    result2 = indexer._write_document_row(identity)
+    assert result2["written"] is False
+    assert result2["skipped"] is True
+    assert len(docs_store.rows) == 1  # no duplicate
+
+
+def test_write_document_row_force_reingest_replaces(tmp_path):
+    """_write_document_row with force_reingest=True deletes old row and inserts new."""
+    docs_store = _FakeStore("documents")
+    indexer = _make_indexer(documents_store=docs_store)
+    identity = _identity()
+
+    indexer._write_document_row(identity)
+
+    result = indexer._write_document_row(identity, force_reingest=True)
+    assert result["written"] is True
+    assert result.get("skipped") is None
+    assert len(docs_store.rows) == 1  # replaced, not duplicated

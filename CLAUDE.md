@@ -21,31 +21,31 @@ Use this file for shared workflow and doc routing when working in this repositor
 ## Task Routing
 
 - General repo orientation:
-  - [README.md](/home/kayne19/projects/AI-Linux-Assistant/README.md)
+  - [README.md](README.md)
 - Web authentication, Auth0 setup, secure-origin requirements, and legacy-auth audit notes:
-  - [Back-end/app/auth/AUTHENTICATION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/auth/AUTHENTICATION.md)
+  - [Back-end/app/auth/AUTHENTICATION.md](Back-end/app/auth/AUTHENTICATION.md)
 - Backend orchestration, FSM ownership, providers, Magi boundaries:
-  - [Back-end/app/ARCHITECTURE.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/ARCHITECTURE.md)
+  - [Back-end/app/ARCHITECTURE.md](Back-end/app/ARCHITECTURE.md)
 - Durable chat runs, worker queueing, leases, replay, and concurrency policy:
-  - [Back-end/app/orchestration/RUNS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/RUNS.md)
+  - [Back-end/app/orchestration/RUNS.md](Back-end/app/orchestration/RUNS.md)
 - Memory extraction, resolution, storage, or prompt usage:
-  - [Back-end/app/persistence/MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence/MEMORY.md)
+  - [Back-end/app/persistence/MEMORY.md](Back-end/app/persistence/MEMORY.md)
 - Retrieval, LanceDB, embeddings, reranking, retrieval providers:
-  - [Back-end/app/retrieval/RETRIEVAL.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/RETRIEVAL.md)
+  - [Back-end/app/retrieval/RETRIEVAL.md](Back-end/app/retrieval/RETRIEVAL.md)
 - Ingestion pipeline, registry updates, indexing flow:
-  - [Back-end/app/ingestion/INGESTION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/ingestion/INGESTION.md)
+  - [Back-end/app/ingestion/INGESTION.md](Back-end/app/ingestion/INGESTION.md)
 - FastAPI routes, request/response models, bootstrap/message API behavior:
-  - [Back-end/app/API.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/API.md)
+  - [Back-end/app/API.md](Back-end/app/API.md)
 - SSE events, streaming lifecycle, live status behavior:
-  - [Back-end/app/streaming/STREAMING.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/streaming/STREAMING.md)
+  - [Back-end/app/streaming/STREAMING.md](Back-end/app/streaming/STREAMING.md)
 - Agent roles, Magi deliberation, and reasoning units:
-  - [Back-end/app/agents/AGENT_ROLES.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/AGENT_ROLES.md)
+  - [Back-end/app/agents/AGENT_ROLES.md](Back-end/app/agents/AGENT_ROLES.md)
 - Provider adapters and LLM transport:
-  - [Back-end/app/providers/PROVIDERS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/providers/PROVIDERS.md)
+  - [Back-end/app/providers/PROVIDERS.md](Back-end/app/providers/PROVIDERS.md)
 - Frontend React state, optimistic streaming UI, council rendering:
-  - [Front-end/FRONTEND.md](/home/kayne19/projects/AI-Linux-Assistant/Front-end/FRONTEND.md)
+  - [Front-end/FRONTEND.md](Front-end/FRONTEND.md)
 - Router evals and regression runners:
-  - [Back-end/evals/README.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/evals/README.md)
+  - [Back-end/evals/README.md](Back-end/evals/README.md)
 
 ## Common Commands
 
@@ -92,27 +92,27 @@ cd Back-end && python scripts/db/init_postgres_schema.py
 ## Configuration And Security
 
 - Store secrets in `Back-end/.env`; do not commit them.
-- Keep default role/provider/model configuration centralized in [Back-end/app/config/settings.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/config/settings.py).
-- Retrieval runtime/index configuration lives in [Back-end/app/retrieval/config.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/config.py).
+- Keep default role/provider/model configuration centralized in [Back-end/app/config/settings.py](Back-end/app/config/settings.py).
+- Retrieval runtime/index configuration lives in [Back-end/app/retrieval/config.py](Back-end/app/retrieval/config.py).
 - Retrieval device placement may be overridden with `VECTORDB_EMBED_DEVICE` and `VECTORDB_RERANK_DEVICE`.
 
 ## Documentation Maintenance
 
 Important maintained docs:
 
-- [README.md](/home/kayne19/projects/AI-Linux-Assistant/README.md)
-- [Back-end/app/auth/AUTHENTICATION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/auth/AUTHENTICATION.md)
-- [Back-end/app/ARCHITECTURE.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/ARCHITECTURE.md)
-- [Back-end/app/orchestration/RUNS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/RUNS.md)
-- [Back-end/app/persistence/MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence/MEMORY.md)
-- [Back-end/app/retrieval/RETRIEVAL.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/RETRIEVAL.md)
-- [Back-end/app/ingestion/INGESTION.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/ingestion/INGESTION.md)
-- [Back-end/app/API.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/API.md)
-- [Back-end/app/streaming/STREAMING.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/streaming/STREAMING.md)
-- [Back-end/app/agents/AGENT_ROLES.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/AGENT_ROLES.md)
-- [Back-end/app/providers/PROVIDERS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/providers/PROVIDERS.md)
-- [Front-end/FRONTEND.md](/home/kayne19/projects/AI-Linux-Assistant/Front-end/FRONTEND.md)
-- [Back-end/evals/README.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/evals/README.md)
+- [README.md](README.md)
+- [Back-end/app/auth/AUTHENTICATION.md](Back-end/app/auth/AUTHENTICATION.md)
+- [Back-end/app/ARCHITECTURE.md](Back-end/app/ARCHITECTURE.md)
+- [Back-end/app/orchestration/RUNS.md](Back-end/app/orchestration/RUNS.md)
+- [Back-end/app/persistence/MEMORY.md](Back-end/app/persistence/MEMORY.md)
+- [Back-end/app/retrieval/RETRIEVAL.md](Back-end/app/retrieval/RETRIEVAL.md)
+- [Back-end/app/ingestion/INGESTION.md](Back-end/app/ingestion/INGESTION.md)
+- [Back-end/app/API.md](Back-end/app/API.md)
+- [Back-end/app/streaming/STREAMING.md](Back-end/app/streaming/STREAMING.md)
+- [Back-end/app/agents/AGENT_ROLES.md](Back-end/app/agents/AGENT_ROLES.md)
+- [Back-end/app/providers/PROVIDERS.md](Back-end/app/providers/PROVIDERS.md)
+- [Front-end/FRONTEND.md](Front-end/FRONTEND.md)
+- [Back-end/evals/README.md](Back-end/evals/README.md)
 
 If code changes affect one of those surfaces, updating the relevant markdown is part of the implementation.
 

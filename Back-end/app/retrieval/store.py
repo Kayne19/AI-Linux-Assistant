@@ -5,9 +5,30 @@ class LanceDBStore:
     def __init__(self, db_path: str, table_name: str):
         self.db_path = db_path
         self.table_name = table_name
+        self._db = None  # lazy-init, memoized
 
     def connect(self):
-        return lancedb.connect(self.db_path)
+        """Return the memoized LanceDB connection, reconnecting on error."""
+        if self._db is not None:
+            try:
+                # Cheap liveness check — list table names to verify the
+                # connection is still usable.
+                self._db.table_names()
+            except Exception:
+                self._db = None
+        if self._db is None:
+            self._db = lancedb.connect(self.db_path)
+        return self._db
+
+    def close(self):
+        """Close the memoized connection if it is open."""
+        if self._db is not None:
+            try:
+                self._db.close()
+            except Exception:
+                pass
+            finally:
+                self._db = None
 
     def table_exists(self) -> bool:
         return self.table_name in self.connect().table_names()
@@ -40,7 +61,10 @@ class LanceDBStore:
         """
         if not canonical_source_ids:
             return self.search_hybrid(query_vector, query_text, limit)
-        escaped = [f"'{str(doc_id).replace(chr(39), chr(39) + chr(39))}'" for doc_id in canonical_source_ids]
+        escaped = [
+            f"'{str(doc_id).replace(chr(39), chr(39) + chr(39))}'"
+            for doc_id in canonical_source_ids
+        ]
         predicate = f"canonical_source_id IN ({', '.join(escaped)})"
         return (
             self.open_table()
@@ -60,7 +84,9 @@ class LanceDBStore:
         """
         return self.open_table().to_pandas().to_dict("records")
 
-    def fetch_source_page_window(self, source: str, page_start: int, page_end: int, limit: int | None = None):
+    def fetch_source_page_window(
+        self, source: str, page_start: int, page_end: int, limit: int | None = None
+    ):
         escaped_source = (source or "").replace("'", "''")
         query = (
             f"source = '{escaped_source}' "
@@ -96,6 +122,38 @@ class LanceDBStore:
             return False
         db.create_table(self.table_name, data=rows)
         return True
+
+    def count_rows_matching(self, predicate: str) -> int:
+        """Return the number of rows matching a SQL WHERE predicate."""
+        if not self.table_exists():
+            return 0
+        try:
+            return self.open_table().to_lance().count_rows(filter=predicate)
+        except Exception:
+            return 0
+
+    def delete_by_predicate(self, predicate: str) -> int:
+        """Delete rows matching a SQL WHERE predicate. Returns count of deleted rows."""
+        if not self.table_exists():
+            return 0
+        before = self.count_rows_matching(predicate)
+        if before == 0:
+            return 0
+        try:
+            self.open_table().delete(predicate)
+            return before
+        except Exception:
+            return 0
+
+    def delete_by_id_prefix(self, prefix: str) -> int:
+        """Delete rows whose 'id' column starts with *prefix*."""
+        escaped = prefix.replace("'", "''")
+        return self.delete_by_predicate(f"id LIKE '{escaped}%'")
+
+    def count_rows_by_id_prefix(self, prefix: str) -> int:
+        """Count rows whose 'id' column starts with *prefix*."""
+        escaped = prefix.replace("'", "''")
+        return self.count_rows_matching(f"id LIKE '{escaped}%'")
 
     def rebuild_fts_index(self, field_name: str = "search_text"):
         self.open_table().create_fts_index(field_name, replace=True)

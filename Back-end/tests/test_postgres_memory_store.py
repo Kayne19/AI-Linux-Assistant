@@ -244,3 +244,73 @@ def test_postgres_memory_store_concurrent_chats_do_not_clobber_candidates():
     )
     assert chat_a_os == "Arch Linux", f"Chat A should have Arch Linux, got {chat_a_os}"
     assert chat_b_os == "Fedora 42", f"Chat B should have Fedora 42, got {chat_b_os}"
+
+
+def test_snapshot_staleness_detection():
+    """Simulate a concurrent mutation between LOAD_MEMORY and RESOLVE_MEMORY.
+
+    After loading the snapshot, another turn commits a fact change. The
+    staleness check should detect the intervening write, and
+    load_snapshot_fresh should return the updated data.
+    """
+    store = _build_store()
+
+    # Seed an initial fact
+    store.commit_resolution(
+        MemoryResolution(
+            committed={
+                "facts": [
+                    {
+                        "fact_key": "os.distribution",
+                        "fact_value": "Debian 12",
+                        "source_type": "user",
+                        "source_ref": "user_question",
+                        "confidence": 0.95,
+                    }
+                ],
+                "issues": [],
+                "attempts": [],
+                "constraints": [],
+                "preferences": [],
+            }
+        )
+    )
+
+    # Begin a turn — this is the LOAD_MEMORY phase
+    store.begin_turn()
+    snapshot_before = store.load_snapshot()
+    assert snapshot_before["profile"]["os.distribution"] == "Debian 12"
+    assert not store.is_snapshot_stale()
+
+    # Simulate concurrent mutation: another turn changes the fact
+    store.commit_resolution(
+        MemoryResolution(
+            committed={
+                "facts": [
+                    {
+                        "fact_key": "os.distribution",
+                        "fact_value": "Ubuntu 24.04",
+                        "source_type": "user",
+                        "source_ref": "user_question",
+                        "confidence": 0.97,
+                    }
+                ],
+                "issues": [],
+                "attempts": [],
+                "constraints": [],
+                "preferences": [],
+            }
+        )
+    )
+
+    # The cached snapshot is stale — but the cached version still returns old data
+    assert store.is_snapshot_stale()
+    cached_snapshot = store.load_snapshot()
+    assert cached_snapshot["profile"]["os.distribution"] == "Debian 12"
+
+    # After detecting staleness, load_snapshot_fresh returns the new data
+    fresh_snapshot = store.load_snapshot_fresh()
+    assert fresh_snapshot["profile"]["os.distribution"] == "Ubuntu 24.04"
+    assert not store.is_snapshot_stale()
+
+    store.end_turn()

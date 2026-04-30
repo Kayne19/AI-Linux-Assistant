@@ -9,20 +9,12 @@ from providers.structured_output import (
     warning_payload,
 )
 from providers.step_protocol import ProviderStepResult, ProviderToolCall
-
-try:
-    from dotenv import load_dotenv
-except (
-    ImportError
-):  # pragma: no cover - optional dependency in some test/runtime environments
-
-    def load_dotenv():
-        return False
+from utils.env import load_project_dotenv
 
 
 class AnthropicCaller:
     def __init__(self, model):
-        load_dotenv()
+        load_project_dotenv()
         self.API_KEY = os.getenv("ANTHROPIC_API_KEY")
         self.model = model
         self.client = self._build_client()
@@ -238,6 +230,7 @@ class AnthropicCaller:
         round_number,
         structured_output=False,
         output_schema=None,
+        cancel_check=None,
     ):
         response = self.client.messages.create(
             **self._build_request_kwargs(
@@ -253,6 +246,7 @@ class AnthropicCaller:
         self._emit_web_search_event_if_used(response, event_listener, round_number)
 
         while getattr(response, "stop_reason", None) == "pause_turn":
+            invoke_cancel_check(cancel_check, "before_pause_resumption")
             messages = messages + [self._assistant_message_from_response(response)]
             response = self.client.messages.create(
                 **self._build_request_kwargs(
@@ -280,6 +274,7 @@ class AnthropicCaller:
         round_number,
         structured_output=False,
         output_schema=None,
+        cancel_check=None,
     ):
         try:
             response, messages = self._request_until_not_paused(
@@ -292,6 +287,7 @@ class AnthropicCaller:
                 round_number,
                 structured_output=structured_output,
                 output_schema=output_schema,
+                cancel_check=cancel_check,
             )
         except Exception as exc:
             if not structured_output:
@@ -309,6 +305,7 @@ class AnthropicCaller:
                 round_number,
                 structured_output=False,
                 output_schema=None,
+                cancel_check=cancel_check,
             )
 
         if structured_output:
@@ -331,8 +328,10 @@ class AnthropicCaller:
         max_output_tokens,
         event_listener,
         round_number,
+        cancel_check=None,
     ):
         while True:
+            invoke_cancel_check(cancel_check, "before_stream_request")
             request_kwargs = self._build_request_kwargs(
                 system_prompt,
                 translated_tools,
@@ -359,6 +358,7 @@ class AnthropicCaller:
             self._emit_web_search_event_if_used(response, event_listener, round_number)
             if getattr(response, "stop_reason", None) != "pause_turn":
                 return response, messages
+            invoke_cancel_check(cancel_check, "after_pause_turn")
             messages = messages + [self._assistant_message_from_response(response)]
 
     def start_text_step(
@@ -396,6 +396,7 @@ class AnthropicCaller:
             max_output_tokens,
             event_listener,
             round_number,
+            cancel_check=cancel_check,
         )
         invoke_cancel_check(cancel_check, "after_model_call")
         return self._step_result_from_response(response, messages)
@@ -439,6 +440,7 @@ class AnthropicCaller:
             max_output_tokens,
             event_listener,
             round_number,
+            cancel_check=cancel_check,
         )
         invoke_cancel_check(cancel_check, "after_model_call")
         return self._step_result_from_response(response, messages)
@@ -486,6 +488,7 @@ class AnthropicCaller:
             0,
             structured_output=structured_output,
             output_schema=output_schema,
+            cancel_check=cancel_check,
         )
         invoke_cancel_check(cancel_check, "after_model_call")
 
@@ -529,6 +532,7 @@ class AnthropicCaller:
                 tool_rounds,
                 structured_output=structured_output,
                 output_schema=output_schema,
+                cancel_check=cancel_check,
             )
             invoke_cancel_check(cancel_check, "after_model_call")
             model_response = self._extract_text(response) or model_response
@@ -593,6 +597,7 @@ class AnthropicCaller:
             max_output_tokens,
             event_listener,
             0,
+            cancel_check=cancel_check,
         )
         invoke_cancel_check(cancel_check, "after_model_call")
 
@@ -634,6 +639,7 @@ class AnthropicCaller:
                 max_output_tokens,
                 event_listener,
                 tool_rounds,
+                cancel_check=cancel_check,
             )
             invoke_cancel_check(cancel_check, "after_model_call")
             model_response = self._extract_text(response) or model_response

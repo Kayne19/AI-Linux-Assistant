@@ -1,14 +1,9 @@
+import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
-except (
-    ImportError
-):  # pragma: no cover - optional dependency in some test/runtime environments
-
-    def load_dotenv():
-        return False
+from utils.env import load_project_dotenv
 
 
 @dataclass(frozen=True)
@@ -38,6 +33,7 @@ class AppSettings:
         default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-nano", "")
     )
     response_tool_rounds: int = 8
+    magi_tool_rounds: int = 4
     classifier_temperature: float = 0.0
     contextualizer_temperature: float = 0.0
     history_summarizer_temperature: float = 0.1
@@ -136,7 +132,7 @@ def _get_csv_env(*names):
 
 
 def load_settings():
-    load_dotenv()
+    load_project_dotenv(start_dir=Path(__file__).resolve().parent)
     provider_defaults = {
         "openai": _get_env("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
         "anthropic": _get_env("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6"),
@@ -285,6 +281,12 @@ def load_settings():
 
 # Composition root for the app. Change defaults here or override with .env.
 SETTINGS = load_settings()
+
+if "*" in SETTINGS.frontend_origins:
+    logging.getLogger(__name__).warning(
+        "CORS frontend_origins contains '*': fully permissive. "
+        "Restrict to specific origins in production."
+    )
 
 
 def _load_settings_row():

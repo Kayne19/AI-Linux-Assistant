@@ -1,8 +1,7 @@
-Router evals live here. For end-to-end blind judging across subjects, see [`eval-harness/README.md`](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/README.md).
-
-
+Router evals live here. For end-to-end blind judging across subjects, see [`eval-harness/README.md`](eval-harness/README.md).
 
 Files:
+
 - `router_eval_cases.json`: prompt cases for repeatable router evaluation
 - `router_deep_eval_scenarios.json`: multi-turn deep-eval scenarios
 - `last_router_eval_results.json`: last saved output from the eval runner
@@ -11,6 +10,7 @@ Files:
 - `../scripts/eval/evaluate_router_deep.py`: the deep scenario runner
 
 What the runner measures:
+
 - router errors vs successful completion
 - routing label match
 - whether RAG was used or skipped as expected
@@ -20,11 +20,13 @@ What the runner measures:
 - raw/summarized retrieved-doc sizes
 
 What the runner does not measure:
+
 - deep semantic correctness
 - whether the final answer is the best possible answer
 - whether a citation is truly the ideal citation
 
 What the deep runner adds:
+
 - multi-turn debugging scenarios
 - restart persistence checks against the memory DB
 - branch-switch challenges after contrary evidence
@@ -32,6 +34,7 @@ What the deep runner adds:
 - per-step memory events and traces for human review
 
 Use it for:
+
 - prompt regression checks
 - comparing provider/model mixes
 - spotting routing/tool-use failures quickly
@@ -39,6 +42,7 @@ Use it for:
   more closely than cold-starting the retrieval stack for every case
 
 Default runtime behavior for evals:
+
 - by default the script follows the normal app runtime for retrieval devices
 - if you want to force CPU or GPU for evals, use the explicit device flags
 
@@ -54,7 +58,7 @@ Compare models:
 ```bash
 python scripts/eval/evaluate_router.py \
   --classifier-provider openai \
-  --classifier-model gpt-4.1-mini \
+  --classifier-model gpt-5.4-mini \
   --responder-provider local \
   --responder-model qwen2.5:14b
 ```

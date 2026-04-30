@@ -1,9 +1,18 @@
+import fcntl
 import json
+import os
 import re
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 
 REGISTRY_PATH = Path(__file__).resolve().with_name("routing_domains.json")
+
+
+def _lock_path():
+    return REGISTRY_PATH.with_name(REGISTRY_PATH.name + ".lock")
+
 
 DEFAULT_REGISTRY = {
     "domains": [
@@ -71,10 +80,30 @@ def load_registry():
 
 
 def save_registry(registry):
+    """Atomically write *registry* to the JSON file.
+
+    Writes to a temp file in the same directory then ``os.replace()`` onto
+    the real path so readers never see a partial write.
+    """
     REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
     normalized = _normalize_registry(registry)
-    with REGISTRY_PATH.open("w", encoding="utf-8") as f:
-        json.dump(normalized, f, indent=2)
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(
+            suffix=".json",
+            prefix=".tmp-routing_domains-",
+            dir=str(REGISTRY_PATH.parent),
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(normalized, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, REGISTRY_PATH)
+        tmp = None
+    finally:
+        if tmp is not None and os.path.exists(tmp):
+            with suppress(OSError):
+                os.unlink(tmp)
 
 
 def _normalize_registry(registry):
@@ -130,36 +159,49 @@ def get_aliases_for_label(label):
 
 
 def merge_domain_suggestion(suggestion):
+    """Atomically merge a domain suggestion into the routing registry.
+
+    Uses ``fcntl.flock`` to serialize concurrent writes so two ingests
+    cannot overwrite each other via a last-write-wins race.
+    """
     label = _normalize_label(suggestion.get("label"))
     if not label:
         return False, "missing label"
 
-    registry = load_registry()
-    domains = registry["domains"]
-    aliases = _normalize_aliases(suggestion.get("aliases", []))
-    if label not in aliases:
-        aliases.insert(0, label)
+    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(_lock_path(), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-    for domain in domains:
-        if domain["label"] == label:
-            merged_aliases = domain["aliases"][:]
-            for alias in aliases:
-                if alias not in merged_aliases:
-                    merged_aliases.append(alias)
-            domain["aliases"] = merged_aliases
-            if suggestion.get("description") and not domain.get("description"):
-                domain["description"] = suggestion["description"].strip()
-            save_registry(registry)
-            return True, f"updated existing domain '{label}'"
+        registry = load_registry()
+        domains = registry["domains"]
+        aliases = _normalize_aliases(suggestion.get("aliases", []))
+        if label not in aliases:
+            aliases.insert(0, label)
 
-    domains.append(
-        {
-            "label": label,
-            "aliases": aliases,
-            "description": (suggestion.get("description") or "").strip(),
-            "skip_rag": bool(suggestion.get("skip_rag", False)),
-            "builtin": False,
-        }
-    )
-    save_registry(registry)
-    return True, f"added new domain '{label}'"
+        for domain in domains:
+            if domain["label"] == label:
+                merged_aliases = domain["aliases"][:]
+                for alias in aliases:
+                    if alias not in merged_aliases:
+                        merged_aliases.append(alias)
+                domain["aliases"] = merged_aliases
+                if suggestion.get("description") and not domain.get("description"):
+                    domain["description"] = suggestion["description"].strip()
+                save_registry(registry)
+                return True, f"updated existing domain '{label}'"
+
+        domains.append(
+            {
+                "label": label,
+                "aliases": aliases,
+                "description": (suggestion.get("description") or "").strip(),
+                "skip_rag": bool(suggestion.get("skip_rag", False)),
+                "builtin": False,
+            }
+        )
+        save_registry(registry)
+        return True, f"added new domain '{label}'"
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)

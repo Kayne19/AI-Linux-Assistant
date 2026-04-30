@@ -24,9 +24,11 @@ if _dotenv_path.exists():
         pass
 
 BACKEND_HOST = os.getenv("AILA_PUBLIC_API_HOST", "127.0.0.1")
-BACKEND_PORT = os.getenv("AILA_PUBLIC_API_PORT", "8000")
+BACKEND_PORT = os.getenv("AILA_PUBLIC_API_PORT", "8001")
 CHAT_WORKER_ID = os.getenv("AILA_PUBLIC_WORKER_ID", "public-chat-worker")
-CHAT_WORKER_PROCESS_COUNT = max(1, int(os.getenv("AILA_PUBLIC_WORKER_PROCESS_COUNT", "1")))
+CHAT_WORKER_PROCESS_COUNT = max(
+    1, int(os.getenv("AILA_PUBLIC_WORKER_PROCESS_COUNT", "1"))
+)
 CHAT_WORKER_CONCURRENCY = max(1, int(os.getenv("AILA_PUBLIC_WORKER_CONCURRENCY", "4")))
 START_CLOUDFLARED = os.getenv("AILA_PUBLIC_START_CLOUDFLARED", "").strip().lower() in {
     "1",
@@ -34,7 +36,9 @@ START_CLOUDFLARED = os.getenv("AILA_PUBLIC_START_CLOUDFLARED", "").strip().lower
     "yes",
     "on",
 }
-CLOUDFLARED_CONFIG = os.getenv("AILA_CLOUDFLARED_CONFIG", str(Path.home() / ".cloudflared" / "config.yml"))
+CLOUDFLARED_CONFIG = os.getenv(
+    "AILA_CLOUDFLARED_CONFIG", str(Path.home() / ".cloudflared" / "config.yml")
+)
 
 
 def _require_path(path: Path, label: str) -> None:
@@ -53,7 +57,9 @@ def _stream_output(label: str, process: subprocess.Popen[str]) -> None:
         print(f"[{label}] {line.rstrip()}")
 
 
-def _spawn_process(label: str, command: list[str], cwd: Path, env: dict[str, str]) -> subprocess.Popen[str]:
+def _spawn_process(
+    label: str, command: list[str], cwd: Path, env: dict[str, str]
+) -> subprocess.Popen[str]:
     process = subprocess.Popen(
         command,
         cwd=str(cwd),
@@ -87,7 +93,9 @@ def _maybe_start_redis(backend_env: dict[str, str]) -> "subprocess.Popen[str] | 
     if not redis_url:
         return None
     if shutil.which("redis-server") is None:
-        print("[redis] REDIS_URL is set but redis-server not found on PATH — live fanout disabled")
+        print(
+            "[redis] REDIS_URL is set but redis-server not found on PATH — live fanout disabled"
+        )
         return None
     if _redis_already_running(redis_url):
         print(f"[redis] Redis already running at {redis_url}")
@@ -95,7 +103,9 @@ def _maybe_start_redis(backend_env: dict[str, str]) -> "subprocess.Popen[str] | 
     parsed = urlparse(redis_url)
     port = str(parsed.port or 6379)
     print(f"[redis] Starting redis-server on port {port}")
-    return _spawn_process("redis", ["redis-server", "--port", port], ROOT_DIR, backend_env)
+    return _spawn_process(
+        "redis", ["redis-server", "--port", port], ROOT_DIR, backend_env
+    )
 
 
 def _terminate_process(process: subprocess.Popen[str], label: str) -> None:
@@ -116,7 +126,9 @@ def main() -> None:
 
     backend_env = os.environ.copy()
     existing_pythonpath = backend_env.get("PYTHONPATH", "").strip()
-    backend_env["PYTHONPATH"] = "app" if not existing_pythonpath else f"app{os.pathsep}{existing_pythonpath}"
+    backend_env["PYTHONPATH"] = (
+        "app" if not existing_pythonpath else f"app{os.pathsep}{existing_pythonpath}"
+    )
 
     backend_command = [
         sys.executable,
@@ -154,7 +166,9 @@ def main() -> None:
         worker_env = backend_env.copy()
         worker_env["CHAT_RUN_WORKER_ID"] = f"{CHAT_WORKER_ID}-{worker_index + 1}"
         worker_env["CHAT_RUN_WORKER_CONCURRENCY"] = str(CHAT_WORKER_CONCURRENCY)
-        worker = _spawn_process(f"worker-{worker_index + 1}", worker_command, BACKEND_DIR, worker_env)
+        worker = _spawn_process(
+            f"worker-{worker_index + 1}", worker_command, BACKEND_DIR, worker_env
+        )
         processes.append((f"worker-{worker_index + 1}", worker))
 
     if START_CLOUDFLARED:

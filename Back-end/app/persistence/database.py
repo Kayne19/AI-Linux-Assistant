@@ -3,18 +3,14 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+from utils.env import load_project_dotenv
 
 
 class Base(DeclarativeBase):
     pass
-
-
-def _load_project_dotenv():
-    env_path = Path(__file__).resolve().parent.parent / ".env"
-    load_dotenv(env_path)
 
 
 def normalize_database_url(database_url):
@@ -36,7 +32,7 @@ def normalize_database_url(database_url):
 
 
 def get_database_url():
-    _load_project_dotenv()
+    load_project_dotenv(start_dir=Path(__file__).resolve().parent)
     raw = (os.getenv("DATABASE_URL") or "").strip()
     return normalize_database_url(raw)
 

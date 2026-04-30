@@ -69,7 +69,7 @@ def _seed_owned_state(app_store, run_store, session_factory):
 
     owner_project = app_store.create_project(owner.id, "Owner Project")
     owner_chat = app_store.create_chat_session(owner_project.id, title="Owner Chat")
-    app_store.append_message(owner_chat.id, "user", "hello")
+    app_store.append_message_for_user(owner_chat.id, owner.id, "user", "hello")
     owner_run = run_store.create_or_reuse_run(
         chat_session_id=owner_chat.id,
         project_id=owner_project.id,
@@ -92,7 +92,17 @@ def _seed_owned_state(app_store, run_store, session_factory):
         max_active_runs_per_user=3,
     )
 
-    return owner, other, admin, owner_project, owner_chat, owner_run, other_project, other_chat, other_run
+    return (
+        owner,
+        other,
+        admin,
+        owner_project,
+        owner_chat,
+        owner_run,
+        other_project,
+        other_chat,
+        other_run,
+    )
 
 
 def test_current_user_dependency_creates_and_syncs_local_auth0_user():
@@ -124,7 +134,17 @@ def test_current_user_dependency_creates_and_syncs_local_auth0_user():
 
 def test_bootstrap_session_and_owner_scoped_reads_exclude_other_users():
     app_store, run_store, session_factory = _build_stores()
-    owner, other, _admin, owner_project, owner_chat, owner_run, other_project, other_chat, other_run = _seed_owned_state(
+    (
+        owner,
+        other,
+        _admin,
+        owner_project,
+        owner_chat,
+        owner_run,
+        other_project,
+        other_chat,
+        other_run,
+    ) = _seed_owned_state(
         app_store,
         run_store,
         session_factory,
@@ -147,7 +167,12 @@ def test_bootstrap_session_and_owner_scoped_reads_exclude_other_users():
     assert app_store.list_messages_for_user_chat(owner.id, other_chat.id) is None
     assert run_store.get_run_for_user(owner_run.id, owner.id) is not None
     assert run_store.get_run_for_user(other_run.id, owner.id) is None
-    assert run_store.list_runs_for_chat_for_user(owner_chat.id, owner.id, page=1, page_size=10)[1] == 1
+    assert (
+        run_store.list_runs_for_chat_for_user(
+            owner_chat.id, owner.id, page=1, page_size=10
+        )[1]
+        == 1
+    )
 
     assert app_store.get_project_for_user(owner_project.id, other.id) is None
     assert run_store.get_run_for_user(owner_run.id, other.id) is None
@@ -155,7 +180,17 @@ def test_bootstrap_session_and_owner_scoped_reads_exclude_other_users():
 
 def test_local_role_remains_authorization_source():
     app_store, _run_store, session_factory = _build_stores()
-    _owner, _other, admin, _owner_project, _owner_chat, _owner_run, _other_project, _other_chat, _other_run = _seed_owned_state(
+    (
+        _owner,
+        _other,
+        admin,
+        _owner_project,
+        _owner_chat,
+        _owner_run,
+        _other_project,
+        _other_chat,
+        _other_run,
+    ) = _seed_owned_state(
         app_store,
         PostgresRunStore(session_factory=session_factory),
         session_factory,

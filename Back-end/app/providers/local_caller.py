@@ -6,10 +6,13 @@ from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 try:
     import ollama
-except ImportError:  # pragma: no cover - optional dependency in some test/runtime environments
+except (
+    ImportError
+):  # pragma: no cover - optional dependency in some test/runtime environments
     ollama = None
 
 from utils.debug_utils import debug_print
+
 
 class LocalCaller:
     # "qwen2.5:7b"
@@ -34,6 +37,8 @@ class LocalCaller:
             ),
         )
 
+    # Deprecated: prefer start_text_step / continue_text_step for single-step transport.
+    # This convenience wrapper keeps its own tool-call loop for backwards compatibility.
     def generate_text(
         self,
         system_prompt,
@@ -57,22 +62,25 @@ class LocalCaller:
             "content": system_prompt,
         }
         history_messages = self.translate_history(history or [])
-        messages = [system_message] + history_messages + [
-            {"role": "user", "content": user_message}
-        ]
+        messages = (
+            [system_message]
+            + history_messages
+            + [{"role": "user", "content": user_message}]
+        )
         translated_tools = self._translate_tools(tools or [])
         self._tool_handler = tool_handler
 
-        debug_print("\n" + ">" * 20 + f" [DEBUG] SENDING TO LOCAL {self.model} " + ">" * 20)
-        debug_print(f"Sending {len(messages)} messages...")
-        debug_print(f"[AI Debug Print] Prompt chars: {len(user_message)}")
-        debug_print("<" * 20 + " END PAYLOAD " + "<" * 20 + "\n")
+        debug_print(
+            f"[DEBUG] Local model {self.model}: {len(messages)} messages, {len(user_message)} prompt chars"
+        )
         if structured_output:
             self._emit_structured_output_warning(event_listener, output_schema)
 
         try:
             if ollama is None:
-                raise RuntimeError("Ollama SDK is not installed. Install the 'ollama' package to use this provider.")
+                raise RuntimeError(
+                    "Ollama SDK is not installed. Install the 'ollama' package to use this provider."
+                )
             invoke_cancel_check(cancel_check, "before_model_call")
             if event_listener is not None:
                 event_listener("request_submitted", {"round": 0})
@@ -85,10 +93,10 @@ class LocalCaller:
             if temperature is not None:
                 request_kwargs["options"] = {"temperature": temperature}
 
-            response = ollama.chat(**request_kwargs)
+            message, model_response = self._streaming_ollama_chat(
+                request_kwargs, cancel_check
+            )
             invoke_cancel_check(cancel_check, "after_model_call")
-            message = response.get("message", {})
-            model_response = message.get("content", "")
             tool_calls = self._normalize_tool_calls(message.get("tool_calls") or [])
             tool_rounds = 0
 
@@ -97,7 +105,6 @@ class LocalCaller:
                 if tool_rounds > max_tool_rounds:
                     raise RuntimeError("Local worker exceeded tool call limit.")
                 debug_print(f"[TOOL DEBUG] Tool calls returned: {len(tool_calls)}")
-                debug_print(f"[TOOL DEBUG] Raw tool_calls: {json.dumps(tool_calls, indent=2, default=str)}")
                 if event_listener is not None:
                     event_listener(
                         "tool_calls_received",
@@ -105,13 +112,17 @@ class LocalCaller:
                             "round": tool_rounds,
                             "count": len(tool_calls),
                             "names": [
-                                tool_call.get("function", {}).get("name", "unknown_tool")
+                                tool_call.get("function", {}).get(
+                                    "name", "unknown_tool"
+                                )
                                 for tool_call in tool_calls
                             ],
                         },
                     )
                 if self._tool_handler is None:
-                    raise ValueError("Local worker received tool calls without a tool handler.")
+                    raise ValueError(
+                        "Local worker received tool calls without a tool handler."
+                    )
 
                 invoke_cancel_check(cancel_check, "before_tool_call")
                 assistant_message = {
@@ -121,9 +132,7 @@ class LocalCaller:
                 }
                 tool_messages = []
                 for tool_call in tool_calls:
-                    debug_print(f"[TOOL DEBUG] Handling tool_call: {json.dumps(tool_call, indent=2, default=str)}")
                     tool_messages.append(self._build_tool_message(tool_call))
-                debug_print(f"[TOOL DEBUG] Tool messages: {json.dumps(tool_messages, indent=2, default=str)}")
 
                 messages = messages + [assistant_message] + tool_messages
                 debug_print("[TOOL DEBUG] Sending follow-up request with tool results.")
@@ -138,10 +147,11 @@ class LocalCaller:
                 if temperature is not None:
                     followup_kwargs["options"] = {"temperature": temperature}
                 invoke_cancel_check(cancel_check, "before_model_call")
-                response = ollama.chat(**followup_kwargs)
+                message, response_text = self._streaming_ollama_chat(
+                    followup_kwargs, cancel_check
+                )
                 invoke_cancel_check(cancel_check, "after_model_call")
-                message = response.get("message", {})
-                model_response = message.get("content", model_response)
+                model_response = response_text or model_response
                 tool_calls = self._normalize_tool_calls(message.get("tool_calls") or [])
 
             if event_listener is not None:
@@ -150,6 +160,22 @@ class LocalCaller:
 
         except Exception as e:
             raise RuntimeError(f"Ollama Error: {str(e)}") from e
+
+    def _streaming_ollama_chat(self, request_kwargs, cancel_check=None):
+        """Streaming Ollama chat with cancellation checks between chunks.
+
+        Returns (message_dict, content_string).
+        """
+        acc_content = ""
+        message = {}
+        for chunk in ollama.chat(stream=True, **request_kwargs):
+            invoke_cancel_check(cancel_check, "during_ollama_stream")
+            chunk_message = chunk.get("message", {})
+            acc_content += chunk_message.get("content", "")
+            if chunk.get("done"):
+                message = chunk_message
+        message["content"] = acc_content or message.get("content", "")
+        return message, message["content"]
 
     def start_text_step(
         self,
@@ -171,13 +197,17 @@ class LocalCaller:
             "content": system_prompt,
         }
         history_messages = self.translate_history(history or [])
-        messages = [system_message] + history_messages + [
-            {"role": "user", "content": user_message}
-        ]
+        messages = (
+            [system_message]
+            + history_messages
+            + [{"role": "user", "content": user_message}]
+        )
         translated_tools = self._translate_tools(tools or [])
 
         if ollama is None:
-            raise RuntimeError("Ollama SDK is not installed. Install the 'ollama' package to use this provider.")
+            raise RuntimeError(
+                "Ollama SDK is not installed. Install the 'ollama' package to use this provider."
+            )
         invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
             event_listener("request_submitted", {"round": round_number})
@@ -189,10 +219,10 @@ class LocalCaller:
             request_kwargs["tools"] = translated_tools
         if temperature is not None:
             request_kwargs["options"] = {"temperature": temperature}
-        response = ollama.chat(**request_kwargs)
+        message, _content = self._streaming_ollama_chat(request_kwargs, cancel_check)
         invoke_cancel_check(cancel_check, "after_model_call")
         return self._step_result_from_message(
-            response.get("message", {}),
+            message,
             messages,
         )
 
@@ -212,7 +242,9 @@ class LocalCaller:
     ):
         del system_prompt, max_output_tokens, enable_web_search, cache_config
         if ollama is None:
-            raise RuntimeError("Ollama SDK is not installed. Install the 'ollama' package to use this provider.")
+            raise RuntimeError(
+                "Ollama SDK is not installed. Install the 'ollama' package to use this provider."
+            )
         session_state = session_state or {}
         messages = list(session_state.get("messages") or [])
         assistant_message = dict(session_state.get("assistant_message") or {})
@@ -232,10 +264,10 @@ class LocalCaller:
             request_kwargs["tools"] = translated_tools
         if temperature is not None:
             request_kwargs["options"] = {"temperature": temperature}
-        response = ollama.chat(**request_kwargs)
+        message, _content = self._streaming_ollama_chat(request_kwargs, cancel_check)
         invoke_cancel_check(cancel_check, "after_model_call")
         return self._step_result_from_message(
-            response.get("message", {}),
+            message,
             messages,
         )
 
@@ -246,7 +278,9 @@ class LocalCaller:
                 role, content = item
             elif isinstance(item, dict):
                 role = item.get("role")
-                content = item.get("content") or item.get("parts", [{}])[0].get("text", "")
+                content = item.get("content") or item.get("parts", [{}])[0].get(
+                    "text", ""
+                )
             else:
                 continue
             if role == "model":
@@ -299,7 +333,9 @@ class LocalCaller:
         )
 
     def _step_result_from_message(self, message, messages):
-        normalized_tool_calls = self._normalize_tool_calls(message.get("tool_calls") or [])
+        normalized_tool_calls = self._normalize_tool_calls(
+            message.get("tool_calls") or []
+        )
         assistant_message = {
             "role": "assistant",
             "content": message.get("content", ""),
@@ -308,7 +344,10 @@ class LocalCaller:
             assistant_message["tool_calls"] = normalized_tool_calls
         return ProviderStepResult(
             output_text=message.get("content", ""),
-            tool_calls=[self._normalize_provider_tool_call(tool_call) for tool_call in normalized_tool_calls],
+            tool_calls=[
+                self._normalize_provider_tool_call(tool_call)
+                for tool_call in normalized_tool_calls
+            ],
             session_state={
                 "messages": list(messages or []),
                 "assistant_message": assistant_message,
@@ -337,11 +376,14 @@ class LocalCaller:
         tool_name = function.get("name", "unknown_tool")
         tool_args = self._parse_tool_arguments(function.get("arguments", {}))
 
-        debug_print(f"[TOOL DEBUG] Parsed tool args for {tool_name}: {tool_args}")
+        debug_print(
+            f"[TOOL DEBUG] Running tool '{tool_name}' with {len(tool_args)} arg(s)"
+        )
         tool_result = self._run_tool(tool_name, tool_args)
         if not isinstance(tool_result, str):
             tool_result = json.dumps(tool_result)
-        debug_print(f"[TOOL DEBUG] Tool result for {tool_name}: {tool_result}")
+        result_len = len(str(tool_result))
+        debug_print(f"[TOOL DEBUG] Tool '{tool_name}' returned {result_len} char(s)")
 
         tool_message = {
             "role": "tool",

@@ -87,7 +87,7 @@ class Classifier:
         </task_data>
         """
 
-        # 4. Build Messages for Ollama
+        # 4. Call the LLM via worker
         try:
             output = self.worker.generate_text(
                 system_prompt=self._build_system_prompt(),

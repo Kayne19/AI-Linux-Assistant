@@ -1,14 +1,12 @@
-from persistence.database import Base, get_engine, get_session_factory
+from persistence.database import get_session_factory
 
 from utils.time_utils import _utc_now
 
 try:
-    from sqlalchemy import inspect, select, text, update
+    from sqlalchemy import select, update
     from sqlalchemy.orm import joinedload, selectinload
 except ImportError:  # pragma: no cover - optional until SQLAlchemy is installed
-    inspect = None
     select = None
-    text = None
     update = None
     joinedload = None
     selectinload = None
@@ -27,87 +25,9 @@ class PostgresAppStore:
                 "Install sqlalchemy and alembic in the AI-Linux-Assistant environment."
             )
         self.session_factory = session_factory or get_session_factory()
-        self._ensure_user_schema()
 
     def _session(self):
         return self.session_factory()
-
-    def _get_bound_engine(self):
-        bind = getattr(self.session_factory, "kw", {}).get("bind")
-        if bind is not None:
-            return bind
-
-        with self.session_factory() as session:
-            bind = session.get_bind()
-        return bind or get_engine()
-
-    def _ensure_user_schema(self):
-        engine = self._get_bound_engine()
-        Base.metadata.create_all(
-            bind=engine,
-            tables=[
-                User.__table__,
-                Project.__table__,
-                ChatSession.__table__,
-                ChatMessage.__table__,
-            ],
-            checkfirst=True,
-        )
-        if inspect is None or text is None:
-            return
-        inspector = inspect(engine)
-        user_columns = {column["name"] for column in inspector.get_columns("users")}
-        statements = []
-        if "role" not in user_columns:
-            statements.append(
-                "ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'user'"
-            )
-        if "auth_provider" not in user_columns:
-            statements.append(
-                "ALTER TABLE users ADD COLUMN auth_provider VARCHAR(32) NULL"
-            )
-        if "auth_subject" not in user_columns:
-            statements.append(
-                "ALTER TABLE users ADD COLUMN auth_subject VARCHAR(255) NULL"
-            )
-        if "email" not in user_columns:
-            statements.append(
-                "ALTER TABLE users ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT ''"
-            )
-        if "email_verified" not in user_columns:
-            statements.append(
-                "ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE"
-            )
-        if "display_name" not in user_columns:
-            statements.append(
-                "ALTER TABLE users ADD COLUMN display_name VARCHAR(255) NOT NULL DEFAULT ''"
-            )
-        if "avatar_url" not in user_columns:
-            statements.append(
-                "ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''"
-            )
-        if "last_login_at" not in user_columns:
-            statements.append(
-                "ALTER TABLE users ADD COLUMN last_login_at TIMESTAMP WITH TIME ZONE NULL"
-            )
-        with engine.begin() as connection:
-            for statement in statements:
-                connection.exec_driver_sql(statement)
-            # Postgres-only DDL; harmlessly ignored by sqlite tests.
-            if engine.dialect.name.startswith("postgres"):
-                connection.exec_driver_sql(
-                    "ALTER TABLE users ALTER COLUMN username DROP NOT NULL"
-                )
-                connection.exec_driver_sql(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_auth_provider_subject "
-                    "ON users (auth_provider, auth_subject)"
-                )
-                connection.exec_driver_sql(
-                    "CREATE INDEX IF NOT EXISTS ix_users_auth_provider ON users (auth_provider)"
-                )
-                connection.exec_driver_sql(
-                    "CREATE INDEX IF NOT EXISTS ix_users_auth_subject ON users (auth_subject)"
-                )
 
     def get_user_by_username(self, username):
         username = (username or "").strip()
@@ -538,6 +458,32 @@ class PostgresAppStore:
         with self._session() as session:
             chat_session = session.scalar(
                 select(ChatSession).where(ChatSession.id == chat_session_id)
+            )
+            if chat_session is None:
+                raise ValueError(f"Unknown chat session '{chat_session_id}'")
+            message = ChatMessage(
+                session_id=chat_session_id,
+                role=role,
+                content=content,
+                council_entries=council_entries or None,
+            )
+            chat_session.updated_at = _utc_now()
+            session.add(message)
+            session.commit()
+            session.refresh(message)
+            return message
+
+    def append_message_for_user(
+        self, chat_session_id, user_id, role, content, council_entries=None
+    ):
+        with self._session() as session:
+            chat_session = session.scalar(
+                select(ChatSession)
+                .join(Project, ChatSession.project_id == Project.id)
+                .where(
+                    ChatSession.id == chat_session_id,
+                    Project.user_id == user_id,
+                )
             )
             if chat_session is None:
                 raise ValueError(f"Unknown chat session '{chat_session_id}'")
