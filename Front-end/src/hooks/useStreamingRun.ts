@@ -756,12 +756,23 @@ export function useStreamingRun({
 			return;
 		}
 
-		const intervalId = window.setInterval(() => {
-			void reloadChatsRef.current(selectedProjectId).catch(() => undefined);
-		}, 2000);
+		const startedAt = Date.now();
+		let intervalId: number;
+
+		const schedule = () => {
+			const elapsed = Date.now() - startedAt;
+			const interval =
+				elapsed < 30_000 ? 3000 : elapsed < 120_000 ? 5000 : 10000;
+			intervalId = window.setTimeout(() => {
+				void reloadChatsRef.current(selectedProjectId).catch(() => undefined);
+				schedule();
+			}, interval);
+		};
+
+		schedule();
 
 		return () => {
-			window.clearInterval(intervalId);
+			window.clearTimeout(intervalId);
 		};
 	}, [chats, selectedProjectId]);
 
