@@ -58,8 +58,8 @@ The provided systemd unit files are templates. Replace:
 
 That matches the durable-run ownership model described in:
 
-- [Back-end/app/API.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/API.md)
-- [Back-end/app/orchestration/RUNS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/RUNS.md)
+- [Back-end/app/API.md](Back-end/app/API.md)
+- [Back-end/app/orchestration/RUNS.md](Back-end/app/orchestration/RUNS.md)
 
 ## Required Backend Environment
 
@@ -98,7 +98,7 @@ Do not enable legacy bootstrap auth on a public API deployment.
 
 ## Cloudflare Tunnel
 
-Use the template in [cloudflared/config.template.yml](/home/kayne19/projects/AI-Linux-Assistant/Back-end/infra/public-api/cloudflared/config.template.yml).
+Use the template in [cloudflared/config.template.yml](Back-end/infra/public-api/cloudflared/config.template.yml).
 
 The intended pattern is:
 

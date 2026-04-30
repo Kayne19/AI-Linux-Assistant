@@ -534,7 +534,7 @@ export default function App() {
 							/>
 
 							<ChatView
-								messages={messages.messages}
+								messages={messages.displayedMessages}
 								selectedProject={projects.selectedProject}
 								selectedChat={chats.selectedChat}
 								selectedChatId={chats.selectedChatId}
@@ -550,6 +550,8 @@ export default function App() {
 								onCreateProjectClick={projects.openCreateProjectDialog}
 								onCreateChat={handleCreateChat}
 								creatingChat={chats.creatingChat}
+								hasMoreMessages={messages.hasMoreMessages}
+								onLoadAllMessages={messages.loadAllMessages}
 							/>
 						</section>
 					</div>

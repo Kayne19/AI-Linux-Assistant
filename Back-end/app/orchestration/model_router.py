@@ -721,7 +721,7 @@ class ModelRouter:
     def _build_magi_responder(self):
         tools = self._build_response_tools()
         tool_handler = self._handle_responder_tool_call
-        tool_rounds = self.response_tool_rounds
+        tool_rounds = self.settings.magi_tool_rounds
         eager = MagiEager(
             worker=self._build_worker(None, self.settings.magi_eager),
             tools=tools,
@@ -769,7 +769,7 @@ class ModelRouter:
     def _build_magi_lite_responder(self):
         tools = self._build_response_tools()
         tool_handler = self._handle_responder_tool_call
-        tool_rounds = self.response_tool_rounds
+        tool_rounds = self.settings.magi_tool_rounds
         eager = MagiEager(
             worker=self._build_worker(None, self.settings.magi_lite_eager),
             tools=tools,

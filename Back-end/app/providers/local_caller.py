@@ -71,11 +71,8 @@ class LocalCaller:
         self._tool_handler = tool_handler
 
         debug_print(
-            "\n" + ">" * 20 + f" [DEBUG] SENDING TO LOCAL {self.model} " + ">" * 20
+            f"[DEBUG] Local model {self.model}: {len(messages)} messages, {len(user_message)} prompt chars"
         )
-        debug_print(f"Sending {len(messages)} messages...")
-        debug_print(f"[AI Debug Print] Prompt chars: {len(user_message)}")
-        debug_print("<" * 20 + " END PAYLOAD " + "<" * 20 + "\n")
         if structured_output:
             self._emit_structured_output_warning(event_listener, output_schema)
 
@@ -108,9 +105,6 @@ class LocalCaller:
                 if tool_rounds > max_tool_rounds:
                     raise RuntimeError("Local worker exceeded tool call limit.")
                 debug_print(f"[TOOL DEBUG] Tool calls returned: {len(tool_calls)}")
-                debug_print(
-                    f"[TOOL DEBUG] Raw tool_calls: {json.dumps(tool_calls, indent=2, default=str)}"
-                )
                 if event_listener is not None:
                     event_listener(
                         "tool_calls_received",
@@ -138,13 +132,7 @@ class LocalCaller:
                 }
                 tool_messages = []
                 for tool_call in tool_calls:
-                    debug_print(
-                        f"[TOOL DEBUG] Handling tool_call: {json.dumps(tool_call, indent=2, default=str)}"
-                    )
                     tool_messages.append(self._build_tool_message(tool_call))
-                debug_print(
-                    f"[TOOL DEBUG] Tool messages: {json.dumps(tool_messages, indent=2, default=str)}"
-                )
 
                 messages = messages + [assistant_message] + tool_messages
                 debug_print("[TOOL DEBUG] Sending follow-up request with tool results.")
@@ -388,11 +376,14 @@ class LocalCaller:
         tool_name = function.get("name", "unknown_tool")
         tool_args = self._parse_tool_arguments(function.get("arguments", {}))
 
-        debug_print(f"[TOOL DEBUG] Parsed tool args for {tool_name}: {tool_args}")
+        debug_print(
+            f"[TOOL DEBUG] Running tool '{tool_name}' with {len(tool_args)} arg(s)"
+        )
         tool_result = self._run_tool(tool_name, tool_args)
         if not isinstance(tool_result, str):
             tool_result = json.dumps(tool_result)
-        debug_print(f"[TOOL DEBUG] Tool result for {tool_name}: {tool_result}")
+        result_len = len(str(tool_result))
+        debug_print(f"[TOOL DEBUG] Tool '{tool_name}' returned {result_len} char(s)")
 
         tool_message = {
             "role": "tool",

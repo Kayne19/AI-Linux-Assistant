@@ -61,13 +61,13 @@ In router terms, that is:
 - `RESOLVE_MEMORY`
 - `COMMIT_MEMORY`
 
-These states are orchestrated in [model_router.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/model_router.py).
+These states are orchestrated in [model_router.py](Back-end/app/orchestration/model_router.py).
 
 ## Main Components
 
 ### Router
 
-[model_router.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/model_router.py)
+[model_router.py](Back-end/app/orchestration/model_router.py)
 
 Owns:
 
@@ -92,7 +92,7 @@ Current debug ownership rule:
 
 ### Memory Extractor
 
-[memory_extractor.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/memory_extractor.py)
+[memory_extractor.py](Back-end/app/agents/memory_extractor.py)
 
 Owns:
 
@@ -118,7 +118,7 @@ Without recent history, the extractor can store contextless memory that is techn
 
 ### Memory Resolver
 
-[memory_resolver.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/memory_resolver.py)
+[memory_resolver.py](Back-end/app/agents/memory_resolver.py)
 
 Owns commit policy.
 
@@ -140,9 +140,9 @@ Examples of current policy:
 
 ### Memory Stores
 
-[postgres_memory_store.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence/postgres_memory_store.py)
+[postgres_memory_store.py](Back-end/app/persistence/postgres_memory_store.py)
 
-[in_memory_memory_store.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence/in_memory_memory_store.py)
+[in_memory_memory_store.py](Back-end/app/persistence/in_memory_memory_store.py)
 
 Own:
 
@@ -160,7 +160,7 @@ They should not own extraction policy or commit policy.
 
 ### Shared Memory Formatting / Helpers
 
-[memory_common.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence/memory_common.py)
+[memory_common.py](Back-end/app/persistence/memory_common.py)
 
 Owns:
 
@@ -224,7 +224,7 @@ Stable user or project preferences that meaningfully shape future advice.
 
 ## Prompting
 
-Memory-aware responder behavior is defined in [prompts.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/prompting/prompts.py).
+Memory-aware responder behavior is defined in [prompts.py](Back-end/app/prompting/prompts.py).
 
 Important current behavior:
 
@@ -317,11 +317,11 @@ If you modify this subsystem, preserve these invariants:
 
 If you are a new agent touching memory, start here:
 
-1. [model_router.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/model_router.py)
-2. [memory_extractor.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/memory_extractor.py)
-3. [memory_resolver.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/memory_resolver.py)
-4. [postgres_memory_store.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence/postgres_memory_store.py)
-5. [memory_common.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence/memory_common.py)
-6. [prompts.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/prompting/prompts.py)
+1. [model_router.py](Back-end/app/orchestration/model_router.py)
+2. [memory_extractor.py](Back-end/app/agents/memory_extractor.py)
+3. [memory_resolver.py](Back-end/app/agents/memory_resolver.py)
+4. [postgres_memory_store.py](Back-end/app/persistence/postgres_memory_store.py)
+5. [memory_common.py](Back-end/app/persistence/memory_common.py)
+6. [prompts.py](Back-end/app/prompting/prompts.py)
 
 That is the minimum set needed to make safe architectural changes.

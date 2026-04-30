@@ -305,7 +305,7 @@ python ../run_eval_harness.py verify-scenario --group-id demo-setup
 
 Place env vars in:
 
-- [eval-harness/.env](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/.env)
+- [eval-harness/.env](eval-harness/.env)
 
 The CLI autoloads that file from the harness root.
 
@@ -507,11 +507,11 @@ For the `openai_chatgpt` subject adapter:
 - `subjects[].adapter_config` can override any of those values per subject when you want to compare multiple ChatGPT baselines in the same run
 
 See:
-- [aws_ai_linux_assistant_config.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/aws_ai_linux_assistant_config.json)
-- [aws_ai_linux_assistant_vs_chatgpt_config.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/aws_ai_linux_assistant_vs_chatgpt_config.json)
-- [general_linux_troubleshooting_request.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/planner_requests/general_linux_troubleshooting_request.json)
-- [nginx_recovery_request.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/planner_requests/nginx_recovery_request.json)
-- [nginx_service_repair.json](/home/kayne19/projects/AI-Linux-Assistant/eval-harness/examples/scenarios/nginx_service_repair.json)
+- [aws_ai_linux_assistant_config.json](eval-harness/examples/aws_ai_linux_assistant_config.json)
+- [aws_ai_linux_assistant_vs_chatgpt_config.json](eval-harness/examples/aws_ai_linux_assistant_vs_chatgpt_config.json)
+- [general_linux_troubleshooting_request.json](eval-harness/examples/planner_requests/general_linux_troubleshooting_request.json)
+- [nginx_recovery_request.json](eval-harness/examples/planner_requests/nginx_recovery_request.json)
+- [nginx_service_repair.json](eval-harness/examples/scenarios/nginx_service_repair.json)
 
 For the AWS backend:
 - `backend.default_target_image` is the alias used when a scenario or request does not override it (canonical alias: `debian-12-ssm-golden`)

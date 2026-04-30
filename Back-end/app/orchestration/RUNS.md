@@ -361,7 +361,7 @@ Coverage for this system should include:
 
 ## Related Docs
 
-- [ARCHITECTURE.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/ARCHITECTURE.md)
-- [API.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/API.md)
-- [STREAMING.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/STREAMING.md)
-- [FRONTEND.md](/home/kayne19/projects/AI-Linux-Assistant/Front-end/FRONTEND.md)
+- [ARCHITECTURE.md](Back-end/ARCHITECTURE.md)
+- [API.md](Back-end/API.md)
+- [STREAMING.md](Back-end/STREAMING.md)
+- [FRONTEND.md](Front-end/FRONTEND.md)

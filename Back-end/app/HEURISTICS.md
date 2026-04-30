@@ -31,7 +31,7 @@ Use these labels in entries:
 ### Query Scope Signal Extraction
 
 - Status: `Watch`, `Eval candidate`
-- Owner: [retrieval/scope.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/scope.py)
+- Owner: [retrieval/scope.py](Back-end/app/retrieval/scope.py)
 - Code: `_PACKAGE_MANAGER_HINTS`, `_INIT_SYSTEM_HINTS`, `_SUBSYSTEM_HINTS`, `extract_scope_signals_from_query()`
 
 What it does:
@@ -60,7 +60,7 @@ Preferred future:
 ### Document Trust And Freshness Weights
 
 - Status: `Watch`, `Eval candidate`
-- Owner: [retrieval/scope.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/scope.py)
+- Owner: [retrieval/scope.py](Back-end/app/retrieval/scope.py)
 - Code: `_TRUST_WEIGHTS`, `_FRESHNESS_WEIGHTS`, `score_doc()`
 
 What it does:
@@ -87,7 +87,7 @@ Preferred future:
 ### Document Field Match Ordering
 
 - Status: `Watch`
-- Owner: [retrieval/scope.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/scope.py)
+- Owner: [retrieval/scope.py](Back-end/app/retrieval/scope.py)
 - Code: `_SCORING_FIELDS`, `_weighted_field_score()`, `widen_hint()`
 
 What it does:
@@ -117,7 +117,7 @@ Preferred future:
 ### Scope Widening Thresholds
 
 - Status: `Config candidate`, `Eval candidate`
-- Owner: [retrieval/config.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/config.py), [retrieval/search_pipeline.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/search_pipeline.py)
+- Owner: [retrieval/config.py](Back-end/app/retrieval/config.py), [retrieval/search_pipeline.py](Back-end/app/retrieval/search_pipeline.py)
 - Code: `scope_min_hit_count`, `scope_min_top_score`, `scope_max_widenings`, `should_widen()`
 
 What it does:
@@ -143,7 +143,7 @@ Preferred future:
 ### Source Profile Boosting
 
 - Status: `Debt`, `Eval candidate`
-- Owner: [retrieval/search_pipeline.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/search_pipeline.py)
+- Owner: [retrieval/search_pipeline.py](Back-end/app/retrieval/search_pipeline.py)
 - Code: `_build_source_profiles()`, `_source_boost()`, `_rank_candidates()`
 
 What it does:
@@ -170,7 +170,7 @@ Preferred future:
 ### Evidence Gap Boost
 
 - Status: `Watch`
-- Owner: [retrieval/search_pipeline.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/search_pipeline.py)
+- Owner: [retrieval/search_pipeline.py](Back-end/app/retrieval/search_pipeline.py)
 - Code: `_gap_alignment_boost()`
 
 What it does:
@@ -196,7 +196,7 @@ Preferred future:
 ### Bundle And Expansion Limits
 
 - Status: `Accepted`, `Config candidate`
-- Owner: [retrieval/search_pipeline.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/search_pipeline.py), [retrieval/config.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval/config.py)
+- Owner: [retrieval/search_pipeline.py](Back-end/app/retrieval/search_pipeline.py), [retrieval/config.py](Back-end/app/retrieval/config.py)
 - Code: `initial_fetch`, `final_top_k`, `neighbor_pages`, `max_expanded`, `source_profile_sample`
 
 What it does:
@@ -223,7 +223,7 @@ Preferred future:
 ### Evidence Gap Identity
 
 - Status: `Accepted`, `Watch`
-- Owner: [orchestration/evidence_pool.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/evidence_pool.py)
+- Owner: [orchestration/evidence_pool.py](Back-end/app/orchestration/evidence_pool.py)
 - Code: `normalize_evidence_gap_key()`
 
 What it does:
@@ -250,7 +250,7 @@ Preferred future:
 ### Environment-Fact Follow-Up Preference
 
 - Status: `Watch`
-- Owner: [orchestration/model_router.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/model_router.py)
+- Owner: [orchestration/model_router.py](Back-end/app/orchestration/model_router.py)
 - Code: `_decision_prefers_follow_up_questions()`
 
 What it does:
@@ -275,7 +275,7 @@ Preferred future:
 ### Evidence Usefulness Scoring
 
 - Status: `Watch`, `Eval candidate`
-- Owner: [orchestration/evidence_pool.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/evidence_pool.py)
+- Owner: [orchestration/evidence_pool.py](Back-end/app/orchestration/evidence_pool.py)
 - Code: `_score_usefulness()`
 
 What it does:
@@ -302,7 +302,7 @@ Preferred future:
 ### Scope Exhaustion Signaling
 
 - Status: `Watch`
-- Owner: [orchestration/evidence_pool.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/evidence_pool.py)
+- Owner: [orchestration/evidence_pool.py](Back-end/app/orchestration/evidence_pool.py)
 - Code: `_mark_scope_exhaustion()`
 
 What it does:
@@ -329,7 +329,7 @@ Preferred future:
 ### Web Search Availability
 
 - Status: `Accepted`
-- Owner: [providers/anthropic_caller.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/providers/anthropic_caller.py), [providers/openAI_caller.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/providers/openAI_caller.py)
+- Owner: [providers/anthropic_caller.py](Back-end/app/providers/anthropic_caller.py), [providers/openAI_caller.py](Back-end/app/providers/openAI_caller.py)
 
 What it does:
 
@@ -352,7 +352,7 @@ Preferred future:
 ### Repeat Reason And Gap Type Vocabularies
 
 - Status: `Accepted`
-- Owner: [orchestration/evidence_pool.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/evidence_pool.py), [orchestration/model_router.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/model_router.py)
+- Owner: [orchestration/evidence_pool.py](Back-end/app/orchestration/evidence_pool.py), [orchestration/model_router.py](Back-end/app/orchestration/model_router.py)
 - Code: `ALLOWED_REPEAT_REASONS`, `ALLOWED_GAP_TYPES`, `normalize_repeat_reason()`, `normalize_gap_type()`
 
 What it does:
@@ -376,7 +376,7 @@ Preferred future:
 ### Discussion Gate
 
 - Status: `Watch`
-- Owner: [agents/magi/system.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/magi/system.py)
+- Owner: [agents/magi/system.py](Back-end/app/agents/magi/system.py)
 - Code: `_discussion_gate()`
 
 What it does:
@@ -401,7 +401,7 @@ Preferred future:
 ### Discussion And Tool-Round Caps
 
 - Status: `Accepted`, `Config candidate`
-- Owner: [agents/magi/system.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/magi/system.py), [agents/magi/roles.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/magi/roles.py), [agents/magi/arbiter.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/magi/arbiter.py)
+- Owner: [agents/magi/system.py](Back-end/app/agents/magi/system.py), [agents/magi/roles.py](Back-end/app/agents/magi/roles.py), [agents/magi/arbiter.py](Back-end/app/agents/magi/arbiter.py)
 - Code: `max_discussion_rounds`, `max_tool_rounds`
 
 What it does:
@@ -426,7 +426,7 @@ Preferred future:
 ### Identity Normalization And Vocabulary Coercion
 
 - Status: `Accepted`, `Watch`
-- Owner: [ingestion/identity](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/ingestion/identity)
+- Owner: [ingestion/identity](Back-end/app/ingestion/identity)
 - Code: resolver/schema/vocabulary coercion and sidecar merge rules
 
 What it does:
@@ -454,7 +454,7 @@ Preferred future:
 ### Memory Extraction And Resolution Policy
 
 - Status: `Watch`
-- Owner: [persistence/MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence/MEMORY.md), [agents/memory_extractor.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/memory_extractor.py), [agents/memory_resolver.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/memory_resolver.py)
+- Owner: [persistence/MEMORY.md](Back-end/app/persistence/MEMORY.md), [agents/memory_extractor.py](Back-end/app/agents/memory_extractor.py), [agents/memory_resolver.py](Back-end/app/agents/memory_resolver.py)
 
 What it does:
 
@@ -480,7 +480,7 @@ Preferred future:
 ### Debug Event Summaries
 
 - Status: `Accepted`
-- Owner: [Front-end/src/debug/debugUtils.ts](/home/kayne19/projects/AI-Linux-Assistant/Front-end/src/debug/debugUtils.ts)
+- Owner: [Front-end/src/debug/debugUtils.ts](Front-end/src/debug/debugUtils.ts)
 
 What it does:
 
@@ -503,7 +503,7 @@ Preferred future:
 ### Default Providers, Models, And Runtime Limits
 
 - Status: `Config candidate`
-- Owner: [config/settings.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/config/settings.py), [providers](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/providers)
+- Owner: [config/settings.py](Back-end/app/config/settings.py), [providers](Back-end/app/providers)
 
 What it does:
 

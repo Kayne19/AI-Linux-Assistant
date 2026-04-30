@@ -900,6 +900,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         try:
             current_seq = max(0, int(after_seq))
             checkpoint_windows = {}
+            terminal_emitted = False
             # Replay backlog
             for event_row in run_store.list_events_after(
                 run_id, after_seq=current_seq, limit=1000
@@ -909,6 +910,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                 _register_checkpoint_window(checkpoint_windows, payload)
                 yield _sse_payload(payload)
                 if payload["type"] in {"done", "error", "cancelled", "paused"}:
+                    terminal_emitted = True
                     return
             # Forward Redis messages
             while True:
@@ -921,11 +923,13 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                         )
                         return
                     if run.status in TERMINAL_RUN_STATUSES | {"paused"}:
-                        fallback_payload = _stream_stop_payload(
-                            run_store, run_id, run, app_store
-                        )
-                        if fallback_payload is not None:
-                            yield _sse_payload(fallback_payload)
+                        if not terminal_emitted:
+                            fallback_payload = _stream_stop_payload(
+                                run_store, run_id, run, app_store
+                            )
+                            if fallback_payload is not None:
+                                yield _sse_payload(fallback_payload)
+                                terminal_emitted = True
                         return
                     continue
                 if msg["type"] != "message":
@@ -947,6 +951,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                 _register_checkpoint_window(checkpoint_windows, data)
                 yield _sse_payload(data)
                 if data.get("type") in {"done", "error", "cancelled", "paused"}:
+                    terminal_emitted = True
                     return
         finally:
             ps.unsubscribe()

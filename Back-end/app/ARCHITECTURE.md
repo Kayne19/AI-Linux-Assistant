@@ -4,7 +4,7 @@ This document defines the architectural rules that keep the backend coherent as 
 
 It is not a general code style guide. It is a control-boundary guide.
 
-Hard-coded policy, scoring, fallback, and threshold logic is tracked in [HEURISTICS.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/HEURISTICS.md). If a change adds or modifies heuristic behavior, update that inventory in the same pass.
+Hard-coded policy, scoring, fallback, and threshold logic is tracked in [HEURISTICS.md](Back-end/app/HEURISTICS.md). If a change adds or modifies heuristic behavior, update that inventory in the same pass.
 
 ## Purpose
 
@@ -28,7 +28,7 @@ The system should always make it easy to answer:
 
 ### 1. The Router Owns Workflow
 
-The router in [model_router.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration/model_router.py) is the control plane.
+The router in [model_router.py](Back-end/app/orchestration/model_router.py) is the control plane.
 
 It owns:
 
@@ -114,7 +114,7 @@ If a subsystem has meaningful internal phases, model them.
 
 Agents exist to perform distinct backend jobs.
 
-Examples in [agents](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents):
+Examples in [agents](Back-end/app/agents):
 
 - classifier
 - contextualizer
@@ -139,7 +139,7 @@ Provider choice is an injected implementation detail, not the identity of the ta
 
 ### 4. Providers Own Transport Only
 
-Provider adapters in [providers](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/providers) should only own transport/API behavior.
+Provider adapters in [providers](Back-end/app/providers) should only own transport/API behavior.
 
 They may own:
 
@@ -166,7 +166,7 @@ Current provider boundary for the responder:
 
 ### 5. Persistence Layers Stay Persistence-Only
 
-Persistence modules in [persistence](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence) should store, query, merge, and return data.
+Persistence modules in [persistence](Back-end/app/persistence) should store, query, merge, and return data.
 
 They should not decide:
 
@@ -191,7 +191,7 @@ Policy belongs in the router and task agents. Storage belongs in persistence.
 
 ### 6. Retrieval Must Be Observable and Bounded
 
-Retrieval lives in [retrieval](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval).
+Retrieval lives in [retrieval](Back-end/app/retrieval).
 
 The system is intentionally designed so retrieval decisions are inspectable.
 
@@ -314,7 +314,7 @@ If a new feature makes those questions harder to answer, it is probably architec
 
 ### Orchestration
 
-[orchestration](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/orchestration)
+[orchestration](Back-end/app/orchestration)
 
 Owns:
 
@@ -354,7 +354,7 @@ For streamed durable runs, the message run emits an explicit `auto_name_schedule
 
 ### Durable Run Execution
 
-[chat_run_worker.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/chat_run_worker.py)
+[chat_run_worker.py](Back-end/app/chat_run_worker.py)
 
 Owns:
 
@@ -372,7 +372,7 @@ Important:
 
 ### Agents
 
-[agents](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents)
+[agents](Back-end/app/agents)
 
 Owns:
 
@@ -383,7 +383,7 @@ Owns:
 
 ### Magi System (Multi-Agent Deliberation)
 
-[agents/magi](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/agents/magi)
+[agents/magi](Back-end/app/agents/magi)
 
 The Magi system is an alternative response mode toggled per-turn via the `magi` flag on `ask_question()` / the API.
 
@@ -422,7 +422,7 @@ Role models are configured through `AppSettings`; `full` and `lite` use differen
 
 ### Providers
 
-[providers](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/providers)
+[providers](Back-end/app/providers)
 
 Owns:
 
@@ -431,7 +431,7 @@ Owns:
 
 ### Retrieval
 
-[retrieval](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/retrieval)
+[retrieval](Back-end/app/retrieval)
 
 Owns:
 
@@ -442,7 +442,7 @@ Owns:
 
 ### Ingestion
 
-[ingestion](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/ingestion)
+[ingestion](Back-end/app/ingestion)
 
 Owns:
 
@@ -499,7 +499,7 @@ Current ingestion trace behavior:
 
 ### Persistence
 
-[persistence](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/persistence)
+[persistence](Back-end/app/persistence)
 
 Owns:
 
@@ -510,7 +510,7 @@ Owns:
 
 ### Prompting
 
-[prompting](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/prompting)
+[prompting](Back-end/app/prompting)
 
 Owns:
 
@@ -518,11 +518,11 @@ Owns:
 - rules for how remembered project-scoped environment context should constrain responder behavior
 - instructions that remembered environment facts should gate generic technical recommendations unless the user clearly changes target scope
 
-Memory-specific design and operating rules are documented in [MEMORY.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/MEMORY.md).
+Memory-specific design and operating rules are documented in [MEMORY.md](Back-end/MEMORY.md).
 
 ### Config
 
-[config](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/config)
+[config](Back-end/app/config)
 
 Owns:
 
@@ -534,9 +534,9 @@ Owns:
 
 Top-level backend entry points:
 
-- [api.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/api.py)
-- [main.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/main.py)
-- [AI_Generated_TUI.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/AI_Generated_TUI.py)
+- [api.py](Back-end/app/api.py)
+- [main.py](Back-end/app/main.py)
+- [AI_Generated_TUI.py](Back-end/app/AI_Generated_TUI.py)
 
 These should stay thin.
 
@@ -546,11 +546,11 @@ Script entry points should follow the same rule.
 
 Example:
 
-- [scripts/ingest/ingest_pipeline.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/scripts/ingest/ingest_pipeline.py)
+- [scripts/ingest/ingest_pipeline.py](Back-end/scripts/ingest/ingest_pipeline.py)
 
 should stay a CLI wrapper around:
 
-- [app/ingestion/pipeline.py](/home/kayne19/projects/AI-Linux-Assistant/Back-end/app/ingestion/pipeline.py)
+- [app/ingestion/pipeline.py](Back-end/app/ingestion/pipeline.py)
 
 ## What To Prefer
 

@@ -181,9 +181,9 @@ For a public deployment on an existing host:
 
 Deployment artifacts live in:
 
-- [Back-end/infra/public-api/README.md](/home/kayne19/projects/AI-Linux-Assistant/Back-end/infra/public-api/README.md)
-- [ai-linux-assistant-api.service](/home/kayne19/projects/AI-Linux-Assistant/Back-end/infra/public-api/systemd/ai-linux-assistant-api.service)
-- [ai-linux-assistant-worker.service](/home/kayne19/projects/AI-Linux-Assistant/Back-end/infra/public-api/systemd/ai-linux-assistant-worker.service)
+- [Back-end/infra/public-api/README.md](Back-end/infra/public-api/README.md)
+- [ai-linux-assistant-api.service](Back-end/infra/public-api/systemd/ai-linux-assistant-api.service)
+- [ai-linux-assistant-worker.service](Back-end/infra/public-api/systemd/ai-linux-assistant-worker.service)
 
 ### App Store
 

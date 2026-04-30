@@ -1,3 +1,4 @@
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +33,7 @@ class AppSettings:
         default_factory=lambda: RoleModelSettings("openai", "gpt-5.4-nano", "")
     )
     response_tool_rounds: int = 8
+    magi_tool_rounds: int = 4
     classifier_temperature: float = 0.0
     contextualizer_temperature: float = 0.0
     history_summarizer_temperature: float = 0.1
@@ -279,6 +281,12 @@ def load_settings():
 
 # Composition root for the app. Change defaults here or override with .env.
 SETTINGS = load_settings()
+
+if "*" in SETTINGS.frontend_origins:
+    logging.getLogger(__name__).warning(
+        "CORS frontend_origins contains '*': fully permissive. "
+        "Restrict to specific origins in production."
+    )
 
 
 def _load_settings_row():
