@@ -7,15 +7,20 @@ This document defines the interface and responsibilities for LLM provider adapte
 Provider adapters should only own the mechanics of communicating with external or local model APIs. They are implementation details injected into task-shaped agents.
 
 ### Responsibilities
+
 - **Request Formatting**: Mapping the project's internal message and tool structures to the provider's specific API format.
 - **Response Parsing**: Converting provider-specific outputs (text, tool calls, usage metadata) back into internal system models.
 - **Structured Output Enforcement**: When a caller explicitly requests JSON via `structured_output=True` plus an `output_schema`, providers should use the vendor-native structured-output feature instead of relying only on prompt text.
 - **Tool-Call Transport**: Handling the specific semantics of how the provider expects tool definitions and returns tool results.
 - **Single-Step Transport**: Exposing one-step request/response primitives for router-owned protocols such as the regular responder mini-FSM.
 - **Reliability**: Implementing provider-specific retries, timeouts, and error handling.
+- **Cancellation Responsiveness**: Accepting and threading a `cancel_check` callable through all internal loops (streaming, pause-turn retry, tool-call iteration) so that a cancelled run can interrupt provider work at the next safe boundary.
+- **Model Injection**: Accepting model identifiers from the caller (router/settings); providers no longer carry their own baked-in default model strings.
 
 ### Prohibitions
+
 Providers MUST NOT own:
+
 - **Router State**: They should not decide which phase runs next or modify the FSM.
 - **Loop Ownership**: They should not own the regular responder's repeated tool-call loop; they return one model step and let the router decide whether another step is allowed.
 - **Memory Policy**: They should not decide what gets committed to project memory.
@@ -23,12 +28,14 @@ Providers MUST NOT own:
 - **Policy Decisions**: They should not decide whether RAG is required or if a user is authorized.
 
 ## Supported Providers
+
 - **Anthropic**: Adapter for the Messages API.
 - **Google**: Adapter for the Gemini Developer API via `google-genai`.
 - **OpenAI**: Adapter for the Responses API.
 - **Local**: Adapter for locally hosted models (e.g., via Ollama or vLLM).
 
 ## Adding a New Provider
+
 To add a new provider, implement a caller that satisfies the expected interface used by the agents. Ensure that all internal models are correctly mapped and that streaming deltas are handled consistently with the rest of the system.
 
 Current responder transport rule:
@@ -37,6 +44,8 @@ Current responder transport rule:
 - the regular chatbot path should prefer the single-step transport methods so the router owns the bounded responder protocol
 - those single-step calls must be sufficient for the router to run internal responder decision/evaluation phases before or after router-executed retrieval
 - Magi keeps its existing role-level tool-loop contract and shared tool text contract
+- `generate_text_stream` no longer falls back to non-streaming `generate_text` for structured-output calls; structured output now streams incrementally
+- mid-stream rate-limit errors in the OpenAI caller are now retried with a `stream_paused` event and character-count deduplication instead of being fatal after the first text delta
 
 Structured-output rule:
 
@@ -53,6 +62,21 @@ Google-specific notes:
 - Gemini tool calls are transported through `function_declarations`, returned as `function_call` parts, and resumed with `function_response` parts
 - the main-app Google path supports the same router single-step transport contract as OpenAI and Anthropic: `start_text_step()` plus `continue_text_step()`
 - native Google web search is intentionally not enabled in this path; callers that request it should receive an explicit unsupported event instead of an implicit fallback
+
+Anthropic-specific notes:
+
+- both `_stream_response_until_not_paused` (the `while True` streaming loop) and `_request_until_not_paused` (the `while pause_turn` retry loop) accept a `cancel_check` callable so the router can interrupt them during cancellation
+- the single-step transport methods (`start_text_step` / `continue_text_step`) are the preferred path for router-owned protocols
+
+Local (Ollama) notes:
+
+- `ollama.chat()` is now called with `stream=True` so cancellation checks can fire between chunks; the blocking sync path is replaced by `_streaming_ollama_chat`
+- the single-step transport methods (`start_text_step` / `continue_text_step`) also use the streaming path
+- `debug_print` calls no longer dump raw tool arguments or message payloads; they summarize tool names, arg counts, and result character counts instead
+
+Shared rate-limit helpers:
+
+- `_is_rate_limit_error` and `_extract_retry_delay_seconds` live in `providers/_retry.py` and are imported by both `openAI_caller.py` and `openai_batch.py` instead of being duplicated
 
 ## OpenAI Batch API wrapper (`openai_batch.py`)
 

@@ -85,6 +85,8 @@ The stream currently sends JSON payloads shaped like:
 
 `paused` reports a MAGI run that stopped at a durable discussion checkpoint and can later be resumed with the same `run_id`.
 
+`stream_paused` reports that a mid-stream rate-limit retry is in progress; it carries `provider`, `round`, `attempt`, and `delay_seconds`. The frontend may show a brief reconnecting indicator but does not need to stop the stream.
+
 `done` contains the final serialized user/assistant messages and debug payload.
 
 Important debug ownership rule:
@@ -233,7 +235,7 @@ Important detail:
 - `magi_role_complete` for discussion rounds may include `new_information=false` together with a `no_delta_reason` when a forced round produced a reasoned unchanged stance instead of a real delta
 - Historian grounding quality is part of normal Magi control flow, not just debug annotation
 - Arbiter emits required internal synthesis metadata (`primary_issue`, `immediate_obligation`, `winning_branch`, `decision_mode`, `uncertainty_level`, `strongest_surviving_objection`, `missing_decisive_artifact`, `evidence_sources`) before the final answer is handed back to the router, but only the natural `final_answer` text is sent down the user-facing assistant message path
-- Magi arbiter streaming also suppresses partial provider text and emits finalized assistant text into the normal `text_delta` path so the frontend can pace it without partial-JSON or tool-round artifacts
+- the arbiter's `synthesize_stream` now streams `final_answer` text incrementally via partial JSON parsing instead of waiting for the full structured output; the frontend receives `text_delta` events progressively rather than one final burst
 - pause is only honored during MAGI discussion checkpoints; openings, closing arguments, and arbiter synthesis remain non-pauseable
 
 ### Provider
@@ -247,6 +249,12 @@ Owns:
 - provider-specific request/retry/caching behavior
 
 Providers should not own persistence or router state.
+
+Structured-output streaming:
+
+- `generate_text_stream` with `structured_output=True` no longer falls back to non-streaming `generate_text` in the OpenAI caller
+- streaming is attempted first; if it fails, a `structured_output_warning` event is emitted and the caller falls back gracefully
+- mid-stream rate-limit errors are now retried with `stream_paused` events and character-count delta deduplication
 
 ## Frontend Flow
 
@@ -355,7 +363,7 @@ The SSE handler subscribes to the Redis channel **before** querying the Postgres
 
 ### Health-check fallback
 
-`ps.get_message(timeout=N)` is used instead of a blocking `listen()`. On each timeout the handler checks the run snapshot in Postgres. If the run has reached a terminal status without a matching terminal event in Redis (e.g. worker crashed after Postgres commit but before Redis publish), the handler synthesises the terminal event from the snapshot and closes the stream.
+`ps.get_message(timeout=N)` is used instead of a blocking `listen()`. On each timeout the handler checks the run snapshot in Postgres. If the run has reached a terminal status without a matching terminal event in Redis (e.g. worker crashed after Postgres commit but before Redis publish), the handler synthesises the terminal event from the snapshot and closes the stream. A `terminal_emitted` boolean flag prevents duplicate terminal events when the Redis path already delivered one but the Postgres fallback poll also detects terminal status.
 
 ### Degraded mode
 
@@ -363,8 +371,8 @@ When `REDIS_URL` is absent, empty, or the Redis server is unreachable at startup
 
 ### Configuration
 
-| Env var | Default | Purpose |
-|---|---|---|
+| Env var     | Default  | Purpose                                                                                 |
+| ----------- | -------- | --------------------------------------------------------------------------------------- |
 | `REDIS_URL` | _(none)_ | Redis connection URL (e.g. `redis://localhost:6379/0`). Absent = Postgres polling only. |
 
 ### Shared serializer

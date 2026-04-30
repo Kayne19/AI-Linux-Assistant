@@ -39,7 +39,17 @@ The current design is intentionally biased toward technical troubleshooting and 
    - Stores query and persist memory.
    - Extraction and commit policy live in separate components.
 
-5. Remembered environment context should constrain answers.
+5. Candidate isolation is chat-scoped.
+   - `ProjectMemoryCandidate` rows carry a `chat_session_id` column.
+   - `_replace_active_candidates` deletes by `(project_id, chat_session_id)`, not project-wide.
+   - Concurrent chats in the same project do not clobber each other's uncommitted candidates.
+
+6. Snapshot staleness is detected before resolution.
+   - `load_snapshot` captures per-fact `updated_at` timestamps at the start of the turn.
+   - Before resolving, `is_snapshot_stale` re-reads fact timestamps from the DB.
+   - If a concurrent turn has mutated a fact since the snapshot was taken, `load_snapshot_fresh` reloads the data before resolution proceeds.
+
+7. Remembered environment context should constrain answers.
    - Project memory is not just passive recap material.
    - The responder should treat remembered environment facts as the default operating context for the current chat unless the user clearly changes target scope.
 
@@ -137,6 +147,7 @@ Examples of current policy:
 - preferences and constraints generally require user source
 - mutable environment facts can replace older committed values when user-sourced and confident enough
 - conflicting facts are surfaced as conflicts instead of silently overwriting
+- conflicted mutable facts that remain unresolved across multiple turns may auto-resolve to the most recent value via `conflict_staleness_days` (disabled by default; enable to prevent indefinite conflict parking)
 
 ### Memory Stores
 
@@ -150,6 +161,8 @@ Own:
 - formatting relevant memory snapshots for prompts
 - persisting committed facts/issues/attempts/constraints/preferences
 - storing memory candidates and project state
+- detecting concurrent modifications via snapshot staleness checks (`is_snapshot_stale`, `load_snapshot_fresh`)
+- scoping candidate replacement to `(project_id, chat_session_id)` to prevent cross-chat clobbering
 
 Current candidate-history rule:
 

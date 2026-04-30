@@ -223,6 +223,7 @@ Safe checkpoints include:
 - between major router FSM phases
 - before final persistence
 - during long replay/publication loops if applicable
+- during provider streaming loops (Anthropic `_stream_response_until_not_paused`, Local `_streaming_ollama_chat`) which now accept and thread a `cancel_check` callable
 
 Persistence rule:
 

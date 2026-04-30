@@ -53,6 +53,7 @@ Owns stateful frontend behavior, split by responsibility:
   - chat CRUD, selection, per-project chat caching
 - `useMessages.ts`
   - per-chat message caching and composer text
+  - message list visible cap at 50 messages with a "Load earlier messages" button for longer sessions
 - `useTextDeltaAnimation.ts`
   - paced `text_delta` draining into optimistic assistant text
 - `useCouncilStreaming.ts`
@@ -60,6 +61,8 @@ Owns stateful frontend behavior, split by responsibility:
 - `useStreamingRun.ts`
   - durable run attach/reconnect/cancel lifecycle and optimistic run UI state
   - paused-run attach/reconnect/resume lifecycle for MAGI runs
+  - chat-list polling backoff (3 s → 5 s → 10 s) while active runs exist, replacing the previous flat 2 s interval
+  - optimistic message reconcile by message ID on stream completion to avoid full content-shift flash
 - `useScrollManager.ts`
   - chat auto-scroll and stick-to-bottom behavior
 
@@ -91,6 +94,7 @@ Owns shared frontend types:
 - streaming event types
 - shared UI run state and optimistic batch types
 - council entry shapes for persisted data and live UI rendering
+- `UICouncilEntry` no longer carries the duplicate `streamPreview` field; only `streamBuffer` is used
 
 ### `src/utils.ts`
 
@@ -161,6 +165,8 @@ This is where product voice for streaming statuses belongs.
 
 It also carries the lightweight status wording for Magi sub-states such as the explicit `DISCUSSION_GATE` checkpoint before discussion begins.
 
+Removed dead backend state mappings: `DECIDE_NEXT_STEP`, `EVALUATE_TOOL_RESULT`, `FINALIZE_RESPONSE` (these responder sub-states were collapsed into the provider tool loop).
+
 ### `src/styles.css`
 
 Owns the current app layout and visual treatment.
@@ -223,11 +229,11 @@ When a message is sent:
 5. If Magi is enabled, council role events populate the live council panel, and live role deltas are batched before React renders them.
 6. During active streaming, rapid `text_delta` events are batched and then drained into the optimistic assistant text at a paced `requestAnimationFrame` cadence.
 7. During active Magi streaming, visible council text emitted from the parsed role output is drained with the same paced `requestAnimationFrame` model instead of reparsing partial JSON in the browser.
-7. `text_checkpoint` events are tracked for reconnect seeding and are only applied to visible text while replaying after a reconnect.
-8. When `done` arrives, the frontend lets any queued visible text finish draining before replacing the optimistic pair with the final persisted backend messages.
-9. When `magi_role_complete` arrives, the frontend also waits for any queued council delta batch to drain before finalizing that council entry, and only uses the completion payload to catch up a missing suffix that the live council stream never rendered.
-10. For forced Magi discussion rounds, the frontend can treat `no_delta_reason` on `magi_role_complete` as inspectable context about why a role held its stance even when `new_information` is false.
-11. If a MAGI run emits `paused`, the frontend keeps the current council transcript, stops the live stream cleanly, and exposes resume controls in the council panel instead of replacing optimistic chat messages.
+8. `text_checkpoint` events are tracked for reconnect seeding and are only applied to visible text while replaying after a reconnect.
+9. When `done` arrives, the frontend lets any queued visible text finish draining before replacing the optimistic pair with the final persisted backend messages.
+10. When `magi_role_complete` arrives, the frontend also waits for any queued council delta batch to drain before finalizing that council entry, and only uses the completion payload to catch up a missing suffix that the live council stream never rendered.
+11. For forced Magi discussion rounds, the frontend can treat `no_delta_reason` on `magi_role_complete` as inspectable context about why a role held its stance even when `new_information` is false.
+12. If a MAGI run emits `paused`, the frontend keeps the current council transcript, stops the live stream cleanly, and exposes resume controls in the council panel instead of replacing optimistic chat messages.
 
 For live assistant rendering:
 

@@ -198,6 +198,11 @@ Current implementation:
 
 - [app/persistence/postgres_app_store.py](app/persistence/postgres_app_store.py)
 
+Scoping rule:
+
+- `append_message_for_user` validates chat-session ownership via a Project join before appending; it is the external path
+- unscoped `append_message` and `append_message_fast` remain as internal helpers after caller-validated ownership
+
 Auth-owned user rules:
 
 - local users are keyed by `(auth_provider, auth_subject)` for web auth
@@ -240,6 +245,11 @@ The run store owns:
 Current implementation:
 
 - [app/persistence/postgres_run_store.py](app/persistence/postgres_run_store.py)
+
+Scoping rule:
+
+- `get_run_for_user(run_id, user_id)` is the scoped external path; the streaming SSE loop uses it
+- `_get_run(run_id)` is now private and only used as an internal fallback when no user context is available
 
 ## Streaming Endpoint
 
@@ -300,6 +310,8 @@ Current notable fields:
 - Run-event payloads returned by `/runs/{run_id}/events` and `/runs/{run_id}/events/stream` include durable `created_at` timestamps so the frontend can compute timing diagnostics from backend event time.
 - `GET /runs/{run_id}/events` supports `after_seq` plus `limit`, and serialized run events include `created_at` for operator/debug timing inspection.
 - retrieval tool-completion events for `search_rag_database` may include tool-owned `result_text`, `result_blocks`, `selected_sources`, plus progression metadata such as `cached`, `anchor_pages`, `fetched_neighbor_pages`, `delivered_bundle_count`, and `excluded_seen_count`
+- retrieved context blocks (passed through `normalized_inputs` and `RetrievedContextBlockResponse`) now carry nine additional optional metadata fields: `section_path`, `section_title`, `chunk_type`, `local_subsystems`, `entities`, `canonical_source_id`, `page_start`, `page_end`, and `citation_label` — all default to `null` when absent
+- live streaming may emit `stream_paused` events when a mid-stream rate-limit retry occurs; these carry `provider`, `round`, `attempt`, and `delay_seconds`
 - non-terminal stream-stop replay now also includes `type="paused"` for MAGI runs that paused at a safe checkpoint
 
 ## Important Rules
