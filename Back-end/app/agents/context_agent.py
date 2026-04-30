@@ -3,11 +3,12 @@ from utils.debug_utils import debug_print
 from orchestration.history_preparer import PreparedHistory, summarize_turns
 from prompting.prompts import CONTEXTUALIZER_SYSTEM_PROMPT
 
+
 class Contextualizer:
     # qwen2.5:7b
     # "mannix/llama3.1-8b-abliterated"
     # "mistral-nemo"
-    def __init__(self, worker=None, model="gpt-4.1-mini", temperature=0.0):
+    def __init__(self, worker=None, model=None, temperature=0.0):
         self.worker = worker or OpenAIWorker(model=model)
         self.system_prompt = CONTEXTUALIZER_SYSTEM_PROMPT
         self.temperature = temperature
@@ -51,13 +52,13 @@ class Contextualizer:
                 temperature=self.temperature,
             )
             rewritten = rewritten.strip()
-            
+
             debug_print(f"\n[Contextualizer] In: '{user_question}'")
             debug_print(f"[Contextualizer] Out: '{rewritten}'")
             debug_print(f"[Contextualizer] History chars: {len(recent_history_text)}")
-            
+
             return rewritten
 
         except Exception as e:
             debug_print(f"[Contextualizer] Error: {e}")
-            return user_question # Fallback: just return the original input
+            return user_question  # Fallback: just return the original input

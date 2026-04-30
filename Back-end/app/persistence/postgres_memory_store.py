@@ -1,8 +1,6 @@
-from datetime import datetime, timezone
-
 from persistence.database import get_session_factory
+from utils.time_utils import _iso, _utc_now
 from persistence.memory_common import (
-    FACT_LABELS,
     MemorySnapshot,
     PROMOTED_FACT_KEYS,
     _clean_text,
@@ -26,22 +24,6 @@ from persistence.postgres_models import (
     ProjectPreference,
     ProjectState,
 )
-
-
-def _utc_now():
-    return datetime.now(timezone.utc)
-
-
-def _iso(value):
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.isoformat()
-    return str(value)
 
 
 class PostgresMemoryStore:
@@ -68,35 +50,48 @@ class PostgresMemoryStore:
         if self._snapshot_cache is not None:
             return self._snapshot_cache
         with self._session() as session:
-            fact_rows = list(session.scalars(
-                select(ProjectFact)
-                .where(ProjectFact.project_id == self.project_id)
-                .order_by(ProjectFact.updated_at.desc(), ProjectFact.fact_key.asc())
-            ))
-            issue_rows = list(session.scalars(
-                select(ProjectIssue)
-                .where(ProjectIssue.project_id == self.project_id)
-                .order_by(ProjectIssue.last_seen_at.desc())
-            ))
-            attempt_rows = list(session.scalars(
-                select(ProjectAttempt)
-                .where(ProjectAttempt.project_id == self.project_id)
-                .order_by(ProjectAttempt.created_at.desc())
-            ))
-            constraint_rows = list(session.scalars(
-                select(ProjectConstraint)
-                .where(ProjectConstraint.project_id == self.project_id)
-                .order_by(ProjectConstraint.last_seen_at.desc())
-            ))
-            preference_rows = list(session.scalars(
-                select(ProjectPreference)
-                .where(ProjectPreference.project_id == self.project_id)
-                .order_by(ProjectPreference.last_seen_at.desc())
-            ))
-            state_rows = list(session.scalars(
-                select(ProjectState)
-                .where(ProjectState.project_id == self.project_id)
-            ))
+            fact_rows = list(
+                session.scalars(
+                    select(ProjectFact)
+                    .where(ProjectFact.project_id == self.project_id)
+                    .order_by(ProjectFact.updated_at.desc(), ProjectFact.fact_key.asc())
+                )
+            )
+            issue_rows = list(
+                session.scalars(
+                    select(ProjectIssue)
+                    .where(ProjectIssue.project_id == self.project_id)
+                    .order_by(ProjectIssue.last_seen_at.desc())
+                )
+            )
+            attempt_rows = list(
+                session.scalars(
+                    select(ProjectAttempt)
+                    .where(ProjectAttempt.project_id == self.project_id)
+                    .order_by(ProjectAttempt.created_at.desc())
+                )
+            )
+            constraint_rows = list(
+                session.scalars(
+                    select(ProjectConstraint)
+                    .where(ProjectConstraint.project_id == self.project_id)
+                    .order_by(ProjectConstraint.last_seen_at.desc())
+                )
+            )
+            preference_rows = list(
+                session.scalars(
+                    select(ProjectPreference)
+                    .where(ProjectPreference.project_id == self.project_id)
+                    .order_by(ProjectPreference.last_seen_at.desc())
+                )
+            )
+            state_rows = list(
+                session.scalars(
+                    select(ProjectState).where(
+                        ProjectState.project_id == self.project_id
+                    )
+                )
+            )
 
             facts = [
                 {
@@ -268,7 +263,11 @@ class PostgresMemoryStore:
         for fact in facts:
             key = fact["fact_key"]
             value = fact["fact_value"]
-            promoted_rank = PROMOTED_FACT_KEYS.index(key) if key in PROMOTED_FACT_KEYS else len(PROMOTED_FACT_KEYS)
+            promoted_rank = (
+                PROMOTED_FACT_KEYS.index(key)
+                if key in PROMOTED_FACT_KEYS
+                else len(PROMOTED_FACT_KEYS)
+            )
             relevance = _relevance_score(query_tokens, f"{key} {value}")
             scored.append((relevance, -promoted_rank, key, fact))
         scored.sort(reverse=True)
@@ -298,7 +297,9 @@ class PostgresMemoryStore:
             lines.append(f"- {label}: {fact['fact_value']}")
         return "\n".join(lines)
 
-    def get_relevant_memory(self, query, max_profile_facts=10, max_issues=3, max_attempts=5):
+    def get_relevant_memory(
+        self, query, max_profile_facts=10, max_issues=3, max_attempts=5
+    ):
         query_tokens = _tokenize(query)
         raw = self._load_raw_data()
         profile_facts = self._select_profile_facts(
@@ -310,10 +311,16 @@ class PostgresMemoryStore:
         active_issues = []
         for row in raw["issues"]:
             issue = dict(row)
-            issue["relevance"] = _relevance_score(query_tokens, f"{row['title']} {row['summary']} {row['category']}")
+            issue["relevance"] = _relevance_score(
+                query_tokens, f"{row['title']} {row['summary']} {row['category']}"
+            )
             active_issues.append(issue)
         active_issues.sort(
-            key=lambda item: (1 if item["status"] == "open" else 0, item["relevance"], item["last_seen_at"]),
+            key=lambda item: (
+                1 if item["status"] == "open" else 0,
+                item["relevance"],
+                item["last_seen_at"],
+            ),
             reverse=True,
         )
         active_issues = active_issues[:max_issues]
@@ -353,14 +360,19 @@ class PostgresMemoryStore:
     def format_memory_snapshot(self, query, host_label=None):
         return self.get_relevant_memory(query).as_prompt_text()
 
-    def list_candidates(self, max_results=25):
+    def list_candidates(self, max_results=25, chat_session_id=None):
         with self._session() as session:
-            stmt = (
-                select(ProjectMemoryCandidate)
-                .where(ProjectMemoryCandidate.project_id == self.project_id)
-                .order_by(ProjectMemoryCandidate.updated_at.desc(), ProjectMemoryCandidate.created_at.desc())
-                .limit(max_results)
+            stmt = select(ProjectMemoryCandidate).where(
+                ProjectMemoryCandidate.project_id == self.project_id
             )
+            if chat_session_id is not None:
+                stmt = stmt.where(
+                    ProjectMemoryCandidate.chat_session_id == chat_session_id
+                )
+            stmt = stmt.order_by(
+                ProjectMemoryCandidate.updated_at.desc(),
+                ProjectMemoryCandidate.created_at.desc(),
+            ).limit(max_results)
             rows = list(session.scalars(stmt))
         return [
             {
@@ -372,15 +384,17 @@ class PostgresMemoryStore:
                 "source_type": row.source_type,
                 "source_ref": row.source_ref,
                 "payload": row.value_json or {},
+                "chat_session_id": row.chat_session_id,
                 "created_at": _iso(row.created_at),
                 "updated_at": _iso(row.updated_at),
             }
             for row in rows
         ]
 
-    def _replace_active_candidates(self, session, items):
+    def _replace_active_candidates(self, session, items, chat_session_id=""):
         session.query(ProjectMemoryCandidate).where(
             ProjectMemoryCandidate.project_id == self.project_id,
+            ProjectMemoryCandidate.chat_session_id == (chat_session_id or ""),
             ProjectMemoryCandidate.status.in_(("candidate", "conflicted")),
         ).delete(synchronize_session=False)
         now = _utc_now()
@@ -388,6 +402,7 @@ class PostgresMemoryStore:
             session.add(
                 ProjectMemoryCandidate(
                     project_id=self.project_id,
+                    chat_session_id=chat_session_id or "",
                     item_type=item.get("item_type", "unknown"),
                     item_key=item.get("item_key", ""),
                     status=item.get("status", "candidate"),
@@ -408,7 +423,8 @@ class PostgresMemoryStore:
                 session.scalars(
                     select(ProjectMemoryCandidate).where(
                         ProjectMemoryCandidate.project_id == self.project_id,
-                        ProjectMemoryCandidate.item_type == item.get("item_type", "unknown"),
+                        ProjectMemoryCandidate.item_type
+                        == item.get("item_type", "unknown"),
                         ProjectMemoryCandidate.item_key == item.get("item_key", ""),
                         ProjectMemoryCandidate.status == "superseded",
                     )
@@ -416,9 +432,11 @@ class PostgresMemoryStore:
             )
             matching_row = next(
                 (
-                    row for row in existing_rows
+                    row
+                    for row in existing_rows
                     if (row.reason or "") == item.get("reason", "")
-                    and float(row.confidence or 0.5) == float(item.get("confidence", 0.5) or 0.5)
+                    and float(row.confidence or 0.5)
+                    == float(item.get("confidence", 0.5) or 0.5)
                     and (row.source_type or "") == item.get("source_type", "model")
                     and (row.source_ref or "") == item.get("source_ref", "conversation")
                     and (row.value_json or {}) == payload
@@ -445,7 +463,9 @@ class PostgresMemoryStore:
                 )
             )
 
-    def format_debug_dump(self, query="system profile attempts issues preferences", max_candidates=20):
+    def format_debug_dump(
+        self, query="system profile attempts issues preferences", max_candidates=20
+    ):
         sections = []
 
         profile = self.format_system_profile()
@@ -466,12 +486,19 @@ class PostgresMemoryStore:
                 summary = ""
                 item_type = item.get("item_type")
                 if item_type == "fact":
-                    summary = f"{payload.get('fact_key', '')}={payload.get('fact_value', '')}"
+                    summary = (
+                        f"{payload.get('fact_key', '')}={payload.get('fact_value', '')}"
+                    )
                 elif item_type == "issue":
                     summary = payload.get("title", "")
                 elif item_type == "attempt":
                     summary = " | ".join(
-                        part for part in [payload.get("action", ""), payload.get("command", ""), payload.get("outcome", "")]
+                        part
+                        for part in [
+                            payload.get("action", ""),
+                            payload.get("command", ""),
+                            payload.get("outcome", ""),
+                        ]
                         if part
                     )
                 elif item_type == "constraint":
@@ -521,13 +548,19 @@ class PostgresMemoryStore:
                 )
             )
             issues = list(
-                session.scalars(select(ProjectIssue).where(ProjectIssue.project_id == self.project_id))
+                session.scalars(
+                    select(ProjectIssue).where(
+                        ProjectIssue.project_id == self.project_id
+                    )
+                )
             )
             issue_titles = {row.id: row.title for row in issues}
         scored = []
         for row in rows:
             issue_title = issue_titles.get(row.issue_id, "")
-            text = " ".join([row.action, row.command, row.outcome, row.status, issue_title])
+            text = " ".join(
+                [row.action, row.command, row.outcome, row.status, issue_title]
+            )
             score = _relevance_score(query_tokens, text)
             if query_tokens and score == 0:
                 continue
@@ -537,11 +570,17 @@ class PostgresMemoryStore:
             return ""
         lines = []
         for _, _, row, issue_title in scored[: max(1, min(int(max_results), 8))]:
-            parts = [part for part in [row.action, row.command, row.outcome, issue_title] if part]
+            parts = [
+                part
+                for part in [row.action, row.command, row.outcome, issue_title]
+                if part
+            ]
             lines.append(" | ".join(parts))
         return "\n".join(lines)
 
-    def commit_resolution(self, resolution, user_question="", assistant_response=""):
+    def commit_resolution(
+        self, resolution, user_question="", assistant_response="", chat_session_id=""
+    ):
         committed = getattr(resolution, "committed", None) or {}
         candidates = list(getattr(resolution, "candidates", []) or [])
         conflicts = list(getattr(resolution, "conflicts", []) or [])
@@ -575,7 +614,9 @@ class PostgresMemoryStore:
                     row.fact_value = value
                     row.source_type = fact.get("source_type", row.source_type)
                     row.source_ref = fact.get("source_ref", row.source_ref)
-                    row.confidence = float(fact.get("confidence", row.confidence) or row.confidence)
+                    row.confidence = float(
+                        fact.get("confidence", row.confidence) or row.confidence
+                    )
                     row.verified = bool(fact.get("verified", row.verified))
                     row.observed_at = _utc_now()
                     row.updated_at = _utc_now()
@@ -613,7 +654,9 @@ class PostgresMemoryStore:
                     row.status = issue.get("status", row.status)
                     row.source_type = issue.get("source_type", row.source_type)
                     row.source_ref = issue.get("source_ref", row.source_ref)
-                    row.confidence = float(issue.get("confidence", row.confidence) or row.confidence)
+                    row.confidence = float(
+                        issue.get("confidence", row.confidence) or row.confidence
+                    )
                     row.last_seen_at = _utc_now()
                 issue_ids[normalized_title] = row.id
 
@@ -693,10 +736,22 @@ class PostgresMemoryStore:
                     row.source_ref = preference.get("source_ref", row.source_ref)
                     row.last_seen_at = _utc_now()
 
-            active_candidate_items = [item for item in candidates + conflicts if item.get("status") != "superseded"]
-            superseded_items = [item for item in conflicts if item.get("status") == "superseded"]
-            self._replace_active_candidates(session, active_candidate_items)
+            active_candidate_items = [
+                item
+                for item in candidates + conflicts
+                if item.get("status") != "superseded"
+            ]
+            superseded_items = [
+                item for item in conflicts if item.get("status") == "superseded"
+            ]
+            self._replace_active_candidates(
+                session, active_candidate_items, chat_session_id=chat_session_id
+            )
             self._upsert_superseded_history(session, superseded_items)
 
-            self._write_state(session, "session_summary", getattr(resolution, "session_summary", "") or "")
+            self._write_state(
+                session,
+                "session_summary",
+                getattr(resolution, "session_summary", "") or "",
+            )
             session.commit()

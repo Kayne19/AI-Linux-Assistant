@@ -12,7 +12,12 @@ deterministic. They protect orchestration behavior:
 from types import SimpleNamespace
 
 from orchestration.history_preparer import PreparedHistory
-from orchestration.model_router import ModelRouter, RouterExecutionError, RouterState, TurnContext
+from orchestration.model_router import (
+    ModelRouter,
+    RouterExecutionError,
+    RouterState,
+    TurnContext,
+)
 from orchestration.run_control import RunPausedError
 from agents.response_agent import ResponseAgent
 from agents.response_agent import ResponseState
@@ -34,7 +39,12 @@ class FakeClassifier:
     def __init__(self, labels):
         self.labels = labels
 
-    def call_api(self, user_question, summarized_conversation_history=None, memory_snapshot_text=""):
+    def call_api(
+        self,
+        user_question,
+        summarized_conversation_history=None,
+        memory_snapshot_text="",
+    ):
         return list(self.labels)
 
 
@@ -69,7 +79,13 @@ class SpyResponder:
         self.response_text = response_text
         self.calls = []
 
-    def call_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text=""):
+    def call_api(
+        self,
+        user_query,
+        retrieved_docs,
+        summarized_conversation_history=None,
+        memory_snapshot_text="",
+    ):
         self.calls.append(
             {
                 "user_query": user_query,
@@ -100,7 +116,12 @@ class PausingResponder:
 
 
 class FakeMemoryStore:
-    def __init__(self, snapshot_text="KNOWN SYSTEM PROFILE:\n- OS: Debian", issues_text="", attempts_text=""):
+    def __init__(
+        self,
+        snapshot_text="KNOWN SYSTEM PROFILE:\n- OS: Debian",
+        issues_text="",
+        attempts_text="",
+    ):
         self.snapshot_text = snapshot_text
         self.issues_text = issues_text
         self.attempts_text = attempts_text
@@ -125,8 +146,12 @@ class FakeMemoryStore:
             "session_summary": "",
         }
 
-    def commit_resolution(self, resolution, user_question="", assistant_response=""):
-        self.committed_resolutions.append((resolution, user_question, assistant_response))
+    def commit_resolution(
+        self, resolution, user_question="", assistant_response="", chat_session_id=""
+    ):
+        self.committed_resolutions.append(
+            (resolution, user_question, assistant_response, chat_session_id)
+        )
 
     def format_system_profile(self, host_label=None, max_facts=12):
         return self.snapshot_text
@@ -159,7 +184,6 @@ class FakeTitleWorker:
     def generate_text(self, *args, **kwargs):
         self.calls.append({"args": args, "kwargs": kwargs})
         return self.response_text
-
 
 
 class FakeMemoryExtractor:
@@ -206,13 +230,19 @@ def test_router_uses_raw_retrieved_docs_before_post_turn_summarization():
     responder = SpyResponder(response_text="final answer")
     memory_store = FakeMemoryStore()
     router = ModelRouter(
-        database=FakeDatabase(returned_docs="[Source: Debian_Install_Guide.pdf (Page 4)]\napt install foo"),
+        database=FakeDatabase(
+            returned_docs="[Source: Debian_Install_Guide.pdf (Page 4)]\napt install foo"
+        ),
         classifier=FakeClassifier(["debian"]),
         context_agent=FakeContextAgent("install package"),
         history_summarizer=FakeHistorySummarizer(
-            prepared=PreparedHistory(recent_turns=[("user", "older question")], summary_text="older summary")
+            prepared=PreparedHistory(
+                recent_turns=[("user", "older question")], summary_text="older summary"
+            )
         ),
-        context_summarizer=FakeContextSummarizer(summarized_text="condensed docs", summarized=True),
+        context_summarizer=FakeContextSummarizer(
+            summarized_text="condensed docs", summarized=True
+        ),
         responder=responder,
         memory_store=memory_store,
         memory_extractor=FakeMemoryExtractor(),
@@ -221,7 +251,10 @@ def test_router_uses_raw_retrieved_docs_before_post_turn_summarization():
     response = router.ask_question("How do I install it?")
 
     assert response == "final answer"
-    assert responder.calls[0]["retrieved_docs"] == "[Source: Debian_Install_Guide.pdf (Page 4)]\napt install foo"
+    assert (
+        responder.calls[0]["retrieved_docs"]
+        == "[Source: Debian_Install_Guide.pdf (Page 4)]\napt install foo"
+    )
     assert "KNOWN SYSTEM PROFILE" in responder.calls[0]["memory_snapshot_text"]
     assert router.last_turn.summarized_retrieved_docs == "condensed docs"
     assert router.last_turn.state_trace == [
@@ -283,9 +316,13 @@ def test_router_preserves_retrieved_blocks_and_full_memory_payloads():
         classifier=FakeClassifier(["debian"]),
         context_agent=FakeContextAgent("install package"),
         history_summarizer=FakeHistorySummarizer(
-            prepared=PreparedHistory(recent_turns=[("user", "older question")], summary_text="older summary")
+            prepared=PreparedHistory(
+                recent_turns=[("user", "older question")], summary_text="older summary"
+            )
         ),
-        context_summarizer=FakeContextSummarizer(summarized_text="condensed docs", summarized=True),
+        context_summarizer=FakeContextSummarizer(
+            summarized_text="condensed docs", summarized=True
+        ),
         responder=SpyResponder("final answer"),
         memory_store=FakeMemoryStore(),
         memory_extractor=FakeMemoryExtractor(extracted=extracted_memory),
@@ -301,12 +338,28 @@ def test_router_preserves_retrieved_blocks_and_full_memory_payloads():
             "text": "apt install foo",
         }
     ]
-    memory_extracted = next(event for event in turn.tool_events if event["type"] == "memory_extracted")
-    memory_resolved = next(event for event in turn.tool_events if event["type"] == "memory_resolved")
-    assert memory_extracted["payload"]["items"]["session_summary"] == "User is troubleshooting package install flow."
-    assert memory_extracted["payload"]["items"]["facts"][0]["fact_key"] == "os.distribution"
-    assert memory_resolved["payload"]["committed_full"]["facts"][0]["fact_value"] == "Debian"
-    assert memory_resolved["payload"]["session_summary"] == "User is troubleshooting package install flow."
+    memory_extracted = next(
+        event for event in turn.tool_events if event["type"] == "memory_extracted"
+    )
+    memory_resolved = next(
+        event for event in turn.tool_events if event["type"] == "memory_resolved"
+    )
+    assert (
+        memory_extracted["payload"]["items"]["session_summary"]
+        == "User is troubleshooting package install flow."
+    )
+    assert (
+        memory_extracted["payload"]["items"]["facts"][0]["fact_key"]
+        == "os.distribution"
+    )
+    assert (
+        memory_resolved["payload"]["committed_full"]["facts"][0]["fact_value"]
+        == "Debian"
+    )
+    assert (
+        memory_resolved["payload"]["session_summary"]
+        == "User is troubleshooting package install flow."
+    )
 
 
 def test_router_conversation_history_search_returns_matching_snippets():
@@ -345,7 +398,23 @@ def test_router_no_rag_skips_database_retrieval():
         context_summarizer=FakeContextSummarizer(summarized=False),
         responder=responder,
         memory_store=memory_store,
-        memory_extractor=FakeMemoryExtractor({"issues": [{"title": "hello", "category": "general", "summary": "", "status": "unknown"}], "facts": [], "attempts": [], "constraints": [], "preferences": [], "session_summary": ""}),
+        memory_extractor=FakeMemoryExtractor(
+            {
+                "issues": [
+                    {
+                        "title": "hello",
+                        "category": "general",
+                        "summary": "",
+                        "status": "unknown",
+                    }
+                ],
+                "facts": [],
+                "attempts": [],
+                "constraints": [],
+                "preferences": [],
+                "session_summary": "",
+            }
+        ),
     )
 
     response = router.ask_question("hello")
@@ -358,7 +427,7 @@ def test_router_no_rag_skips_database_retrieval():
     assert RouterState.SUMMARIZE_RETRIEVED_DOCS.name not in router.last_turn.state_trace
     assert RouterState.EXTRACT_MEMORY.name in router.last_turn.state_trace
     assert len(memory_store.committed_resolutions) == 1
-    assert memory_store.committed_resolutions[0][1:] == ("hello", "hello back")
+    assert memory_store.committed_resolutions[0][1:3] == ("hello", "hello back")
     assert router.last_turn.suggested_search_labels == []
 
 
@@ -437,7 +506,9 @@ def test_router_does_not_treat_literal_router_error_text_as_failure():
     response = router.ask_question("hello")
 
     assert response == "Router error: this is literal assistant content"
-    assert router.last_turn.response == "Router error: this is literal assistant content"
+    assert (
+        router.last_turn.response == "Router error: this is literal assistant content"
+    )
 
 
 def test_router_tool_search_strips_control_labels_before_retrieval():
@@ -455,7 +526,11 @@ def test_router_tool_search_strips_control_labels_before_retrieval():
 
     result = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "docker install", "relevant_documents": ["no_rag", "docker"], "evidence_gap": "docker install docs"},
+        {
+            "query": "docker install",
+            "relevant_documents": ["no_rag", "docker"],
+            "evidence_gap": "docker install docs",
+        },
     )
 
     assert result == "manual docs"
@@ -477,7 +552,11 @@ def test_router_tool_search_allows_broad_search_when_only_control_labels_are_pre
 
     result = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "obscure package", "relevant_documents": ["no_rag"], "evidence_gap": "obscure package docs"},
+        {
+            "query": "obscure package",
+            "relevant_documents": ["no_rag"],
+            "evidence_gap": "obscure package docs",
+        },
     )
 
     assert result == "broad docs"
@@ -513,12 +592,18 @@ def test_router_tool_search_emits_prompt_facing_retrieval_blocks_for_tool_result
         memory_extractor=FakeMemoryExtractor(),
     )
     events = []
-    router.set_event_listener(lambda event_type, payload: events.append((event_type, payload)))
+    router.set_event_listener(
+        lambda event_type, payload: events.append((event_type, payload))
+    )
     expected_text = "---\n[Source: Debian.pdf (Page 4)]\napt install foo\n"
 
     result = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "install package", "relevant_documents": ["debian"], "evidence_gap": "install component"},
+        {
+            "query": "install package",
+            "relevant_documents": ["debian"],
+            "evidence_gap": "install component",
+        },
     )
 
     assert result == expected_text
@@ -549,12 +634,21 @@ def test_router_tool_search_emits_prompt_facing_retrieval_blocks_for_tool_result
 
 def test_router_tool_search_exact_duplicate_hits_cache_when_seen_state_is_unchanged():
     class FakeDedupingDatabase(FakeDatabase):
-        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None):
+        def retrieve_context_result(
+            self, query, sources, excluded_page_windows=None, excluded_block_keys=None
+        ):
             self.calls.append(
                 (
                     query,
                     tuple(sources or []),
-                    tuple((window.get("key"), window.get("page_start"), window.get("page_end")) for window in (excluded_page_windows or [])),
+                    tuple(
+                        (
+                            window.get("key"),
+                            window.get("page_start"),
+                            window.get("page_end"),
+                        )
+                        for window in (excluded_page_windows or [])
+                    ),
                     tuple(excluded_block_keys or []),
                 )
             )
@@ -589,15 +683,25 @@ def test_router_tool_search_exact_duplicate_hits_cache_when_seen_state_is_unchan
         memory_extractor=FakeMemoryExtractor(),
     )
     events = []
-    router.set_event_listener(lambda event_type, payload: events.append((event_type, payload)))
+    router.set_event_listener(
+        lambda event_type, payload: events.append((event_type, payload))
+    )
 
     first = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "repeat me", "relevant_documents": ["debian"], "evidence_gap": "repeat me"},
+        {
+            "query": "repeat me",
+            "relevant_documents": ["debian"],
+            "evidence_gap": "repeat me",
+        },
     )
     second = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "repeat me", "relevant_documents": ["debian"], "evidence_gap": "repeat me"},
+        {
+            "query": "repeat me",
+            "relevant_documents": ["debian"],
+            "evidence_gap": "repeat me",
+        },
     )
 
     assert first == ""
@@ -617,7 +721,9 @@ def test_router_tool_search_exact_duplicate_hits_cache_when_seen_state_is_unchan
 
 def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
     class FakeProgressiveDatabase(FakeDatabase):
-        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None):
+        def retrieve_context_result(
+            self, query, sources, excluded_page_windows=None, excluded_block_keys=None
+        ):
             self.calls.append(
                 {
                     "query": query,
@@ -707,7 +813,9 @@ def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
         memory_extractor=FakeMemoryExtractor(),
     )
     events = []
-    router.set_event_listener(lambda event_type, payload: events.append((event_type, payload)))
+    router.set_event_listener(
+        lambda event_type, payload: events.append((event_type, payload))
+    )
 
     turn = TurnContext(user_question="How do I install it?")
     router.current_turn = turn
@@ -715,12 +823,18 @@ def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
         router._retrieve_context(turn)
         result = router._handle_responder_tool_call(
             "search_rag_database",
-            {"query": "install package", "relevant_documents": ["debian"], "evidence_gap": "install package"},
+            {
+                "query": "install package",
+                "relevant_documents": ["debian"],
+                "evidence_gap": "install package",
+            },
         )
     finally:
         router.current_turn = None
 
-    assert turn.retrieved_docs == "---\n[Source: Debian.pdf (Page 4)]\napt install foo\n"
+    assert (
+        turn.retrieved_docs == "---\n[Source: Debian.pdf (Page 4)]\napt install foo\n"
+    )
     assert result == ""
     assert len(database.calls) == 2
     assert database.calls[0]["excluded_page_windows"] == []
@@ -747,7 +861,9 @@ def test_router_prefetch_and_tool_search_share_turn_scoped_retrieval_ledger():
 
 def test_router_tool_search_soft_require_reason_is_visible_for_normal_chatbot():
     class FakeEmptyDatabase(FakeDatabase):
-        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None):
+        def retrieve_context_result(
+            self, query, sources, excluded_page_windows=None, excluded_block_keys=None
+        ):
             self.calls.append((query, tuple(sources or [])))
             return {
                 "context_text": "",
@@ -780,15 +896,25 @@ def test_router_tool_search_soft_require_reason_is_visible_for_normal_chatbot():
         memory_extractor=FakeMemoryExtractor(),
     )
     events = []
-    router.set_event_listener(lambda event_type, payload: events.append((event_type, payload)))
+    router.set_event_listener(
+        lambda event_type, payload: events.append((event_type, payload))
+    )
 
     first = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "repeat me", "relevant_documents": ["debian"], "evidence_gap": "repeat me"},
+        {
+            "query": "repeat me",
+            "relevant_documents": ["debian"],
+            "evidence_gap": "repeat me",
+        },
     )
     second = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "repeat me", "relevant_documents": ["debian"], "evidence_gap": "repeat me"},
+        {
+            "query": "repeat me",
+            "relevant_documents": ["debian"],
+            "evidence_gap": "repeat me",
+        },
     )
 
     # After two identical searches the scope is known and the cache hits.
@@ -797,17 +923,21 @@ def test_router_tool_search_soft_require_reason_is_visible_for_normal_chatbot():
     # Pool should track the queries and emit evidence_pool_update events.
     pool = router._active_evidence_pool()
     assert pool.scope_state.scope_query_counts.get("debian::repeat_me", 0) >= 1
-    assert any(
-        event_type == "evidence_pool_update"
-        for event_type, payload in events
-    )
+    assert any(event_type == "evidence_pool_update" for event_type, payload in events)
 
 
 def test_router_tool_search_different_queries_both_reach_database():
     """Two distinct search_rag_database calls both reach the database independently."""
 
     class FakeTrackingDatabase(FakeDatabase):
-        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, evidence_gap=None):
+        def retrieve_context_result(
+            self,
+            query,
+            sources,
+            excluded_page_windows=None,
+            excluded_block_keys=None,
+            evidence_gap=None,
+        ):
             self.calls.append((query, tuple(sources or [])))
             return {
                 "context_text": "",
@@ -842,7 +972,11 @@ def test_router_tool_search_different_queries_both_reach_database():
 
     router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "how to install docker", "relevant_documents": ["debian"], "evidence_gap": "install docker"},
+        {
+            "query": "how to install docker",
+            "relevant_documents": ["debian"],
+            "evidence_gap": "install docker",
+        },
     )
     router._handle_responder_tool_call(
         "search_rag_database",
@@ -862,7 +996,9 @@ def test_router_tool_search_different_queries_both_reach_database():
 
 
 def test_router_loads_and_persists_session_scoped_chat_history():
-    chat_store = FakeChatStore(history=[("user", "old question"), ("model", "old answer")])
+    chat_store = FakeChatStore(
+        history=[("user", "old question"), ("model", "old answer")]
+    )
     router = ModelRouter(
         database=FakeDatabase(""),
         classifier=FakeClassifier(["no_rag"]),
@@ -1170,7 +1306,10 @@ def test_router_auto_names_first_turn_after_memory_commit():
 
     assert chat_store.updated_titles == [("session-123", "Docker permissions fix")]
     assert RouterState.AUTO_NAME.name in router.last_turn.state_trace
-    assert router.last_turn.state_trace[-2:] == [RouterState.AUTO_NAME.name, RouterState.DONE.name]
+    assert router.last_turn.state_trace[-2:] == [
+        RouterState.AUTO_NAME.name,
+        RouterState.DONE.name,
+    ]
     assert title_worker.calls[0]["kwargs"]["max_output_tokens"] == 30
     assert any(event["type"] == "chat_named" for event in router.last_turn.tool_events)
 
@@ -1248,7 +1387,9 @@ def test_router_streaming_first_turn_schedules_auto_name_follow_up():
 
 
 def test_router_auto_name_follow_up_uses_persisted_first_exchange():
-    chat_store = FakeChatStore(history=[("user", "hello"), ("model", "streamed answer")])
+    chat_store = FakeChatStore(
+        history=[("user", "hello"), ("model", "streamed answer")]
+    )
     title_worker = FakeTitleWorker("Follow-up title")
     router = ModelRouter(
         database=FakeDatabase(""),
@@ -1284,7 +1425,9 @@ def test_router_responder_state_events_include_phase_and_details():
     router.current_turn = turn = router.run_turn("hello", stream_response=False)
     router.current_turn = turn
 
-    router._handle_responder_state(ResponseState.PROCESS_TOOL_CALLS, {"round": 1, "count": 2})
+    router._handle_responder_state(
+        ResponseState.PROCESS_TOOL_CALLS, {"round": 1, "count": 2}
+    )
 
     assert turn.state_trace[-1] == "RESPONDER_PROCESS_TOOL_CALLS"
     assert turn.tool_events[-1] == {
@@ -1303,7 +1446,14 @@ class FakeSequentialSearchDatabase:
         self.results = list(results)
         self.calls = []
 
-    def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, evidence_gap=None):
+    def retrieve_context_result(
+        self,
+        query,
+        sources,
+        excluded_page_windows=None,
+        excluded_block_keys=None,
+        evidence_gap=None,
+    ):
         self.calls.append(
             {
                 "query": query,
@@ -1318,8 +1468,12 @@ class FakeSequentialSearchDatabase:
         return self.results.pop(0)
 
 
-def _retrieval_result_with_evidence(text, *, source="Debian.pdf", page=4, selected_sources=None):
-    selected_sources = list(selected_sources if selected_sources is not None else [source])
+def _retrieval_result_with_evidence(
+    text, *, source="Debian.pdf", page=4, selected_sources=None
+):
+    selected_sources = list(
+        selected_sources if selected_sources is not None else [source]
+    )
     return {
         "context_text": text,
         "selected_sources": selected_sources,
@@ -1333,7 +1487,14 @@ def _retrieval_result_with_evidence(text, *, source="Debian.pdf", page=4, select
             "delivered_bundle_keys": [f"bundle:{source}:{page}-{page}:anchor:r{page}"],
             "delivered_block_keys": [f"block:{source}:{page}-{page}"],
             "delivered_page_window_keys": [f"window:{source}:{page}-{page}"],
-            "delivered_page_windows": [{"key": f"window:{source}:{page}-{page}", "source": source, "page_start": page, "page_end": page}],
+            "delivered_page_windows": [
+                {
+                    "key": f"window:{source}:{page}-{page}",
+                    "source": source,
+                    "page_start": page,
+                    "page_end": page,
+                }
+            ],
             "excluded_seen_count": 0,
             "skipped_bundle_count": 0,
         },
@@ -1381,7 +1542,9 @@ def test_router_responder_can_call_web_search_via_provider_tool_loop():
     # web_search is handled natively by the provider tool loop — calling
     # _handle_responder_tool_call with it returns an "unknown tool" error dict,
     # not a crash.
-    result = router._handle_responder_tool_call("web_search", {"query": "latest kernel release"})
+    result = router._handle_responder_tool_call(
+        "web_search", {"query": "latest kernel release"}
+    )
     assert isinstance(result, dict) and "error" in result
     assert any(event_type == "tool_error" for event_type, _ in events)
 
@@ -1395,7 +1558,14 @@ def test_router_responder_and_magi_share_handle_responder_tool_call():
         def __init__(self):
             self.calls = []
 
-        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None, evidence_gap=None):
+        def retrieve_context_result(
+            self,
+            query,
+            sources,
+            excluded_page_windows=None,
+            excluded_block_keys=None,
+            evidence_gap=None,
+        ):
             self.calls.append(query)
             return {
                 "context_text": "some docs",
@@ -1403,10 +1573,16 @@ def test_router_responder_and_magi_share_handle_responder_tool_call():
                 "merged_blocks": [],
                 "bundle_summaries": [],
                 "retrieval_metadata": {
-                    "anchor_count": 0, "anchor_pages": [], "fetched_neighbor_pages": [],
-                    "delivered_bundle_count": 0, "delivered_bundle_keys": [],
-                    "delivered_block_keys": [], "delivered_page_window_keys": [],
-                    "delivered_page_windows": [], "excluded_seen_count": 0, "skipped_bundle_count": 0,
+                    "anchor_count": 0,
+                    "anchor_pages": [],
+                    "fetched_neighbor_pages": [],
+                    "delivered_bundle_count": 0,
+                    "delivered_bundle_keys": [],
+                    "delivered_block_keys": [],
+                    "delivered_page_window_keys": [],
+                    "delivered_page_windows": [],
+                    "excluded_seen_count": 0,
+                    "skipped_bundle_count": 0,
                 },
             }
 
@@ -1426,7 +1602,11 @@ def test_router_responder_and_magi_share_handle_responder_tool_call():
     # search_rag_database routes to the database
     rag_result = router._handle_responder_tool_call(
         "search_rag_database",
-        {"query": "install docker", "relevant_documents": ["debian"], "evidence_gap": "install docker"},
+        {
+            "query": "install docker",
+            "relevant_documents": ["debian"],
+            "evidence_gap": "install docker",
+        },
     )
     assert "some docs" in rag_result
     assert db.calls == ["install docker"]
@@ -1447,17 +1627,38 @@ def test_router_responder_and_magi_share_handle_responder_tool_call():
 # Magi router integration tests
 # ---------------------------------------------------------------------------
 
+
 class FakeMagiResponder:
     def __init__(self, response_text="magi answer"):
         self.response_text = response_text
         self.calls = []
 
-    def call_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", evidence_pool_summary=""):
+    def call_api(
+        self,
+        user_query,
+        retrieved_docs,
+        summarized_conversation_history=None,
+        memory_snapshot_text="",
+        evidence_pool_summary="",
+    ):
         self.calls.append(user_query)
         return self.response_text
 
-    def stream_api(self, user_query, retrieved_docs, summarized_conversation_history=None, memory_snapshot_text="", evidence_pool_summary=""):
-        return self.call_api(user_query, retrieved_docs, summarized_conversation_history, memory_snapshot_text, evidence_pool_summary)
+    def stream_api(
+        self,
+        user_query,
+        retrieved_docs,
+        summarized_conversation_history=None,
+        memory_snapshot_text="",
+        evidence_pool_summary="",
+    ):
+        return self.call_api(
+            user_query,
+            retrieved_docs,
+            summarized_conversation_history,
+            memory_snapshot_text,
+            evidence_pool_summary,
+        )
 
 
 def test_router_magi_toggle_dispatches_correctly():
@@ -1564,13 +1765,12 @@ from orchestration.evidence_pool import (
     OUTCOME_NEW_EVIDENCE,
     OUTCOME_NO_NEW,
     OUTCOME_REUSED_KNOWN,
-    EvidencePool,
 )
-from orchestration.model_router import TurnContext
 
 
 def _make_progressive_db(first_result, second_result=None):
     """Database whose second call returns a different result from the first."""
+
     class ProgressiveDB(FakeDatabase):
         def __init__(self):
             super().__init__("")
@@ -1578,14 +1778,20 @@ def _make_progressive_db(first_result, second_result=None):
             if second_result is not None:
                 self.result_sequence.append(second_result)
 
-        def retrieve_context_result(self, query, sources, excluded_page_windows=None, excluded_block_keys=None):
+        def retrieve_context_result(
+            self, query, sources, excluded_page_windows=None, excluded_block_keys=None
+        ):
             self.calls.append(
-                {"query": query, "sources": sources,
-                 "excluded_page_windows": list(excluded_page_windows or []),
-                 "excluded_block_keys": list(excluded_block_keys or [])},
+                {
+                    "query": query,
+                    "sources": sources,
+                    "excluded_page_windows": list(excluded_page_windows or []),
+                    "excluded_block_keys": list(excluded_block_keys or []),
+                },
             )
             index = min(len(self.calls) - 1, len(self.result_sequence) - 1)
             return self.result_sequence[index]
+
     return ProgressiveDB()
 
 
@@ -1604,7 +1810,12 @@ def _page_result(source, ps, pe):
             "delivered_block_keys": [f"block:{source}:{ps}-{pe}"],
             "delivered_page_window_keys": [f"window:{source}:{ps}-{pe}"],
             "delivered_page_windows": [
-                {"key": f"window:{source}:{ps}-{pe}", "source": source, "page_start": ps, "page_end": pe}
+                {
+                    "key": f"window:{source}:{ps}-{pe}",
+                    "source": source,
+                    "page_start": ps,
+                    "page_end": pe,
+                }
             ],
             "excluded_seen_count": 0,
             "skipped_bundle_count": 0,
@@ -1619,10 +1830,16 @@ def _empty_db_result():
         "merged_blocks": [],
         "bundle_summaries": [],
         "retrieval_metadata": {
-            "anchor_count": 0, "anchor_pages": [], "fetched_neighbor_pages": [],
-            "delivered_bundle_count": 0, "delivered_bundle_keys": [], "delivered_block_keys": [],
-            "delivered_page_window_keys": [], "delivered_page_windows": [],
-            "excluded_seen_count": 0, "skipped_bundle_count": 0,
+            "anchor_count": 0,
+            "anchor_pages": [],
+            "fetched_neighbor_pages": [],
+            "delivered_bundle_count": 0,
+            "delivered_bundle_keys": [],
+            "delivered_block_keys": [],
+            "delivered_page_window_keys": [],
+            "delivered_page_windows": [],
+            "excluded_seen_count": 0,
+            "skipped_bundle_count": 0,
         },
     }
 
@@ -1681,8 +1898,8 @@ def test_router_evidence_pool_exact_duplicate_is_cache_hit():
     finally:
         router.current_turn = None
 
-    assert first_cache is False   # first was a real DB call
-    assert is_cache is True       # second hit the pool cache (same fingerprint)
+    assert first_cache is False  # first was a real DB call
+    assert is_cache is True  # second hit the pool cache (same fingerprint)
     pool = turn.evidence_pool
     assert len(pool.query_records) == 2
     assert pool.query_records[0].outcome == OUTCOME_NO_NEW

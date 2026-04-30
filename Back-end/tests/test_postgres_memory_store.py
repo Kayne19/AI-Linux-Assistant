@@ -84,7 +84,13 @@ def test_postgres_memory_store_preserves_superseded_fact_history_across_commits(
 
     store.commit_resolution(
         MemoryResolution(
-            committed={"facts": [], "issues": [], "attempts": [], "constraints": [], "preferences": []}
+            committed={
+                "facts": [],
+                "issues": [],
+                "attempts": [],
+                "constraints": [],
+                "preferences": [],
+            }
         )
     )
 
@@ -136,3 +142,105 @@ def test_postgres_memory_store_preserves_superseded_fact_history_across_commits(
         if item["status"] == "superseded" and item["item_key"] == "os.distribution"
     ]
     assert set(superseded_values) == {"Debian 12", "Ubuntu 24.04"}
+
+
+def test_postgres_memory_store_concurrent_chats_do_not_clobber_candidates():
+    """Two concurrent turns in different chats of the same project must both land
+    their candidates without one chat's _replace_active_candidates wiping out
+    the other chat's uncommitted candidates."""
+    from agents.memory_resolver import MemoryResolution
+
+    store = _build_store()
+
+    # Chat A commits a candidate (no commit to main tables, just a candidate)
+    chat_a_resolution = MemoryResolution(
+        committed={
+            "facts": [],
+            "issues": [],
+            "attempts": [],
+            "constraints": [],
+            "preferences": [],
+        },
+        candidates=[
+            {
+                "item_type": "fact",
+                "item_key": "os.distribution",
+                "status": "candidate",
+                "reason": "new_fact",
+                "confidence": 0.85,
+                "source_type": "model",
+                "source_ref": "conversation",
+                "payload": {"fact_key": "os.distribution", "fact_value": "Arch Linux"},
+            },
+            {
+                "item_type": "fact",
+                "item_key": "editor",
+                "status": "candidate",
+                "reason": "new_fact",
+                "confidence": 0.9,
+                "source_type": "user",
+                "source_ref": "user_question",
+                "payload": {"fact_key": "editor", "fact_value": "neovim"},
+            },
+        ],
+    )
+    store.commit_resolution(chat_a_resolution, chat_session_id="chat-a")
+
+    # Chat B commits different candidates on the same project
+    chat_b_resolution = MemoryResolution(
+        committed={
+            "facts": [],
+            "issues": [],
+            "attempts": [],
+            "constraints": [],
+            "preferences": [],
+        },
+        candidates=[
+            {
+                "item_type": "fact",
+                "item_key": "os.distribution",
+                "status": "candidate",
+                "reason": "new_fact",
+                "confidence": 0.8,
+                "source_type": "model",
+                "source_ref": "conversation",
+                "payload": {"fact_key": "os.distribution", "fact_value": "Fedora 42"},
+            },
+        ],
+    )
+    store.commit_resolution(chat_b_resolution, chat_session_id="chat-b")
+
+    # Both chats' candidates should coexist
+    # Verify Chat A still has both its candidates
+    chat_a_candidates = [
+        c
+        for c in store.list_candidates(chat_session_id="chat-a")
+        if c["status"] == "candidate"
+    ]
+    assert len(chat_a_candidates) == 2, (
+        f"Expected 2 candidates for chat-a, got {len(chat_a_candidates)}"
+    )
+
+    # Verify Chat B still has its candidate
+    chat_b_candidates = [
+        c
+        for c in store.list_candidates(chat_session_id="chat-b")
+        if c["status"] == "candidate"
+    ]
+    assert len(chat_b_candidates) == 1, (
+        f"Expected 1 candidate for chat-b, got {len(chat_b_candidates)}"
+    )
+
+    # Verify the values differ per chat (same fact_key, different values)
+    chat_a_os = next(
+        c["payload"].get("fact_value")
+        for c in chat_a_candidates
+        if c["item_key"] == "os.distribution"
+    )
+    chat_b_os = next(
+        c["payload"].get("fact_value")
+        for c in chat_b_candidates
+        if c["item_key"] == "os.distribution"
+    )
+    assert chat_a_os == "Arch Linux", f"Chat A should have Arch Linux, got {chat_a_os}"
+    assert chat_b_os == "Fedora 42", f"Chat B should have Fedora 42, got {chat_b_os}"

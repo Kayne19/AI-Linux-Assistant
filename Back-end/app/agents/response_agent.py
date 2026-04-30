@@ -1,8 +1,10 @@
 from enum import Enum, auto
 
 from orchestration.history_preparer import PreparedHistory
-from orchestration.run_control import call_with_optional_cancel_check, invoke_cancel_check
-from providers.openAI_caller import OpenAIWorker
+from orchestration.run_control import (
+    call_with_optional_cancel_check,
+    invoke_cancel_check,
+)
 from prompting.prompts import CHATBOT_SYSTEM_PROMPT
 
 
@@ -28,7 +30,7 @@ class ResponseAgent:
         event_listener=None,
         cancel_check=None,
     ):
-        self.worker = worker or OpenAIWorker()
+        self.worker = worker
         self.chatbot_prompt = chatbot_prompt
         self.tools = tools or []
         self.tool_handler = tool_handler
@@ -75,7 +77,9 @@ class ResponseAgent:
     ):
         if summarized_conversation_history is None:
             summarized_conversation_history = PreparedHistory()
-        history_summary_text = (summarized_conversation_history.summary_text or "").strip()
+        history_summary_text = (
+            summarized_conversation_history.summary_text or ""
+        ).strip()
         return f"""
         PRIOR CONVERSATION SUMMARY:
         {history_summary_text}

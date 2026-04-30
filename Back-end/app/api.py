@@ -5,9 +5,18 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from auth import Auth0AccessTokenVerifier, AuthConfigurationError, build_current_user_dependency
-from config.settings import load_settings, _apply_db_overrides, _load_settings_row, SETTINGS
+from auth import (
+    Auth0AccessTokenVerifier,
+    AuthConfigurationError,
+    build_current_user_dependency,
+)
+from config.settings import (
+    load_settings,
+    _apply_db_overrides,
+    SETTINGS,
+)
 from persistence.postgres_app_store import PostgresAppStore
+from utils.time_utils import _iso
 from persistence.postgres_run_store import (
     ActiveChatRunExistsError,
     ActiveRunLimitExceededError,
@@ -26,41 +35,15 @@ from orchestration.normalized_inputs import normalize_saved_normalized_inputs
 from streaming.event_serializer import serialize_run_event
 from streaming.redis_events import get_shared_client as _get_redis_client
 
-try:
-    from fastapi import Depends, FastAPI, HTTPException, Query
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import StreamingResponse
-    from pydantic import BaseModel, Field
-except ImportError:  # pragma: no cover - optional until FastAPI is installed
-    Depends = None
-    FastAPI = None
-    HTTPException = Exception
-    Query = None
-    CORSMiddleware = None
-    StreamingResponse = None
-
-    class BaseModel:  # type: ignore[override]
-        pass
-
-    def Field(default=None, **kwargs):  # type: ignore[override]
-        del kwargs
-        return default
-
-    def Query(default=None, **kwargs):  # type: ignore[override]
-        del kwargs
-        return default
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 
 logger = logging.getLogger(__name__)
 RunMagiMode = Literal["off", "lite", "full"]
 RunResumeInputKind = Literal["fact", "correction", "constraint", "goal_clarification"]
-
-
-def _require_fastapi():
-    if FastAPI is None:
-        raise ImportError(
-            "FastAPI is required for the web API. Install fastapi and uvicorn in the AI-Linux-Assistant environment."
-        )
 
 
 class LoginRequest(BaseModel):
@@ -173,6 +156,15 @@ class RetrievedContextBlockResponse(BaseModel):
     pages: list[int]
     page_label: str
     text: str
+    section_path: list[str] | None = None
+    section_title: str | None = None
+    chunk_type: str | None = None
+    local_subsystems: list[str] | None = None
+    entities: dict[str, list[str]] | None = None
+    canonical_source_id: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    citation_label: str | None = None
 
 
 class NormalizedInputsResponse(BaseModel):
@@ -226,11 +218,23 @@ class AppBootstrapResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 _SETTINGS_COMPONENT_NAMES = [
-    "classifier", "contextualizer", "responder",
-    "magi_eager", "magi_skeptic", "magi_historian", "magi_arbiter",
-    "magi_lite_eager", "magi_lite_skeptic", "magi_lite_historian", "magi_lite_arbiter",
-    "history_summarizer", "context_summarizer", "memory_extractor",
-    "registry_updater", "ingest_enricher", "chat_namer",
+    "classifier",
+    "contextualizer",
+    "responder",
+    "magi_eager",
+    "magi_skeptic",
+    "magi_historian",
+    "magi_arbiter",
+    "magi_lite_eager",
+    "magi_lite_skeptic",
+    "magi_lite_historian",
+    "magi_lite_arbiter",
+    "history_summarizer",
+    "context_summarizer",
+    "memory_extractor",
+    "registry_updater",
+    "ingest_enricher",
+    "chat_namer",
 ]
 _RETRIEVAL_SETTINGS_FIELDS = {
     "initial_fetch": "retrieval_initial_fetch",
@@ -336,7 +340,9 @@ class AppSettingsPatch(BaseModel):
     history_context: HistoryContextSettingsPatch | None = None
 
 
-def _build_scalar_settings_response(db_row, effective, fields: dict[str, str], response_model):
+def _build_scalar_settings_response(
+    db_row, effective, fields: dict[str, str], response_model
+):
     payload = {}
     for api_name, attr_name in fields.items():
         payload[api_name] = ScalarSettingResponse(
@@ -356,20 +362,22 @@ def _apply_scalar_settings_patch(row, patch_model, fields: dict[str, str]):
 
 
 def _validate_retrieval_settings(effective_settings):
-    if effective_settings.retrieval_final_top_k > effective_settings.retrieval_initial_fetch:
+    if (
+        effective_settings.retrieval_final_top_k
+        > effective_settings.retrieval_initial_fetch
+    ):
         raise HTTPException(
             status_code=422,
             detail="retrieval.final_top_k must be less than or equal to retrieval.initial_fetch.",
         )
-    if effective_settings.retrieval_max_expanded < effective_settings.retrieval_final_top_k:
+    if (
+        effective_settings.retrieval_max_expanded
+        < effective_settings.retrieval_final_top_k
+    ):
         raise HTTPException(
             status_code=422,
             detail="retrieval.max_expanded must be greater than or equal to retrieval.final_top_k.",
         )
-
-
-def _iso(value):
-    return value.isoformat() if value is not None else ""
 
 
 def _serialize_user(user):
@@ -436,6 +444,15 @@ def _serialize_normalized_inputs(value, request_text=""):
                 pages=list(item["pages"]),
                 page_label=item["page_label"],
                 text=item["text"],
+                section_path=item.get("section_path"),
+                section_title=item.get("section_title"),
+                chunk_type=item.get("chunk_type"),
+                local_subsystems=item.get("local_subsystems"),
+                entities=item.get("entities"),
+                canonical_source_id=item.get("canonical_source_id"),
+                page_start=item.get("page_start"),
+                page_end=item.get("page_end"),
+                citation_label=item.get("citation_label"),
             )
             for item in normalized["retrieved_context_blocks"]
         ],
@@ -513,12 +530,22 @@ def _serialize_event_row(event_row):
 
 
 def _degraded_terminal_event_from_snapshot(run, app_store):
-    terminal_created_at = _iso(getattr(run, "finished_at", None) or getattr(run, "updated_at", None))
-    if run.status == "completed" and run.final_user_message_id and run.final_assistant_message_id:
+    terminal_created_at = _iso(
+        getattr(run, "finished_at", None) or getattr(run, "updated_at", None)
+    )
+    if (
+        run.status == "completed"
+        and run.final_user_message_id
+        and run.final_assistant_message_id
+    ):
         user_message = app_store.get_message(run.final_user_message_id)
         assistant_message = app_store.get_message(run.final_assistant_message_id)
         if user_message is None or assistant_message is None:
-            return {"type": "error", "message": "Run completed without persisted messages.", "created_at": terminal_created_at}
+            return {
+                "type": "error",
+                "message": "Run completed without persisted messages.",
+                "created_at": terminal_created_at,
+            }
         return {
             "type": "done",
             "created_at": terminal_created_at,
@@ -538,9 +565,17 @@ def _degraded_terminal_event_from_snapshot(run, app_store):
             },
         }
     if run.status == "cancelled":
-        return {"type": "cancelled", "message": run.error_message or "Run cancelled.", "created_at": terminal_created_at}
+        return {
+            "type": "cancelled",
+            "message": run.error_message or "Run cancelled.",
+            "created_at": terminal_created_at,
+        }
     if run.status == "failed":
-        return {"type": "error", "message": run.error_message or "Run failed.", "created_at": terminal_created_at}
+        return {
+            "type": "error",
+            "message": run.error_message or "Run failed.",
+            "created_at": terminal_created_at,
+        }
     return None
 
 
@@ -579,7 +614,9 @@ def _parse_redis_stream_payload(raw_data, run_id):
     try:
         return json.loads(raw_data)
     except (TypeError, json.JSONDecodeError):
-        logger.warning("Skipping malformed Redis stream payload for run %s.", run_id, exc_info=True)
+        logger.warning(
+            "Skipping malformed Redis stream payload for run %s.", run_id, exc_info=True
+        )
         return None
 
 
@@ -596,11 +633,17 @@ def _wait_for_terminal_run(run_store, run_id, timeout_seconds=1800):
 
 
 def _auth0_required(settings) -> bool:
-    return bool(settings.auth0_enabled) and not bool(settings.enable_legacy_bootstrap_auth)
+    return bool(settings.auth0_enabled) and not bool(
+        settings.enable_legacy_bootstrap_auth
+    )
 
 
 def _has_complete_auth0_config(settings) -> bool:
-    return bool((settings.auth0_domain or "").strip() and (settings.auth0_issuer or "").strip() and (settings.auth0_audience or "").strip())
+    return bool(
+        (settings.auth0_domain or "").strip()
+        and (settings.auth0_issuer or "").strip()
+        and (settings.auth0_audience or "").strip()
+    )
 
 
 def _default_auth0_verifier(settings):
@@ -612,22 +655,35 @@ def _default_auth0_verifier(settings):
 
 
 def create_app(*, app_store=None, run_store=None, auth_verifier=None):
-    _require_fastapi()
     settings = load_settings()
     auth_required = _auth0_required(settings) or (auth_verifier is not None)
-    if auth_required and auth_verifier is None and not _has_complete_auth0_config(settings):
+    if (
+        auth_required
+        and auth_verifier is None
+        and not _has_complete_auth0_config(settings)
+    ):
         raise AuthConfigurationError(
             "Auth0 web auth is enabled but AUTH0_DOMAIN, AUTH0_ISSUER, and AUTH0_AUDIENCE are not fully configured."
         )
-    if auth_required and auth_verifier is None and not tuple(settings.frontend_origins or ()):
+    if (
+        auth_required
+        and auth_verifier is None
+        and not tuple(settings.frontend_origins or ())
+    ):
         raise AuthConfigurationError(
             "Auth0 web auth is enabled but FRONTEND_ORIGIN/FRONTEND_ORIGINS is not configured."
         )
     app = FastAPI(title="AI Linux Assistant API")
     app_store = app_store or PostgresAppStore()
     run_store = run_store or PostgresRunStore(redis_client=_get_redis_client())
-    verifier = auth_verifier or (_default_auth0_verifier(settings) if _auth0_required(settings) else None)
-    current_user_dependency = build_current_user_dependency(app_store, verifier) if verifier is not None else None
+    verifier = auth_verifier or (
+        _default_auth0_verifier(settings) if _auth0_required(settings) else None
+    )
+    current_user_dependency = (
+        build_current_user_dependency(app_store, verifier)
+        if verifier is not None
+        else None
+    )
 
     if CORSMiddleware is not None:
         app.add_middleware(
@@ -640,10 +696,16 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
 
     def _auth_unconfigured():
         if verifier is None:
-            raise HTTPException(status_code=503, detail="Web authentication is not configured.")
-        raise HTTPException(status_code=500, detail="Authentication dependency was not initialized.")
+            raise HTTPException(
+                status_code=503, detail="Web authentication is not configured."
+            )
+        raise HTTPException(
+            status_code=500, detail="Authentication dependency was not initialized."
+        )
 
-    def _require_current_user(current_user=Depends(current_user_dependency or _auth_unconfigured)):
+    def _require_current_user(
+        current_user=Depends(current_user_dependency or _auth_unconfigured),
+    ):
         return current_user
 
     def _require_admin(current_user=Depends(_require_current_user)):
@@ -678,15 +740,32 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         terminal_payload = _terminal_event_payload(run_store, run.id, run, app_store)
         if run.status == "completed":
             if terminal_payload is None or terminal_payload.get("type") != "done":
-                raise HTTPException(status_code=500, detail="Run completed without a durable terminal payload.")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Run completed without a durable terminal payload.",
+                )
             return SendMessageResponse(
                 user_message=terminal_payload["user_message"],
                 assistant_message=terminal_payload["assistant_message"],
                 debug=AssistantDebugResponse(
-                    state_trace=list((terminal_payload.get("debug") or {}).get("state_trace", []) or []),
-                    tool_events=list((terminal_payload.get("debug") or {}).get("tool_events", []) or []),
-                    retrieval_query=((terminal_payload.get("debug") or {}).get("retrieval_query", "") or ""),
-                    retrieved_sources=list((terminal_payload.get("debug") or {}).get("retrieved_sources", []) or []),
+                    state_trace=list(
+                        (terminal_payload.get("debug") or {}).get("state_trace", [])
+                        or []
+                    ),
+                    tool_events=list(
+                        (terminal_payload.get("debug") or {}).get("tool_events", [])
+                        or []
+                    ),
+                    retrieval_query=(
+                        (terminal_payload.get("debug") or {}).get("retrieval_query", "")
+                        or ""
+                    ),
+                    retrieved_sources=list(
+                        (terminal_payload.get("debug") or {}).get(
+                            "retrieved_sources", []
+                        )
+                        or []
+                    ),
                     normalized_inputs=_serialize_normalized_inputs(
                         (terminal_payload.get("debug") or {}).get("normalized_inputs"),
                         request_text=run.request_content or "",
@@ -694,9 +773,17 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                 ),
             )
         if run.status == "cancelled":
-            message = (terminal_payload or {}).get("message") or run.error_message or "Run cancelled."
+            message = (
+                (terminal_payload or {}).get("message")
+                or run.error_message
+                or "Run cancelled."
+            )
             raise HTTPException(status_code=409, detail=message)
-        message = (terminal_payload or {}).get("message") or run.error_message or "Run failed."
+        message = (
+            (terminal_payload or {}).get("message")
+            or run.error_message
+            or "Run failed."
+        )
         raise HTTPException(status_code=500, detail=message)
 
     def _cancel_run_explicitly(run_id: str, user_id: str):
@@ -708,38 +795,71 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                 return run
             try:
                 if run.status == "queued":
-                    return run_store.cancel_queued_run(run_id, error_message="Run cancelled.")
+                    return run_store.cancel_queued_run(
+                        run_id, error_message="Run cancelled."
+                    )
                 if run.status == "paused":
-                    return run_store.mark_cancelled(run_id, error_message="Run cancelled.")
+                    return run_store.mark_cancelled(
+                        run_id, error_message="Run cancelled."
+                    )
                 if run.status in {"running", "cancel_requested"}:
                     return run_store.request_running_cancel(run_id)
                 if run.status == "pause_requested":
                     return run_store.request_running_cancel(run_id)
-                raise HTTPException(status_code=409, detail=f"Run '{run_id}' cannot be cancelled from status '{run.status}'.")
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Run '{run_id}' cannot be cancelled from status '{run.status}'.",
+                )
             except RunStateConflictError:
                 continue
 
         run = run_store.get_run_for_user(run_id, user_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found.")
-        if run.status in TERMINAL_RUN_STATUSES | {"running", "cancel_requested", "pause_requested", "paused"}:
+        if run.status in TERMINAL_RUN_STATUSES | {
+            "running",
+            "cancel_requested",
+            "pause_requested",
+            "paused",
+        }:
             return run
-        raise HTTPException(status_code=409, detail=f"Run '{run_id}' cannot be cancelled from status '{run.status}'.")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run '{run_id}' cannot be cancelled from status '{run.status}'.",
+        )
 
     def _pause_run_explicitly(run_id: str, user_id: str):
         run = run_store.get_run_for_user(run_id, user_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found.")
-        if (run.run_kind or "message") != "message" or (run.magi or "off") not in {"full", "lite"}:
-            raise HTTPException(status_code=409, detail="Only active MAGI message runs can be paused.")
+        if (run.run_kind or "message") != "message" or (run.magi or "off") not in {
+            "full",
+            "lite",
+        }:
+            raise HTTPException(
+                status_code=409, detail="Only active MAGI message runs can be paused."
+            )
         if run.status in {"pause_requested", "paused"}:
             return run
         if run.status != "running":
-            raise HTTPException(status_code=409, detail=f"Run '{run_id}' cannot be paused from status '{run.status}'.")
+            raise HTTPException(
+                status_code=409,
+                detail=f"Run '{run_id}' cannot be paused from status '{run.status}'.",
+            )
         latest_magi_state = run_store.get_latest_event_by_code(run_id, "magi_state")
-        latest_state_name = str(((latest_magi_state.payload_json or {}).get("state") if latest_magi_state else "") or "")
+        latest_state_name = str(
+            (
+                (latest_magi_state.payload_json or {}).get("state")
+                if latest_magi_state
+                else ""
+            )
+            or ""
+        )
         if latest_state_name not in PAUSE_REQUESTABLE_MAGI_STATES:
-            raise HTTPException(status_code=409, detail="MAGI can only be paused during opening arguments or discussion.")
+            raise HTTPException(
+                status_code=409,
+                detail="MAGI can only be paused during opening arguments or discussion.",
+            )
         try:
             return run_store.request_pause(run_id)
         except RunStateConflictError as exc:
@@ -760,8 +880,13 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     def _chat_responses_for_rows(chat_rows, user_id):
-        active_by_chat = run_store.get_active_runs_for_chat_ids([chat.id for chat in chat_rows], user_id=user_id)
-        return [_serialize_chat_session(chat, active_run=active_by_chat.get(chat.id)) for chat in chat_rows]
+        active_by_chat = run_store.get_active_runs_for_chat_ids(
+            [chat.id for chat in chat_rows], user_id=user_id
+        )
+        return [
+            _serialize_chat_session(chat, active_run=active_by_chat.get(chat.id))
+            for chat in chat_rows
+        ]
 
     def _stream_via_redis(run_id, after_seq, redis_client):
         """Subscribe to the Redis fanout channel, replay Postgres backlog first, then
@@ -769,13 +894,16 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         event can fall into the gap between the two.  Messages already covered by the
         backlog are skipped by seq comparison."""
         from streaming.redis_events import subscribe_run_events
+
         health_poll = max(0.5, float(settings.chat_run_stream_poll_ms) / 1000.0)
         ps = subscribe_run_events(redis_client, run_id)
         try:
             current_seq = max(0, int(after_seq))
             checkpoint_windows = {}
             # Replay backlog
-            for event_row in run_store.list_events_after(run_id, after_seq=current_seq, limit=1000):
+            for event_row in run_store.list_events_after(
+                run_id, after_seq=current_seq, limit=1000
+            ):
                 current_seq = max(current_seq, int(event_row.seq))
                 payload = _serialize_event_row(event_row)
                 _register_checkpoint_window(checkpoint_windows, payload)
@@ -788,10 +916,14 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                 if msg is None:
                     run = run_store.get_run(run_id)
                     if run is None:
-                        yield _sse_payload({"type": "error", "message": "Run not found."})
+                        yield _sse_payload(
+                            {"type": "error", "message": "Run not found."}
+                        )
                         return
                     if run.status in TERMINAL_RUN_STATUSES | {"paused"}:
-                        fallback_payload = _stream_stop_payload(run_store, run_id, run, app_store)
+                        fallback_payload = _stream_stop_payload(
+                            run_store, run_id, run, app_store
+                        )
                         if fallback_payload is not None:
                             yield _sse_payload(fallback_payload)
                         return
@@ -804,7 +936,10 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                 seq = int(data.get("seq", 0) or 0)
                 if seq > 0 and seq <= current_seq:
                     continue  # already sent via backlog
-                if data.get("type") == "event" and data.get("code") in {"text_delta", "magi_role_text_delta"}:
+                if data.get("type") == "event" and data.get("code") in {
+                    "text_delta",
+                    "magi_role_text_delta",
+                }:
                     if not _should_forward_stream_delta(data, checkpoint_windows):
                         continue
                 if seq > 0:
@@ -847,7 +982,9 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                     yield _sse_payload({"type": "error", "message": "Run not found."})
                     break
                 if run.status in TERMINAL_RUN_STATUSES | {"paused"}:
-                    fallback_payload = _stream_stop_payload(run_store, run_id, run, app_store)
+                    fallback_payload = _stream_stop_payload(
+                        run_store, run_id, run, app_store
+                    )
                     if fallback_payload is not None:
                         yield _sse_payload(fallback_payload)
                     break
@@ -867,6 +1004,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         return {"ok": True}
 
     if settings.enable_legacy_bootstrap_auth:
+
         @app.post("/auth/login", response_model=UserResponse)
         def login(request: LoginRequest):
             user = app_store.find_or_create_user(request.username)
@@ -875,8 +1013,14 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         @app.post("/auth/bootstrap", response_model=AppBootstrapResponse)
         def bootstrap(request: LoginRequest):
             result = app_store.bootstrap_user(request.username)
-            all_chat_ids = [chat["id"] for chats in result["chats_by_project"].values() for chat in chats]
-            active_by_chat = run_store.get_active_runs_for_chat_ids(all_chat_ids, user_id=result["user_id"])
+            all_chat_ids = [
+                chat["id"]
+                for chats in result["chats_by_project"].values()
+                for chat in chats
+            ]
+            active_by_chat = run_store.get_active_runs_for_chat_ids(
+                all_chat_ids, user_id=result["user_id"]
+            )
             return AppBootstrapResponse(
                 user=_serialize_user(app_store.get_user_by_id(result["user_id"])),
                 projects=[
@@ -898,8 +1042,12 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                             title=chat["title"],
                             created_at=_iso(chat["created_at"]),
                             updated_at=_iso(chat["updated_at"]),
-                            active_run_id=getattr(active_by_chat.get(chat["id"]), "id", None),
-                            active_run_status=getattr(active_by_chat.get(chat["id"]), "status", None),
+                            active_run_id=getattr(
+                                active_by_chat.get(chat["id"]), "id", None
+                            ),
+                            active_run_status=getattr(
+                                active_by_chat.get(chat["id"]), "status", None
+                            ),
                         )
                         for chat in chats
                     ]
@@ -916,8 +1064,14 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         result = app_store.bootstrap_app_session(current_user.id)
         if result is None:
             raise HTTPException(status_code=404, detail="User not found.")
-        all_chat_ids = [chat["id"] for chats in result["chats_by_project"].values() for chat in chats]
-        active_by_chat = run_store.get_active_runs_for_chat_ids(all_chat_ids, user_id=current_user.id)
+        all_chat_ids = [
+            chat["id"]
+            for chats in result["chats_by_project"].values()
+            for chat in chats
+        ]
+        active_by_chat = run_store.get_active_runs_for_chat_ids(
+            all_chat_ids, user_id=current_user.id
+        )
         return AppBootstrapResponse(
             user=_serialize_user(result["user"]),
             projects=[
@@ -939,8 +1093,12 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                         title=chat["title"],
                         created_at=_iso(chat["created_at"]),
                         updated_at=_iso(chat["updated_at"]),
-                        active_run_id=getattr(active_by_chat.get(chat["id"]), "id", None),
-                        active_run_status=getattr(active_by_chat.get(chat["id"]), "status", None),
+                        active_run_id=getattr(
+                            active_by_chat.get(chat["id"]), "id", None
+                        ),
+                        active_run_status=getattr(
+                            active_by_chat.get(chat["id"]), "status", None
+                        ),
                     )
                     for chat in chats
                 ]
@@ -950,11 +1108,18 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
 
     @app.get("/projects", response_model=list[ProjectResponse])
     def list_projects(current_user=Depends(_require_current_user)):
-        return [_serialize_project(project) for project in app_store.list_projects_for_user(current_user.id)]
+        return [
+            _serialize_project(project)
+            for project in app_store.list_projects_for_user(current_user.id)
+        ]
 
     @app.post("/projects", response_model=ProjectResponse)
-    def create_project(request: ProjectCreateRequest, current_user=Depends(_require_current_user)):
-        project = app_store.create_project(current_user.id, request.name, description=request.description)
+    def create_project(
+        request: ProjectCreateRequest, current_user=Depends(_require_current_user)
+    ):
+        project = app_store.create_project(
+            current_user.id, request.name, description=request.description
+        )
         return _serialize_project(project)
 
     @app.get("/projects/{project_id}", response_model=ProjectResponse)
@@ -965,9 +1130,18 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         return _serialize_project(project)
 
     @app.patch("/projects/{project_id}", response_model=ProjectResponse)
-    def update_project(project_id: str, request: ProjectUpdateRequest, current_user=Depends(_require_current_user)):
+    def update_project(
+        project_id: str,
+        request: ProjectUpdateRequest,
+        current_user=Depends(_require_current_user),
+    ):
         try:
-            updated_project = app_store.update_project_for_user(project_id, current_user.id, request.name, description=request.description)
+            updated_project = app_store.update_project_for_user(
+                project_id,
+                current_user.id,
+                request.name,
+                description=request.description,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _serialize_project(updated_project)
@@ -982,34 +1156,54 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
 
     @app.get("/projects/{project_id}/chats", response_model=list[ChatSessionResponse])
     def list_chats(project_id: str, current_user=Depends(_require_current_user)):
-        chats = app_store.list_chat_sessions_for_user_project(current_user.id, project_id)
+        chats = app_store.list_chat_sessions_for_user_project(
+            current_user.id, project_id
+        )
         if chats is None:
             raise HTTPException(status_code=404, detail="Project not found.")
         return _chat_responses_for_rows(chats, current_user.id)
 
     @app.post("/projects/{project_id}/chats", response_model=ChatSessionResponse)
-    def create_chat(project_id: str, request: ChatCreateRequest, current_user=Depends(_require_current_user)):
+    def create_chat(
+        project_id: str,
+        request: ChatCreateRequest,
+        current_user=Depends(_require_current_user),
+    ):
         try:
-            chat_session = app_store.create_chat_session_for_user(project_id, current_user.id, title=request.title)
+            chat_session = app_store.create_chat_session_for_user(
+                project_id, current_user.id, title=request.title
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _serialize_chat_session(chat_session)
 
     @app.get("/chats/{chat_session_id}", response_model=ChatSessionResponse)
     def get_chat(chat_session_id: str, current_user=Depends(_require_current_user)):
-        chat_session = app_store.get_chat_session_for_user(chat_session_id, current_user.id)
+        chat_session = app_store.get_chat_session_for_user(
+            chat_session_id, current_user.id
+        )
         if chat_session is None:
             raise HTTPException(status_code=404, detail="Chat session not found.")
-        active_run = run_store.get_active_run_for_chat_for_user(chat_session_id, current_user.id)
+        active_run = run_store.get_active_run_for_chat_for_user(
+            chat_session_id, current_user.id
+        )
         return _serialize_chat_session(chat_session, active_run=active_run)
 
     @app.patch("/chats/{chat_session_id}", response_model=ChatSessionResponse)
-    def update_chat(chat_session_id: str, request: ChatUpdateRequest, current_user=Depends(_require_current_user)):
+    def update_chat(
+        chat_session_id: str,
+        request: ChatUpdateRequest,
+        current_user=Depends(_require_current_user),
+    ):
         try:
-            updated_chat = app_store.update_chat_session_title_for_user(chat_session_id, current_user.id, request.title)
+            updated_chat = app_store.update_chat_session_title_for_user(
+                chat_session_id, current_user.id, request.title
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        active_run = run_store.get_active_run_for_chat_for_user(chat_session_id, current_user.id)
+        active_run = run_store.get_active_run_for_chat_for_user(
+            chat_session_id, current_user.id
+        )
         return _serialize_chat_session(updated_chat, active_run=active_run)
 
     @app.delete("/chats/{chat_session_id}")
@@ -1020,9 +1214,15 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"ok": True}
 
-    @app.get("/chats/{chat_session_id}/messages", response_model=list[ChatMessageResponse])
-    def list_messages(chat_session_id: str, current_user=Depends(_require_current_user)):
-        messages = app_store.list_messages_for_user_chat(current_user.id, chat_session_id)
+    @app.get(
+        "/chats/{chat_session_id}/messages", response_model=list[ChatMessageResponse]
+    )
+    def list_messages(
+        chat_session_id: str, current_user=Depends(_require_current_user)
+    ):
+        messages = app_store.list_messages_for_user_chat(
+            current_user.id, chat_session_id
+        )
         if messages is None:
             raise HTTPException(status_code=404, detail="Chat session not found.")
         return [_serialize_message(message) for message in messages]
@@ -1052,7 +1252,11 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         )
 
     @app.post("/chats/{chat_session_id}/runs", response_model=ChatRunResponse)
-    def create_run(chat_session_id: str, request: RunCreateRequest, current_user=Depends(_require_current_user)):
+    def create_run(
+        chat_session_id: str,
+        request: RunCreateRequest,
+        current_user=Depends(_require_current_user),
+    ):
         run = _create_or_reuse_run(chat_session_id, request, current_user.id)
         return _serialize_run(run, include_normalized_inputs=True)
 
@@ -1077,7 +1281,9 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         return [_serialize_event_row(event) for event in events]
 
     @app.get("/runs/{run_id}/events/stream")
-    def stream_run_events(run_id: str, after_seq: int = 0, current_user=Depends(_require_current_user)):
+    def stream_run_events(
+        run_id: str, after_seq: int = 0, current_user=Depends(_require_current_user)
+    ):
         run = run_store.get_run_for_user(run_id, current_user.id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found.")
@@ -1093,16 +1299,28 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
 
     @app.post("/runs/{run_id}/pause", response_model=ChatRunResponse)
     def pause_run(run_id: str, current_user=Depends(_require_current_user)):
-        return _serialize_run(_pause_run_explicitly(run_id, current_user.id), include_normalized_inputs=True)
+        return _serialize_run(
+            _pause_run_explicitly(run_id, current_user.id),
+            include_normalized_inputs=True,
+        )
 
     @app.post("/runs/{run_id}/resume", response_model=ChatRunResponse)
-    def resume_run(run_id: str, request: RunResumeRequest, current_user=Depends(_require_current_user)):
-        return _serialize_run(_resume_run_explicitly(run_id, request, current_user.id), include_normalized_inputs=True)
+    def resume_run(
+        run_id: str,
+        request: RunResumeRequest,
+        current_user=Depends(_require_current_user),
+    ):
+        return _serialize_run(
+            _resume_run_explicitly(run_id, request, current_user.id),
+            include_normalized_inputs=True,
+        )
 
     @app.post("/runs/{run_id}/fail", response_model=ChatRunResponse)
     def fail_run(run_id: str, _admin=Depends(_require_admin)):
         try:
-            run = run_store.mark_failed(run_id, error_message="Run marked failed by operator.")
+            run = run_store.mark_failed(
+                run_id, error_message="Run marked failed by operator."
+            )
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _serialize_run(run, include_normalized_inputs=True)
@@ -1118,13 +1336,23 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         return _serialize_run(run, include_normalized_inputs=True)
 
     @app.post("/chats/{chat_session_id}/messages", response_model=SendMessageResponse)
-    def send_message(chat_session_id: str, request: MessageCreateRequest, current_user=Depends(_require_current_user)):
+    def send_message(
+        chat_session_id: str,
+        request: MessageCreateRequest,
+        current_user=Depends(_require_current_user),
+    ):
         run = _create_or_reuse_run(chat_session_id, request, current_user.id)
-        terminal_run = _wait_for_terminal_run(run_store, run.id, timeout_seconds=settings.chat_run_wait_timeout_seconds)
+        terminal_run = _wait_for_terminal_run(
+            run_store, run.id, timeout_seconds=settings.chat_run_wait_timeout_seconds
+        )
         return _run_result_or_error(terminal_run)
 
     @app.post("/chats/{chat_session_id}/messages/stream")
-    def send_message_stream(chat_session_id: str, request: MessageCreateRequest, current_user=Depends(_require_current_user)):
+    def send_message_stream(
+        chat_session_id: str,
+        request: MessageCreateRequest,
+        current_user=Depends(_require_current_user),
+    ):
         run = _create_or_reuse_run(chat_session_id, request, current_user.id)
         return _stream_run(run.id, after_seq=0)
 
@@ -1134,23 +1362,24 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
 
     def _build_settings_response(db_row) -> AppSettingsResponse:
         """Build AppSettingsResponse from a DB row (or None) merged with SETTINGS defaults."""
-        effective = _apply_db_overrides(SETTINGS, db_row) if db_row is not None else SETTINGS
+        effective = (
+            _apply_db_overrides(SETTINGS, db_row) if db_row is not None else SETTINGS
+        )
 
         def _comp(name: str) -> ComponentSettingsResponse:
             role = getattr(effective, name)
             # is_default is True when none of the three DB columns are set for this component
-            is_default = (
-                db_row is None
-                or (
-                    getattr(db_row, f"{name}_provider", None) is None
-                    and getattr(db_row, f"{name}_model", None) is None
-                    and getattr(db_row, f"{name}_reasoning_effort", None) is None
-                )
+            is_default = db_row is None or (
+                getattr(db_row, f"{name}_provider", None) is None
+                and getattr(db_row, f"{name}_model", None) is None
+                and getattr(db_row, f"{name}_reasoning_effort", None) is None
             )
             return ComponentSettingsResponse(
                 provider=role.provider,
                 model=role.model,
-                reasoning_effort=role.reasoning_effort if role.reasoning_effort is not None else "",
+                reasoning_effort=role.reasoning_effort
+                if role.reasoning_effort is not None
+                else "",
                 is_default=is_default,
             )
 
@@ -1180,7 +1409,9 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         return _build_settings_response(row)
 
     @app.put("/admin/settings", response_model=AppSettingsResponse)
-    def put_admin_settings(patch: AppSettingsPatch, current_user=Depends(_require_admin)):
+    def put_admin_settings(
+        patch: AppSettingsPatch, current_user=Depends(_require_admin)
+    ):
         from persistence.database import get_session_factory
         from persistence.postgres_models import AppSettingsModel
 
@@ -1192,7 +1423,9 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                 session.add(row)
 
             for comp_name in _SETTINGS_COMPONENT_NAMES:
-                comp_patch: ComponentSettingsPatch | None = getattr(patch, comp_name, None)
+                comp_patch: ComponentSettingsPatch | None = getattr(
+                    patch, comp_name, None
+                )
                 if comp_patch is None:
                     continue
                 if comp_patch.provider is not None:
@@ -1200,10 +1433,18 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
                 if comp_patch.model is not None:
                     setattr(row, f"{comp_name}_model", comp_patch.model)
                 if comp_patch.reasoning_effort is not None:
-                    setattr(row, f"{comp_name}_reasoning_effort", comp_patch.reasoning_effort)
+                    setattr(
+                        row,
+                        f"{comp_name}_reasoning_effort",
+                        comp_patch.reasoning_effort,
+                    )
 
-            _apply_scalar_settings_patch(row, patch.retrieval, _RETRIEVAL_SETTINGS_FIELDS)
-            _apply_scalar_settings_patch(row, patch.history_context, _HISTORY_CONTEXT_FIELDS)
+            _apply_scalar_settings_patch(
+                row, patch.retrieval, _RETRIEVAL_SETTINGS_FIELDS
+            )
+            _apply_scalar_settings_patch(
+                row, patch.history_context, _HISTORY_CONTEXT_FIELDS
+            )
             _validate_retrieval_settings(_apply_db_overrides(SETTINGS, row))
 
             row.updated_at = datetime.now(timezone.utc)
@@ -1217,14 +1458,14 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
 
 
 def _can_create_default_app() -> bool:
-    if FastAPI is None:
-        return False
     settings = load_settings()
     if settings.enable_legacy_bootstrap_auth:
         return True
     if not settings.auth0_enabled:
         return False
-    return _has_complete_auth0_config(settings) and bool(tuple(settings.frontend_origins or ()))
+    return _has_complete_auth0_config(settings) and bool(
+        tuple(settings.frontend_origins or ())
+    )
 
 
 # The development entrypoint uses `api:create_app --factory`, so avoid constructing

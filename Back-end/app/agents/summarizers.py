@@ -1,13 +1,16 @@
 from orchestration.history_preparer import PreparedHistory, prepare_history
 from providers.openAI_caller import OpenAIWorker
-from prompting.prompts import CONTEXT_SUMMARIZER_SYSTEM_PROMPT, HISTORY_SUMMARIZER_SYSTEM_PROMPT
+from prompting.prompts import (
+    CONTEXT_SUMMARIZER_SYSTEM_PROMPT,
+    HISTORY_SUMMARIZER_SYSTEM_PROMPT,
+)
 
 
 class HistorySummarizer:
     def __init__(
         self,
         worker=None,
-        model="gpt-4.1-mini",
+        model=None,
         temperature=0.1,
         max_recent_turns=4,
         summarize_turn_threshold=16,
@@ -28,8 +31,15 @@ class HistorySummarizer:
         if not prepared.recent_turns and not prepared.summary_text:
             return prepared, False
 
-        older_turns = chat_history[:-self.max_recent_turns] if len(chat_history) > self.max_recent_turns else []
-        total_chars = sum(len((item[1] if isinstance(item, tuple) and len(item) == 2 else "")) for item in chat_history)
+        older_turns = (
+            chat_history[: -self.max_recent_turns]
+            if len(chat_history) > self.max_recent_turns
+            else []
+        )
+        total_chars = sum(
+            len((item[1] if isinstance(item, tuple) and len(item) == 2 else ""))
+            for item in chat_history
+        )
         should_summarize = bool(
             older_turns
             and (
@@ -64,7 +74,7 @@ class HistorySummarizer:
 
         return (
             PreparedHistory(
-                recent_turns=chat_history[-self.max_recent_turns:],
+                recent_turns=chat_history[-self.max_recent_turns :],
                 summary_text=summary_text,
             ),
             True,
@@ -72,7 +82,7 @@ class HistorySummarizer:
 
 
 class ContextSummarizer:
-    def __init__(self, worker=None, model="gpt-4.1-mini", summarize_char_threshold=2200):
+    def __init__(self, worker=None, model=None, summarize_char_threshold=2200):
         self.worker = worker or OpenAIWorker(model=model)
         self.summarize_char_threshold = summarize_char_threshold
 

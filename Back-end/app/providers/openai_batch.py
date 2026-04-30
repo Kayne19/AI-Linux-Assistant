@@ -15,8 +15,9 @@ OpenAICaller._create_response_with_retries.
 """
 
 import logging
-import re
 import time
+
+from providers._retry import _extract_retry_delay_seconds, _is_rate_limit_error
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,7 +34,9 @@ except ImportError:  # pragma: no cover
 # ---------------------------------------------------------------------------
 # Terminal status set
 # ---------------------------------------------------------------------------
-TERMINAL_STATUSES: frozenset = frozenset({"completed", "failed", "expired", "cancelled"})
+TERMINAL_STATUSES: frozenset = frozenset(
+    {"completed", "failed", "expired", "cancelled"}
+)
 
 
 def is_terminal(status: str) -> bool:
@@ -44,6 +47,7 @@ def is_terminal(status: str) -> bool:
 # ---------------------------------------------------------------------------
 # Public data classes
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class BatchSubmission:
@@ -61,48 +65,6 @@ class BatchStatus:
     error_file_id: str | None
     request_counts: dict  # {"total": int, "completed": int, "failed": int}
     completed_at: int | None
-
-
-# ---------------------------------------------------------------------------
-# Internal retry helpers
-# ---------------------------------------------------------------------------
-
-def _is_rate_limit_error(exc: Exception) -> bool:
-    """Return True if *exc* looks like a 429 / rate-limit error.
-
-    Mirrors OpenAICaller._is_rate_limit_error exactly.
-    """
-    status_code = getattr(exc, "status_code", None)
-    if status_code == 429:
-        return True
-
-    response = getattr(exc, "response", None)
-    if getattr(response, "status_code", None) == 429:
-        return True
-
-    code = getattr(exc, "code", None)
-    if code == "rate_limit_exceeded":
-        return True
-
-    message = str(exc).lower()
-    return "rate limit" in message or "429" in message
-
-
-def _extract_retry_delay_seconds(exc: Exception, attempt_number: int) -> float:
-    """Compute backoff delay from error message or exponential formula.
-
-    Mirrors OpenAICaller._extract_retry_delay_seconds exactly.
-    """
-    message = str(exc)
-    match = re.search(r"try again in\s+(\d+(?:\.\d+)?)ms", message, re.IGNORECASE)
-    if match:
-        return max(float(match.group(1)) / 1000.0, 1.0)
-
-    match = re.search(r"try again in\s+(\d+(?:\.\d+)?)s", message, re.IGNORECASE)
-    if match:
-        return max(float(match.group(1)), 1.0)
-
-    return min(1.0 * (2 ** max(0, attempt_number - 1)), 80.0)
 
 
 def _with_retries(fn, max_retries: int = 12):
@@ -140,6 +102,7 @@ def _with_retries(fn, max_retries: int = 12):
 # ---------------------------------------------------------------------------
 # Public client
 # ---------------------------------------------------------------------------
+
 
 class OpenAIBatchClient:
     """Thin transport wrapper around the four OpenAI Batch API operations.
@@ -204,6 +167,7 @@ class OpenAIBatchClient:
         Returns:
             A :class:`BatchSubmission` with the batch ID and initial status.
         """
+
         def _do_submit():
             resp = self._client.batches.create(
                 input_file_id=input_file_id,
@@ -235,6 +199,7 @@ class OpenAIBatchClient:
         Returns:
             A :class:`BatchStatus` snapshot.
         """
+
         def _do_retrieve():
             resp = self._client.batches.retrieve(batch_id)
 
@@ -297,5 +262,7 @@ class OpenAIBatchClient:
         raw = _with_retries(_fetch_and_drain)
 
         dest_path.write_bytes(raw)
-        logger.debug("Downloaded file %s -> %s (%d bytes)", file_id, dest_path, len(raw))
+        logger.debug(
+            "Downloaded file %s -> %s (%d bytes)", file_id, dest_path, len(raw)
+        )
         return dest_path

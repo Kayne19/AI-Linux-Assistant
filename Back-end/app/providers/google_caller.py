@@ -12,13 +12,16 @@ from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 try:
     from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - optional dependency in some test/runtime environments
+except (
+    ImportError
+):  # pragma: no cover - optional dependency in some test/runtime environments
+
     def load_dotenv():
         return False
 
 
 class GoogleCaller:
-    def __init__(self, model="gemini-2.5-flash"):
+    def __init__(self, model):
         load_dotenv()
         self.model = model
         self.client = self._build_client()
@@ -51,7 +54,9 @@ class GoogleCaller:
                 role, content = item
             elif isinstance(item, dict):
                 role = item.get("role")
-                content = item.get("content") or item.get("parts", [{}])[0].get("text", "")
+                content = item.get("content") or item.get("parts", [{}])[0].get(
+                    "text", ""
+                )
             else:
                 continue
 
@@ -123,7 +128,9 @@ class GoogleCaller:
         candidates = self._get_value(response, "candidates", default=[]) or []
         if candidates:
             candidate = candidates[0]
-        content = self._get_value(candidate, "content") if candidate is not None else None
+        content = (
+            self._get_value(candidate, "content") if candidate is not None else None
+        )
         return list(self._get_value(content, "parts", default=[]) or [])
 
     def _extract_tool_calls(self, response):
@@ -159,9 +166,14 @@ class GoogleCaller:
                 parts.append(
                     {
                         "function_call": {
-                            "name": self._get_value(function_call, "name", default="unknown_tool"),
+                            "name": self._get_value(
+                                function_call, "name", default="unknown_tool"
+                            ),
                             "args": self._parse_tool_arguments(
-                                self._get_value(function_call, "args", "arguments", default={}) or {}
+                                self._get_value(
+                                    function_call, "args", "arguments", default={}
+                                )
+                                or {}
                             ),
                             "id": self._get_value(function_call, "id", "call_id"),
                         }
@@ -178,7 +190,10 @@ class GoogleCaller:
             session_contents.append(model_content)
         return ProviderStepResult(
             output_text=self._extract_text(response),
-            tool_calls=[self._normalize_tool_call(tool_call) for tool_call in self._extract_tool_calls(response)],
+            tool_calls=[
+                self._normalize_tool_call(tool_call)
+                for tool_call in self._extract_tool_calls(response)
+            ],
             session_state={"contents": session_contents},
         )
 
@@ -194,7 +209,9 @@ class GoogleCaller:
 
     def _run_tool_handler(self, tool_handler, tool_name, tool_args):
         if tool_handler is None:
-            raise ValueError(f"Google worker received tool call '{tool_name}' without a tool handler.")
+            raise ValueError(
+                f"Google worker received tool call '{tool_name}' without a tool handler."
+            )
         return tool_handler(tool_name, tool_args)
 
     def _tool_result_contents_from_calls(self, tool_calls, tool_handler):
@@ -243,7 +260,9 @@ class GoogleCaller:
             )
         return contents
 
-    def _emit_structured_output_warning(self, event_listener, output_schema, reason, used_prompt_fallback):
+    def _emit_structured_output_warning(
+        self, event_listener, output_schema, reason, used_prompt_fallback
+    ):
         if event_listener is None:
             return
         event_listener(
@@ -261,7 +280,9 @@ class GoogleCaller:
     def _emit_web_search_unsupported(self, event_listener, round_number):
         if event_listener is None:
             return
-        event_listener("web_search_unsupported", {"provider": "google", "round": round_number})
+        event_listener(
+            "web_search_unsupported", {"provider": "google", "round": round_number}
+        )
 
     def _request_content(
         self,
@@ -282,7 +303,9 @@ class GoogleCaller:
         except Exception as exc:
             if not structured_output:
                 raise
-            self._emit_structured_output_warning(event_listener, output_schema, str(exc), used_prompt_fallback=True)
+            self._emit_structured_output_warning(
+                event_listener, output_schema, str(exc), used_prompt_fallback=True
+            )
             fallback_config = dict(config)
             fallback_config.pop("response_mime_type", None)
             fallback_config.pop("response_schema", None)
@@ -318,8 +341,12 @@ class GoogleCaller:
         round_number=0,
     ):
         del cache_config
-        contents = self._translate_history(history or []) + [{"role": "user", "parts": [{"text": user_message}]}]
-        config = self._build_config(system_prompt, tools or [], temperature, max_output_tokens)
+        contents = self._translate_history(history or []) + [
+            {"role": "user", "parts": [{"text": user_message}]}
+        ]
+        config = self._build_config(
+            system_prompt, tools or [], temperature, max_output_tokens
+        )
 
         invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
@@ -353,7 +380,9 @@ class GoogleCaller:
         session_state = session_state or {}
         contents = list(session_state.get("contents") or [])
         contents.extend(self._tool_result_contents_from_results(tool_results))
-        config = self._build_config(system_prompt, tools or [], temperature, max_output_tokens)
+        config = self._build_config(
+            system_prompt, tools or [], temperature, max_output_tokens
+        )
 
         invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
@@ -388,7 +417,9 @@ class GoogleCaller:
     ):
         del cache_config
         output_schema = require_output_schema(structured_output, output_schema)
-        contents = self._translate_history(history or []) + [{"role": "user", "parts": [{"text": user_message}]}]
+        contents = self._translate_history(history or []) + [
+            {"role": "user", "parts": [{"text": user_message}]}
+        ]
         config = self._build_config(
             system_prompt,
             tools or [],
@@ -427,7 +458,10 @@ class GoogleCaller:
                     {
                         "round": tool_rounds,
                         "count": len(tool_calls),
-                        "names": [self._get_value(tool_call, "name", default="unknown_tool") for tool_call in tool_calls],
+                        "names": [
+                            self._get_value(tool_call, "name", default="unknown_tool")
+                            for tool_call in tool_calls
+                        ],
                     },
                 )
 
@@ -435,7 +469,9 @@ class GoogleCaller:
             model_content = self._response_to_model_content(response)
             if model_content is not None:
                 contents.append(model_content)
-            contents.extend(self._tool_result_contents_from_calls(tool_calls, tool_handler))
+            contents.extend(
+                self._tool_result_contents_from_calls(tool_calls, tool_handler)
+            )
             if event_listener is not None:
                 event_listener("tool_results_submitted", {"round": tool_rounds})
 
@@ -496,7 +532,9 @@ class GoogleCaller:
             )
 
         del cache_config
-        contents = self._translate_history(history or []) + [{"role": "user", "parts": [{"text": user_message}]}]
+        contents = self._translate_history(history or []) + [
+            {"role": "user", "parts": [{"text": user_message}]}
+        ]
         config = self._build_config(system_prompt, [], temperature, max_output_tokens)
 
         invoke_cancel_check(cancel_check, "before_model_call")

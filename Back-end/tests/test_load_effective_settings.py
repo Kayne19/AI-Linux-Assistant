@@ -4,8 +4,12 @@ These tests use a FakeRow object to simulate the AppSettingsModel ORM row
 without touching a real database.
 """
 
-import pytest
-from config.settings import SETTINGS, AppSettings, RoleModelSettings, _apply_db_overrides, load_effective_settings
+from config.settings import (
+    SETTINGS,
+    RoleModelSettings,
+    _apply_db_overrides,
+    load_effective_settings,
+)
 
 
 class FakeRow:
@@ -14,11 +18,24 @@ class FakeRow:
     def __init__(self, **kwargs):
         # All 51 component columns default to None (DB NULL = use default)
         components = [
-            "classifier", "contextualizer", "responder",
-            "magi_eager", "magi_skeptic", "magi_historian", "magi_arbiter",
-            "magi_lite_eager", "magi_lite_skeptic", "magi_lite_historian", "magi_lite_arbiter",
-            "history_summarizer", "context_summarizer", "memory_extractor",
-            "registry_updater", "ingest_enricher", "chat_namer",
+            "classifier",
+            "contextualizer",
+            "responder",
+            "magi_eager",
+            "magi_skeptic",
+            "magi_historian",
+            "magi_arbiter",
+            "magi_lite_eager",
+            "magi_lite_skeptic",
+            "magi_lite_historian",
+            "magi_lite_arbiter",
+            "history_summarizer",
+            "context_summarizer",
+            "memory_extractor",
+            "registry_updater",
+            "ingest_enricher",
+            "ingest_identity_normalizer",
+            "chat_namer",
         ]
         for comp in components:
             setattr(self, f"{comp}_provider", None)
@@ -149,11 +166,23 @@ def test_none_row_returns_settings(monkeypatch):
 def test_full_override_all_components(monkeypatch):
     """A row with all components overridden should fully replace defaults."""
     components = [
-        "classifier", "contextualizer", "responder",
-        "magi_eager", "magi_skeptic", "magi_historian", "magi_arbiter",
-        "magi_lite_eager", "magi_lite_skeptic", "magi_lite_historian", "magi_lite_arbiter",
-        "history_summarizer", "context_summarizer", "memory_extractor",
-        "registry_updater", "ingest_enricher", "chat_namer",
+        "classifier",
+        "contextualizer",
+        "responder",
+        "magi_eager",
+        "magi_skeptic",
+        "magi_historian",
+        "magi_arbiter",
+        "magi_lite_eager",
+        "magi_lite_skeptic",
+        "magi_lite_historian",
+        "magi_lite_arbiter",
+        "history_summarizer",
+        "context_summarizer",
+        "memory_extractor",
+        "registry_updater",
+        "ingest_enricher",
+        "chat_namer",
     ]
     overrides = {}
     for comp in components:
@@ -172,4 +201,6 @@ def test_full_override_all_components(monkeypatch):
         role: RoleModelSettings = getattr(result, comp)
         assert role.provider == "local", f"{comp}.provider should be 'local'"
         assert role.model == "qwen2.5:7b", f"{comp}.model should be 'qwen2.5:7b'"
-        assert role.reasoning_effort == "low", f"{comp}.reasoning_effort should be 'low'"
+        assert role.reasoning_effort == "low", (
+            f"{comp}.reasoning_effort should be 'low'"
+        )

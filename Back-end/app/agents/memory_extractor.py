@@ -1,7 +1,10 @@
 import json
+import logging
 import re
 
 from prompting.prompts import MEMORY_EXTRACTOR_SYSTEM_PROMPT
+
+logger = logging.getLogger(__name__)
 
 
 def _object_schema(title, properties, required):
@@ -33,7 +36,14 @@ MEMORY_FACT_SCHEMA = _object_schema(
         "confidence": MEMORY_CONFIDENCE_SCHEMA,
         "evidence_quote": {"type": "string"},
     },
-    ["fact_key", "fact_value", "source_type", "source_ref", "confidence", "evidence_quote"],
+    [
+        "fact_key",
+        "fact_value",
+        "source_type",
+        "source_ref",
+        "confidence",
+        "evidence_quote",
+    ],
 )
 
 MEMORY_ISSUE_SCHEMA = _object_schema(
@@ -48,7 +58,16 @@ MEMORY_ISSUE_SCHEMA = _object_schema(
         "confidence": MEMORY_CONFIDENCE_SCHEMA,
         "evidence_quote": {"type": "string"},
     },
-    ["title", "category", "summary", "status", "source_type", "source_ref", "confidence", "evidence_quote"],
+    [
+        "title",
+        "category",
+        "summary",
+        "status",
+        "source_type",
+        "source_ref",
+        "confidence",
+        "evidence_quote",
+    ],
 )
 
 MEMORY_ATTEMPT_SCHEMA = _object_schema(
@@ -57,14 +76,27 @@ MEMORY_ATTEMPT_SCHEMA = _object_schema(
         "action": {"type": "string"},
         "command": {"type": "string"},
         "outcome": {"type": "string"},
-        "status": {"type": "string", "enum": ["attempted", "worked", "failed", "unknown"]},
+        "status": {
+            "type": "string",
+            "enum": ["attempted", "worked", "failed", "unknown"],
+        },
         "issue_title": {"type": "string"},
         "source_type": MEMORY_RECORD_SOURCE_TYPE_SCHEMA,
         "source_ref": {"type": "string"},
         "confidence": MEMORY_CONFIDENCE_SCHEMA,
         "evidence_quote": {"type": "string"},
     },
-    ["action", "command", "outcome", "status", "issue_title", "source_type", "source_ref", "confidence", "evidence_quote"],
+    [
+        "action",
+        "command",
+        "outcome",
+        "status",
+        "issue_title",
+        "source_type",
+        "source_ref",
+        "confidence",
+        "evidence_quote",
+    ],
 )
 
 MEMORY_CONSTRAINT_SCHEMA = _object_schema(
@@ -76,7 +108,13 @@ MEMORY_CONSTRAINT_SCHEMA = _object_schema(
         "source_ref": {"type": "string"},
         "evidence_quote": {"type": "string"},
     },
-    ["constraint_key", "constraint_value", "source_type", "source_ref", "evidence_quote"],
+    [
+        "constraint_key",
+        "constraint_value",
+        "source_type",
+        "source_ref",
+        "evidence_quote",
+    ],
 )
 
 MEMORY_PREFERENCE_SCHEMA = _object_schema(
@@ -88,7 +126,13 @@ MEMORY_PREFERENCE_SCHEMA = _object_schema(
         "source_ref": {"type": "string"},
         "evidence_quote": {"type": "string"},
     },
-    ["preference_key", "preference_value", "source_type", "source_ref", "evidence_quote"],
+    [
+        "preference_key",
+        "preference_value",
+        "source_type",
+        "source_ref",
+        "evidence_quote",
+    ],
 )
 
 MEMORY_EXTRACTOR_OUTPUT_SCHEMA = _object_schema(
@@ -197,6 +241,7 @@ class MemoryExtractor:
                 output_schema=MEMORY_EXTRACTOR_OUTPUT_SCHEMA,
             )
         except Exception:
+            logger.error("MemoryExtractor LLM call failed", exc_info=True)
             return self.empty_result()
 
         parsed = _extract_json_object(response)
@@ -219,9 +264,15 @@ class MemoryExtractor:
         result["facts"] = self._normalize_facts(parsed.get("facts", []))
         result["issues"] = self._normalize_issues(parsed.get("issues", []))
         result["attempts"] = self._normalize_attempts(parsed.get("attempts", []))
-        result["constraints"] = self._normalize_constraints(parsed.get("constraints", []))
-        result["preferences"] = self._normalize_preferences(parsed.get("preferences", []))
-        result["session_summary"] = _truncate(parsed.get("session_summary", ""), limit=500)
+        result["constraints"] = self._normalize_constraints(
+            parsed.get("constraints", [])
+        )
+        result["preferences"] = self._normalize_preferences(
+            parsed.get("preferences", [])
+        )
+        result["session_summary"] = _truncate(
+            parsed.get("session_summary", ""), limit=500
+        )
         return result
 
     def _normalize_facts(self, items):
@@ -238,13 +289,18 @@ class MemoryExtractor:
                 continue
             seen.add(fact_key)
             confidence = self._normalize_confidence(item.get("confidence"))
-            source_type = _normalize_source_type(item.get("source_type"), default="user")
+            source_type = _normalize_source_type(
+                item.get("source_type"), default="user"
+            )
             normalized.append(
                 {
                     "fact_key": fact_key,
                     "fact_value": fact_value,
                     "source_type": source_type,
-                    "source_ref": _truncate(item.get("source_ref", _default_source_ref(source_type)), limit=80)
+                    "source_ref": _truncate(
+                        item.get("source_ref", _default_source_ref(source_type)),
+                        limit=80,
+                    )
                     or _default_source_ref(source_type),
                     "confidence": confidence,
                     "verified": False,
@@ -268,7 +324,9 @@ class MemoryExtractor:
             status = (item.get("status") or "unknown").strip().lower()
             if status not in {"open", "resolved", "unknown"}:
                 status = "unknown"
-            source_type = _normalize_source_type(item.get("source_type"), default="user")
+            source_type = _normalize_source_type(
+                item.get("source_type"), default="user"
+            )
             normalized.append(
                 {
                     "title": title,
@@ -276,7 +334,10 @@ class MemoryExtractor:
                     "summary": _truncate(item.get("summary", ""), limit=260),
                     "status": status,
                     "source_type": source_type,
-                    "source_ref": _truncate(item.get("source_ref", _default_source_ref(source_type)), limit=80)
+                    "source_ref": _truncate(
+                        item.get("source_ref", _default_source_ref(source_type)),
+                        limit=80,
+                    )
                     or _default_source_ref(source_type),
                     "confidence": self._normalize_confidence(item.get("confidence")),
                 }
@@ -301,7 +362,9 @@ class MemoryExtractor:
             status = (item.get("status") or "unknown").strip().lower()
             if status not in {"attempted", "worked", "failed", "unknown"}:
                 status = "unknown"
-            source_type = _normalize_source_type(item.get("source_type"), default="user")
+            source_type = _normalize_source_type(
+                item.get("source_type"), default="user"
+            )
             normalized.append(
                 {
                     "action": action,
@@ -310,7 +373,10 @@ class MemoryExtractor:
                     "status": status,
                     "issue_title": _truncate(item.get("issue_title", ""), limit=120),
                     "source_type": source_type,
-                    "source_ref": _truncate(item.get("source_ref", _default_source_ref(source_type)), limit=80)
+                    "source_ref": _truncate(
+                        item.get("source_ref", _default_source_ref(source_type)),
+                        limit=80,
+                    )
                     or _default_source_ref(source_type),
                     "confidence": self._normalize_confidence(item.get("confidence")),
                 }
@@ -331,13 +397,18 @@ class MemoryExtractor:
             if key in seen:
                 continue
             seen.add(key)
-            source_type = _normalize_source_type(item.get("source_type"), default="user")
+            source_type = _normalize_source_type(
+                item.get("source_type"), default="user"
+            )
             normalized.append(
                 {
                     "constraint_key": constraint_key,
                     "constraint_value": constraint_value,
                     "source_type": source_type,
-                    "source_ref": _truncate(item.get("source_ref", _default_source_ref(source_type)), limit=80)
+                    "source_ref": _truncate(
+                        item.get("source_ref", _default_source_ref(source_type)),
+                        limit=80,
+                    )
                     or _default_source_ref(source_type),
                     "confidence": self._normalize_confidence(item.get("confidence")),
                 }
@@ -358,13 +429,18 @@ class MemoryExtractor:
             if key in seen:
                 continue
             seen.add(key)
-            source_type = _normalize_source_type(item.get("source_type"), default="user")
+            source_type = _normalize_source_type(
+                item.get("source_type"), default="user"
+            )
             normalized.append(
                 {
                     "preference_key": preference_key,
                     "preference_value": preference_value,
                     "source_type": source_type,
-                    "source_ref": _truncate(item.get("source_ref", _default_source_ref(source_type)), limit=80)
+                    "source_ref": _truncate(
+                        item.get("source_ref", _default_source_ref(source_type)),
+                        limit=80,
+                    )
                     or _default_source_ref(source_type),
                     "confidence": self._normalize_confidence(item.get("confidence")),
                 }

@@ -1,6 +1,10 @@
 from dataclasses import replace
 
-from retrieval.config import LEGACY_EMBED_MODEL, LEGACY_EMBED_PROVIDER, load_retrieval_config
+from retrieval.config import (
+    LEGACY_EMBED_MODEL,
+    LEGACY_EMBED_PROVIDER,
+    load_retrieval_config,
+)
 from retrieval.factory import build_runtime_components
 from retrieval.search_pipeline import RetrievalSearchPipeline
 from utils.debug_utils import debug_print
@@ -29,7 +33,9 @@ class VectorDB:
         if table_name is not None:
             resolved_config = replace(resolved_config, table_name=table_name)
         if index_metadata_suffix is not None:
-            resolved_config = replace(resolved_config, index_metadata_suffix=index_metadata_suffix)
+            resolved_config = replace(
+                resolved_config, index_metadata_suffix=index_metadata_suffix
+            )
         if runtime_components is None:
             components = build_runtime_components(
                 config=resolved_config,
@@ -90,16 +96,22 @@ class VectorDB:
             source_profile_sample=self.config.source_profile_sample,
         )
 
-    def _reconfigure_runtime(self, *, db_path=None, table_name=None, index_metadata_suffix=None):
+    def _reconfigure_runtime(
+        self, *, db_path=None, table_name=None, index_metadata_suffix=None
+    ):
         if not self._runtime_config_mutable:
-            raise AttributeError("This VectorDB instance uses shared runtime components and cannot be reconfigured.")
+            raise AttributeError(
+                "This VectorDB instance uses shared runtime components and cannot be reconfigured."
+            )
         next_config = self.config
         if db_path is not None:
             next_config = replace(next_config, db_path=db_path)
         if table_name is not None:
             next_config = replace(next_config, table_name=table_name)
         if index_metadata_suffix is not None:
-            next_config = replace(next_config, index_metadata_suffix=index_metadata_suffix)
+            next_config = replace(
+                next_config, index_metadata_suffix=index_metadata_suffix
+            )
         self._apply_runtime_components(
             build_runtime_components(
                 config=next_config,
@@ -117,12 +129,6 @@ class VectorDB:
 
     def _write_index_metadata(self):
         self._metadata_store.write(self.embedding_provider)
-
-    def _embedding_metadata_matches_legacy_local_index(self):
-        return (
-            self.embedding_provider.provider_name == self.LEGACY_EMBED_PROVIDER
-            and self.embedding_provider.model_name == self.LEGACY_EMBED_MODEL
-        )
 
     def _ensure_embedding_compatibility(self, require_metadata=False):
         self._metadata_store.ensure_embedding_compatibility(

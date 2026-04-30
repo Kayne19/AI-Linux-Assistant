@@ -12,13 +12,16 @@ from providers.step_protocol import ProviderStepResult, ProviderToolCall
 
 try:
     from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - optional dependency in some test/runtime environments
+except (
+    ImportError
+):  # pragma: no cover - optional dependency in some test/runtime environments
+
     def load_dotenv():
         return False
 
 
 class AnthropicCaller:
-    def __init__(self, model="claude-sonnet-4-6"):
+    def __init__(self, model):
         load_dotenv()
         self.API_KEY = os.getenv("ANTHROPIC_API_KEY")
         self.model = model
@@ -28,7 +31,9 @@ class AnthropicCaller:
         try:
             anthropic_module = importlib.import_module("anthropic")
         except ImportError as exc:
-            raise RuntimeError("Anthropic SDK is not installed. Install the 'anthropic' package to use this provider.") from exc
+            raise RuntimeError(
+                "Anthropic SDK is not installed. Install the 'anthropic' package to use this provider."
+            ) from exc
         return anthropic_module.Anthropic(api_key=self.API_KEY)
 
     def _translate_history(self, history):
@@ -38,7 +43,9 @@ class AnthropicCaller:
                 role, content = item
             elif isinstance(item, dict):
                 role = item.get("role")
-                content = item.get("content") or item.get("parts", [{}])[0].get("text", "")
+                content = item.get("content") or item.get("parts", [{}])[0].get(
+                    "text", ""
+                )
             else:
                 continue
             if role == "model":
@@ -65,7 +72,9 @@ class AnthropicCaller:
     def _maybe_append_native_web_search(self, translated_tools, enable_web_search):
         if not enable_web_search:
             return translated_tools
-        return translated_tools + [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+        return translated_tools + [
+            {"type": "web_search_20250305", "name": "web_search", "max_uses": 3}
+        ]
 
     def _extract_tool_calls(self, response):
         tool_calls = []
@@ -90,7 +99,10 @@ class AnthropicCaller:
     def _step_result_from_response(self, response, messages):
         return ProviderStepResult(
             output_text=self._extract_text(response),
-            tool_calls=[self._normalize_tool_call(tool_call) for tool_call in self._extract_tool_calls(response)],
+            tool_calls=[
+                self._normalize_tool_call(tool_call)
+                for tool_call in self._extract_tool_calls(response)
+            ],
             session_state={
                 "messages": list(messages or []),
                 "response": response,
@@ -111,7 +123,9 @@ class AnthropicCaller:
 
     def _run_tool_handler(self, tool_handler, tool_name, tool_args):
         if tool_handler is None:
-            raise ValueError(f"Anthropic worker received tool call '{tool_name}' without a tool handler.")
+            raise ValueError(
+                f"Anthropic worker received tool call '{tool_name}' without a tool handler."
+            )
         return tool_handler(tool_name, tool_args)
 
     def _tool_result_message(self, tool_calls, tool_handler):
@@ -175,7 +189,9 @@ class AnthropicCaller:
             }
         return request_kwargs
 
-    def _emit_structured_output_warning(self, event_listener, output_schema, reason, used_prompt_fallback):
+    def _emit_structured_output_warning(
+        self, event_listener, output_schema, reason, used_prompt_fallback
+    ):
         if event_listener is None:
             return
         event_listener(
@@ -196,7 +212,11 @@ class AnthropicCaller:
 
         usage = getattr(response, "usage", None)
         server_tool_use = getattr(usage, "server_tool_use", None)
-        request_count = getattr(server_tool_use, "web_search_requests", 0) if server_tool_use is not None else 0
+        request_count = (
+            getattr(server_tool_use, "web_search_requests", 0)
+            if server_tool_use is not None
+            else 0
+        )
         if request_count:
             event_listener(
                 "web_search_used",
@@ -276,7 +296,9 @@ class AnthropicCaller:
         except Exception as exc:
             if not structured_output:
                 raise
-            self._emit_structured_output_warning(event_listener, output_schema, str(exc), used_prompt_fallback=True)
+            self._emit_structured_output_warning(
+                event_listener, output_schema, str(exc), used_prompt_fallback=True
+            )
             return self._request_until_not_paused(
                 system_prompt,
                 translated_tools,
@@ -312,7 +334,11 @@ class AnthropicCaller:
     ):
         while True:
             request_kwargs = self._build_request_kwargs(
-                system_prompt, translated_tools, messages, temperature, max_output_tokens,
+                system_prompt,
+                translated_tools,
+                messages,
+                temperature,
+                max_output_tokens,
             )
             with self.client.messages.stream(**request_kwargs) as stream:
                 for event in stream:
@@ -321,11 +347,14 @@ class AnthropicCaller:
                         and hasattr(event.delta, "text")
                         and event_listener is not None
                     ):
-                        event_listener("text_delta", {
-                            "provider": "anthropic",
-                            "round": round_number,
-                            "delta": event.delta.text,
-                        })
+                        event_listener(
+                            "text_delta",
+                            {
+                                "provider": "anthropic",
+                                "round": round_number,
+                                "delta": event.delta.text,
+                            },
+                        )
                 response = stream.get_final_message()
             self._emit_web_search_event_if_used(response, event_listener, round_number)
             if getattr(response, "stop_reason", None) != "pause_turn":
@@ -351,7 +380,9 @@ class AnthropicCaller:
             self._translate_tools(tools or []),
             enable_web_search,
         )
-        messages = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
+        messages = self._translate_history(history or []) + [
+            {"role": "user", "content": user_message}
+        ]
 
         invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
@@ -437,7 +468,9 @@ class AnthropicCaller:
             self._translate_tools(tools or []),
             enable_web_search,
         )
-        messages = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
+        messages = self._translate_history(history or []) + [
+            {"role": "user", "content": user_message}
+        ]
 
         invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
@@ -470,7 +503,10 @@ class AnthropicCaller:
                     {
                         "round": tool_rounds,
                         "count": len(tool_calls),
-                        "names": [tool_call.get("name", "unknown_tool") for tool_call in tool_calls],
+                        "names": [
+                            tool_call.get("name", "unknown_tool")
+                            for tool_call in tool_calls
+                        ],
                     },
                 )
 
@@ -541,7 +577,9 @@ class AnthropicCaller:
             self._translate_tools(tools or []),
             enable_web_search,
         )
-        messages = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
+        messages = self._translate_history(history or []) + [
+            {"role": "user", "content": user_message}
+        ]
 
         invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
@@ -572,7 +610,10 @@ class AnthropicCaller:
                     {
                         "round": tool_rounds,
                         "count": len(tool_calls),
-                        "names": [tool_call.get("name", "unknown_tool") for tool_call in tool_calls],
+                        "names": [
+                            tool_call.get("name", "unknown_tool")
+                            for tool_call in tool_calls
+                        ],
                     },
                 )
 

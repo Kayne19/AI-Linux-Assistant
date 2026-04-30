@@ -39,7 +39,11 @@ def _choose_from_list(items, item_label, display_fn):
     while True:
         for index, item in enumerate(items, 1):
             print(f"{index}. {display_fn(item)}")
-        choice = input(f"Choose a {item_label} by number, or type 'n' for new: ").strip().lower()
+        choice = (
+            input(f"Choose a {item_label} by number, or type 'n' for new: ")
+            .strip()
+            .lower()
+        )
         if choice == "n":
             return None
         try:
@@ -49,14 +53,14 @@ def _choose_from_list(items, item_label, display_fn):
 
 
 def _display_project(project):
-    updated_at = getattr(project, "updated_at", None)
+    updated_at = project.updated_at
     stamp = updated_at.isoformat() if updated_at is not None else "unknown"
     return f"{project.name}  [{stamp}]"
 
 
 def _display_chat_session(chat_session):
     title = (chat_session.title or "").strip() or "(untitled chat)"
-    updated_at = getattr(chat_session, "updated_at", None)
+    updated_at = chat_session.updated_at
     stamp = updated_at.isoformat() if updated_at is not None else "unknown"
     return f"{title}  [{stamp}]"
 
@@ -74,7 +78,9 @@ def bootstrap_interactive_session():
     if project is None:
         project_name = _read_nonempty("New project name: ")
         project_description = input("Project description (optional): ").strip()
-        project = app_store.create_project(user.id, project_name, description=project_description)
+        project = app_store.create_project(
+            user.id, project_name, description=project_description
+        )
         print(f"Created project: {project.name}")
 
     print(f"\nChats for project '{project.name}':")

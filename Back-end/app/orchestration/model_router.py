@@ -16,12 +16,15 @@ from providers.google_caller import GoogleWorker
 from providers.local_caller import LocalWorker
 from agents.context_agent import Contextualizer
 from providers.openAI_caller import OpenAIWorker
-from agents.response_agent import ResponseAgent, ResponseState
+from agents.response_agent import ResponseAgent
 from orchestration.history_preparer import PreparedHistory
 from orchestration.routing_registry import get_allowed_labels, get_searchable_labels
-from orchestration.run_control import RunCancelledError, RunPausedError, invoke_cancel_check
+from orchestration.run_control import (
+    RunCancelledError,
+    RunPausedError,
+    invoke_cancel_check,
+)
 from orchestration.evidence_pool import (
-    ALLOWED_GAP_TYPES,
     ALLOWED_REPEAT_REASONS,
     GATE_BLOCK,
     GATE_REQUIRE_REASON,
@@ -99,6 +102,7 @@ class ModelRouter:
         "google": GoogleWorker,
         "local": LocalWorker,
     }
+
     def __init__(
         self,
         database=None,
@@ -122,7 +126,9 @@ class ModelRouter:
         self.project_description = project_description
         self.chat_store = chat_store
         self.chat_session_id = chat_session_id
-        self.conversation_history = self._load_conversation_history(chat_store, chat_session_id)
+        self.conversation_history = self._load_conversation_history(
+            chat_store, chat_session_id
+        )
         self.settings = settings or SETTINGS
         if response_tool_rounds is None:
             response_tool_rounds = self.settings.response_tool_rounds
@@ -220,7 +226,15 @@ class ModelRouter:
             return f"Router error: {exc}"
         return turn.response
 
-    def _execute_turn(self, turn, initial_state, *, stream_response=False, magi="off", manage_memory_turn=True):
+    def _execute_turn(
+        self,
+        turn,
+        initial_state,
+        *,
+        stream_response=False,
+        magi="off",
+        manage_memory_turn=True,
+    ):
         self._magi_active = magi
         self._active_magi_caller = {}
         self.current_turn = turn
@@ -273,7 +287,9 @@ class ModelRouter:
         turn = TurnContext(
             user_question=str(pause_state.get("user_query") or ""),
             retrieved_docs=str(pause_state.get("retrieved_docs") or ""),
-            retrieved_context_blocks=list(pause_state.get("retrieved_context_blocks") or []),
+            retrieved_context_blocks=list(
+                pause_state.get("retrieved_context_blocks") or []
+            ),
             memory_snapshot_text=str(pause_state.get("memory_snapshot_text") or ""),
             summarized_conversation_history=PreparedHistory(
                 recent_turns=list(history_payload.get("recent_turns") or []),
@@ -290,7 +306,9 @@ class ModelRouter:
         )
 
     def run_auto_name_follow_up(self):
-        self.conversation_history = self._load_conversation_history(self.chat_store, self.chat_session_id)
+        self.conversation_history = self._load_conversation_history(
+            self.chat_store, self.chat_session_id
+        )
         turn = TurnContext(user_question="")
         return self._execute_turn(
             turn,
@@ -321,7 +339,9 @@ class ModelRouter:
 
     def _emit_event(self, event_type, payload):
         if self.current_turn is not None:
-            self.current_turn.tool_events.append({"type": event_type, "payload": payload})
+            self.current_turn.tool_events.append(
+                {"type": event_type, "payload": payload}
+            )
         if self.event_listener is not None:
             self.event_listener(event_type, payload)
 
@@ -345,6 +365,7 @@ class ModelRouter:
 
     def _summarize_extracted_memory(self, extracted, max_items=3):
         extracted = extracted or {}
+
         def summarize_fact(item):
             return f"{item.get('fact_key', '')}={item.get('fact_value', '')} [{item.get('source_type', 'model')}]"
 
@@ -352,21 +373,43 @@ class ModelRouter:
             return f"{item.get('title', '')} [{item.get('status', 'unknown')}]"
 
         def summarize_attempt(item):
-            parts = [item.get("action", ""), item.get("command", ""), item.get("outcome", "")]
+            parts = [
+                item.get("action", ""),
+                item.get("command", ""),
+                item.get("outcome", ""),
+            ]
             return " | ".join(part for part in parts if part)
 
         def summarize_constraint(item):
-            return f"{item.get('constraint_key', '')}={item.get('constraint_value', '')}"
+            return (
+                f"{item.get('constraint_key', '')}={item.get('constraint_value', '')}"
+            )
 
         def summarize_preference(item):
-            return f"{item.get('preference_key', '')}={item.get('preference_value', '')}"
+            return (
+                f"{item.get('preference_key', '')}={item.get('preference_value', '')}"
+            )
 
         return {
-            "facts": [summarize_fact(item) for item in extracted.get("facts", [])[:max_items]],
-            "issues": [summarize_issue(item) for item in extracted.get("issues", [])[:max_items]],
-            "attempts": [summarize_attempt(item) for item in extracted.get("attempts", [])[:max_items]],
-            "constraints": [summarize_constraint(item) for item in extracted.get("constraints", [])[:max_items]],
-            "preferences": [summarize_preference(item) for item in extracted.get("preferences", [])[:max_items]],
+            "facts": [
+                summarize_fact(item) for item in extracted.get("facts", [])[:max_items]
+            ],
+            "issues": [
+                summarize_issue(item)
+                for item in extracted.get("issues", [])[:max_items]
+            ],
+            "attempts": [
+                summarize_attempt(item)
+                for item in extracted.get("attempts", [])[:max_items]
+            ],
+            "constraints": [
+                summarize_constraint(item)
+                for item in extracted.get("constraints", [])[:max_items]
+            ],
+            "preferences": [
+                summarize_preference(item)
+                for item in extracted.get("preferences", [])[:max_items]
+            ],
         }
 
     def _handle_responder_state(self, state, payload):
@@ -432,17 +475,26 @@ class ModelRouter:
                 },
                 "package_managers": {
                     "type": "array",
-                    "items": {"type": "string", "enum": [member.value for member in PackageManager]},
+                    "items": {
+                        "type": "string",
+                        "enum": [member.value for member in PackageManager],
+                    },
                     "description": "Package managers relevant to the question.",
                 },
                 "init_systems": {
                     "type": "array",
-                    "items": {"type": "string", "enum": [member.value for member in InitSystem]},
+                    "items": {
+                        "type": "string",
+                        "enum": [member.value for member in InitSystem],
+                    },
                     "description": "Init systems relevant to the question.",
                 },
                 "major_subsystems": {
                     "type": "array",
-                    "items": {"type": "string", "enum": [member.value for member in MajorSubsystem]},
+                    "items": {
+                        "type": "string",
+                        "enum": [member.value for member in MajorSubsystem],
+                    },
                     "description": "Major subsystems the question targets.",
                 },
             },
@@ -474,7 +526,11 @@ class ModelRouter:
             field_value = value.get(field_name)
             if not isinstance(field_value, list):
                 continue
-            valid_values = [item for item in field_value if isinstance(item, str) and item in allowed]
+            valid_values = [
+                item
+                for item in field_value
+                if isinstance(item, str) and item in allowed
+            ]
             if valid_values:
                 cleaned[field_name] = valid_values
 
@@ -488,7 +544,9 @@ class ModelRouter:
         known_ids = set(self._known_canonical_doc_ids())
         if not known_ids:
             return ()
-        return tuple(item for item in value if isinstance(item, str) and item in known_ids)
+        return tuple(
+            item for item in value if isinstance(item, str) and item in known_ids
+        )
 
     def _validated_relevant_documents(self, relevant_documents):
         if relevant_documents is None:
@@ -505,15 +563,15 @@ class ModelRouter:
 
     # Maps MagiState names to (role, phase) for caller metadata tagging
     _MAGI_STATE_TO_CALLER = {
-        "ROLE_EAGER":            ("eager",    "opening"),
-        "ROLE_SKEPTIC":          ("skeptic",  "opening"),
-        "ROLE_HISTORIAN":        ("historian","opening"),
-        "DISCUSSION_EAGER":      ("eager",    "discussion"),
-        "DISCUSSION_SKEPTIC":    ("skeptic",  "discussion"),
-        "DISCUSSION_HISTORIAN":  ("historian","discussion"),
-        "CLOSING_EAGER":         ("eager",    "closing"),
-        "CLOSING_SKEPTIC":       ("skeptic",  "closing"),
-        "CLOSING_HISTORIAN":     ("historian","closing"),
+        "ROLE_EAGER": ("eager", "opening"),
+        "ROLE_SKEPTIC": ("skeptic", "opening"),
+        "ROLE_HISTORIAN": ("historian", "opening"),
+        "DISCUSSION_EAGER": ("eager", "discussion"),
+        "DISCUSSION_SKEPTIC": ("skeptic", "discussion"),
+        "DISCUSSION_HISTORIAN": ("historian", "discussion"),
+        "CLOSING_EAGER": ("eager", "closing"),
+        "CLOSING_SKEPTIC": ("skeptic", "closing"),
+        "CLOSING_HISTORIAN": ("historian", "closing"),
     }
 
     def _handle_magi_state(self, state, payload):
@@ -540,13 +598,27 @@ class ModelRouter:
                 "caller_round": round_number,
                 "unresolved_issue": unresolved,
             }
-        elif state.name in {"OPENING_ARGUMENTS", "DISCUSSION", "CLOSING_ARGUMENTS", "ARBITER", "COMPLETE"}:
+        elif state.name in {
+            "OPENING_ARGUMENTS",
+            "DISCUSSION",
+            "CLOSING_ARGUMENTS",
+            "ARBITER",
+            "COMPLETE",
+        }:
             # Phase-level state; only update round and unresolved_issue if provided
             if payload:
-                self._active_magi_caller.update({
-                    "caller_round": int(payload.get("round") or self._active_magi_caller.get("caller_round", 0)),
-                    "unresolved_issue": str(payload.get("unresolved_issue") or self._active_magi_caller.get("unresolved_issue", "")),
-                })
+                self._active_magi_caller.update(
+                    {
+                        "caller_round": int(
+                            payload.get("round")
+                            or self._active_magi_caller.get("caller_round", 0)
+                        ),
+                        "unresolved_issue": str(
+                            payload.get("unresolved_issue")
+                            or self._active_magi_caller.get("unresolved_issue", "")
+                        ),
+                    }
+                )
         elif state.name in {"ERROR", "COMPLETE"}:
             self._active_magi_caller = {}
 
@@ -559,7 +631,9 @@ class ModelRouter:
                 try:
                     signature = inspect.signature(worker_class)
                     if "reasoning_effort" in signature.parameters:
-                        return worker_class(model=model, reasoning_effort=reasoning_effort)
+                        return worker_class(
+                            model=model, reasoning_effort=reasoning_effort
+                        )
                 except (TypeError, ValueError):
                     pass
         return worker_class(model=model)
@@ -584,21 +658,31 @@ class ModelRouter:
         if isinstance(worker_spec, dict):
             provider = worker_spec.get("provider", role_settings.provider)
             model = worker_spec.get("model")
-            reasoning_effort = worker_spec.get("reasoning_effort", role_settings.reasoning_effort)
+            reasoning_effort = worker_spec.get(
+                "reasoning_effort", role_settings.reasoning_effort
+            )
             if model is None:
                 if provider.lower() == role_settings.provider.lower():
                     model = role_settings.model
                 else:
-                    model = self._default_model_for_provider(provider, role_settings.model)
+                    model = self._default_model_for_provider(
+                        provider, role_settings.model
+                    )
             return self._instantiate_worker(provider, model, reasoning_effort)
 
         if hasattr(worker_spec, "generate_text"):
             return worker_spec
 
-        raise TypeError("Worker spec must be a provider name, worker config dict, or worker instance.")
+        raise TypeError(
+            "Worker spec must be a provider name, worker config dict, or worker instance."
+        )
 
     def _build_classifier(self, classifier):
-        if classifier is not None and hasattr(classifier, "call_api") and not hasattr(classifier, "generate_text"):
+        if (
+            classifier is not None
+            and hasattr(classifier, "call_api")
+            and not hasattr(classifier, "generate_text")
+        ):
             return classifier
         return Classifier(
             worker=self._build_worker(classifier, self.settings.classifier),
@@ -606,7 +690,11 @@ class ModelRouter:
         )
 
     def _build_context_agent(self, context_agent):
-        if context_agent is not None and hasattr(context_agent, "call_api") and not hasattr(context_agent, "generate_text"):
+        if (
+            context_agent is not None
+            and hasattr(context_agent, "call_api")
+            and not hasattr(context_agent, "generate_text")
+        ):
             return context_agent
         return Contextualizer(
             worker=self._build_worker(context_agent, self.settings.contextualizer),
@@ -614,7 +702,11 @@ class ModelRouter:
         )
 
     def _build_responder(self, responder):
-        if responder is not None and hasattr(responder, "call_api") and not hasattr(responder, "generate_text"):
+        if (
+            responder is not None
+            and hasattr(responder, "call_api")
+            and not hasattr(responder, "generate_text")
+        ):
             return responder
         return ResponseAgent(
             worker=self._build_worker(responder, self.settings.responder),
@@ -632,25 +724,33 @@ class ModelRouter:
         tool_rounds = self.response_tool_rounds
         eager = MagiEager(
             worker=self._build_worker(None, self.settings.magi_eager),
-            tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
+            tools=tools,
+            tool_handler=tool_handler,
+            max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
         )
         skeptic = MagiSkeptic(
             worker=self._build_worker(None, self.settings.magi_skeptic),
-            tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
+            tools=tools,
+            tool_handler=tool_handler,
+            max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
         )
         historian = MagiHistorian(
             worker=self._build_worker(None, self.settings.magi_historian),
-            tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
+            tools=tools,
+            tool_handler=tool_handler,
+            max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
         )
         arbiter = MagiArbiter(
             worker=self._build_worker(None, self.settings.magi_arbiter),
-            tools=[], tool_handler=None, max_tool_rounds=0,
+            tools=[],
+            tool_handler=None,
+            max_tool_rounds=0,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
         )
@@ -672,25 +772,33 @@ class ModelRouter:
         tool_rounds = self.response_tool_rounds
         eager = MagiEager(
             worker=self._build_worker(None, self.settings.magi_lite_eager),
-            tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
+            tools=tools,
+            tool_handler=tool_handler,
+            max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
         )
         skeptic = MagiSkeptic(
             worker=self._build_worker(None, self.settings.magi_lite_skeptic),
-            tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
+            tools=tools,
+            tool_handler=tool_handler,
+            max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
         )
         historian = MagiHistorian(
             worker=self._build_worker(None, self.settings.magi_lite_historian),
-            tools=tools, tool_handler=tool_handler, max_tool_rounds=tool_rounds,
+            tools=tools,
+            tool_handler=tool_handler,
+            max_tool_rounds=tool_rounds,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
         )
         arbiter = MagiArbiter(
             worker=self._build_worker(None, self.settings.magi_lite_arbiter),
-            tools=[], tool_handler=None, max_tool_rounds=0,
+            tools=[],
+            tool_handler=None,
+            max_tool_rounds=0,
             event_listener=self._emit_event,
             cancel_check=self.cancel_check,
         )
@@ -707,10 +815,16 @@ class ModelRouter:
         )
 
     def _build_history_summarizer(self, history_summarizer):
-        if history_summarizer is not None and hasattr(history_summarizer, "call_api") and not hasattr(history_summarizer, "generate_text"):
+        if (
+            history_summarizer is not None
+            and hasattr(history_summarizer, "call_api")
+            and not hasattr(history_summarizer, "generate_text")
+        ):
             return history_summarizer
         return HistorySummarizer(
-            worker=self._build_worker(history_summarizer, self.settings.history_summarizer),
+            worker=self._build_worker(
+                history_summarizer, self.settings.history_summarizer
+            ),
             temperature=self.settings.history_summarizer_temperature,
             max_recent_turns=self.settings.history_max_recent_turns,
             summarize_turn_threshold=self.settings.history_summarize_turn_threshold,
@@ -718,9 +832,17 @@ class ModelRouter:
         )
 
     def _build_context_summarizer(self, context_summarizer):
-        if context_summarizer is not None and hasattr(context_summarizer, "call_api") and not hasattr(context_summarizer, "generate_text"):
+        if (
+            context_summarizer is not None
+            and hasattr(context_summarizer, "call_api")
+            and not hasattr(context_summarizer, "generate_text")
+        ):
             return context_summarizer
-        return ContextSummarizer(worker=self._build_worker(context_summarizer, self.settings.context_summarizer))
+        return ContextSummarizer(
+            worker=self._build_worker(
+                context_summarizer, self.settings.context_summarizer
+            )
+        )
 
     def _build_response_tools(self):
         allowed_labels = get_allowed_labels()
@@ -771,7 +893,11 @@ class ModelRouter:
                         },
                         "progress_assessment": {
                             "type": "string",
-                            "enum": ["meaningful_progress", "partial_progress", "no_meaningful_progress"],
+                            "enum": [
+                                "meaningful_progress",
+                                "partial_progress",
+                                "no_meaningful_progress",
+                            ],
                             "description": (
                                 "Assessment of the previous RAG search's usefulness. "
                                 "Only meaningful on the 2nd+ call to search_rag_database in a turn — "
@@ -867,7 +993,11 @@ class ModelRouter:
         return get_searchable_labels(labels or [])
 
     def _build_memory_extractor(self, memory_extractor, build_default=False):
-        if memory_extractor is not None and hasattr(memory_extractor, "call_api") and not hasattr(memory_extractor, "generate_text"):
+        if (
+            memory_extractor is not None
+            and hasattr(memory_extractor, "call_api")
+            and not hasattr(memory_extractor, "generate_text")
+        ):
             return memory_extractor
         if memory_extractor is None and not build_default:
             return None
@@ -901,7 +1031,9 @@ class ModelRouter:
     ):
         if not hasattr(self.database, "retrieve_context_result"):
             return {
-                "context_text": self.database.retrieve_context(query, searchable_labels),
+                "context_text": self.database.retrieve_context(
+                    query, searchable_labels
+                ),
                 "selected_sources": [],
                 "merged_blocks": [],
                 "bundle_summaries": [],
@@ -1000,8 +1132,12 @@ class ModelRouter:
                 "evidence_gap_key": query_record.evidence_gap_key,
                 "gap_type": query_record.gap_type,
                 "repeat_reason": query_record.repeat_reason,
-                "soft_exhausted_scope_keys": sorted(self._active_evidence_pool().scope_state.soft_exhausted_scope_keys),
-                "hard_exhausted_scope_keys": sorted(self._active_evidence_pool().scope_state.hard_exhausted_scope_keys),
+                "soft_exhausted_scope_keys": sorted(
+                    self._active_evidence_pool().scope_state.soft_exhausted_scope_keys
+                ),
+                "hard_exhausted_scope_keys": sorted(
+                    self._active_evidence_pool().scope_state.hard_exhausted_scope_keys
+                ),
             }
         )
         retrieval_result["retrieval_metadata"] = retrieval_metadata
@@ -1087,7 +1223,9 @@ class ModelRouter:
             retrieval_metadata = dict(retrieval_result.get("retrieval_metadata") or {})
             retrieval_metadata["cached_hit"] = True
             retrieval_result["retrieval_metadata"] = retrieval_metadata
-            pool.record_evidence_from_result(retrieval_result, q_record, is_cache_hit=True)
+            pool.record_evidence_from_result(
+                retrieval_result, q_record, is_cache_hit=True
+            )
             self._annotate_retrieval_result(retrieval_result, q_record, gate)
             self._emit_event(
                 "evidence_pool_update",
@@ -1137,25 +1275,39 @@ class ModelRouter:
                     tool_complete_payload = None
                 else:
                     searchable_labels = self._searchable_labels(relevant_documents)
-                    scope_hints = self._validated_scope_hints(tool_args.get("scope_hints"))
-                    explicit_doc_ids = self._validated_canonical_doc_ids(tool_args.get("canonical_source_ids"))
-                    repeat_reason = normalize_repeat_reason(tool_args.get("repeat_reason", ""))
+                    scope_hints = self._validated_scope_hints(
+                        tool_args.get("scope_hints")
+                    )
+                    explicit_doc_ids = self._validated_canonical_doc_ids(
+                        tool_args.get("canonical_source_ids")
+                    )
+                    repeat_reason = normalize_repeat_reason(
+                        tool_args.get("repeat_reason", "")
+                    )
                     # Apply progress_assessment from the model about the *prior* search before running the new one.
                     # Only meaningful on the 2nd+ search_rag_database call in a turn.
-                    progress_assessment = str(tool_args.get("progress_assessment") or "").strip()
+                    progress_assessment = str(
+                        tool_args.get("progress_assessment") or ""
+                    ).strip()
                     pool = self._active_evidence_pool()
                     if progress_assessment and pool.query_records:
-                        pool.apply_qualitative_evaluation(progress_assessment=progress_assessment)
+                        pool.apply_qualitative_evaluation(
+                            progress_assessment=progress_assessment
+                        )
                     retrieval_result, cached_hit = self._retrieve_with_ledger(
                         query,
                         searchable_labels,
                         repeat_reason=repeat_reason,
                         evidence_gap=evidence_gap,
-                        unresolved_issue=self._active_caller_metadata().get("unresolved_issue", ""),
+                        unresolved_issue=self._active_caller_metadata().get(
+                            "unresolved_issue", ""
+                        ),
                         router_hint=scope_hints,
                         explicit_doc_ids=explicit_doc_ids,
                     )
-                    retrieval_metadata = retrieval_result.get("retrieval_metadata") or {}
+                    retrieval_metadata = (
+                        retrieval_result.get("retrieval_metadata") or {}
+                    )
                     result = str(retrieval_result.get("context_text") or "")
                     pool = self._active_evidence_pool()
                     caller = self._active_caller_metadata()
@@ -1163,29 +1315,58 @@ class ModelRouter:
                         "name": tool_name,
                         "result_size": len(result),
                         "result_text": result,
-                        "result_blocks": list(retrieval_result.get("merged_blocks") or []),
-                        "selected_sources": list(retrieval_result.get("selected_sources") or []),
+                        "result_blocks": list(
+                            retrieval_result.get("merged_blocks") or []
+                        ),
+                        "selected_sources": list(
+                            retrieval_result.get("selected_sources") or []
+                        ),
                         "cached": cached_hit,
                         "anchor_count": retrieval_metadata.get("anchor_count", 0),
-                        "anchor_pages": list(retrieval_metadata.get("anchor_pages") or []),
-                        "fetched_neighbor_pages": list(retrieval_metadata.get("fetched_neighbor_pages") or []),
-                        "delivered_bundle_count": retrieval_metadata.get("delivered_bundle_count", 0),
-                        "excluded_seen_count": retrieval_metadata.get("excluded_seen_count", 0),
-                        "skipped_bundle_count": retrieval_metadata.get("skipped_bundle_count", 0),
+                        "anchor_pages": list(
+                            retrieval_metadata.get("anchor_pages") or []
+                        ),
+                        "fetched_neighbor_pages": list(
+                            retrieval_metadata.get("fetched_neighbor_pages") or []
+                        ),
+                        "delivered_bundle_count": retrieval_metadata.get(
+                            "delivered_bundle_count", 0
+                        ),
+                        "excluded_seen_count": retrieval_metadata.get(
+                            "excluded_seen_count", 0
+                        ),
+                        "skipped_bundle_count": retrieval_metadata.get(
+                            "skipped_bundle_count", 0
+                        ),
                         # Evidence pool fields
                         "gate_action": retrieval_metadata.get("gate_action", ""),
-                        "search_outcome": retrieval_metadata.get("search_outcome") or pool.last_query_outcome(),
-                        "usefulness": retrieval_metadata.get("usefulness") or pool.last_query_usefulness(),
-                        "usefulness_reason": retrieval_metadata.get("usefulness_reason", ""),
-                        "scope_key": retrieval_metadata.get("scope_key") or pool.last_query_scope_key(),
+                        "search_outcome": retrieval_metadata.get("search_outcome")
+                        or pool.last_query_outcome(),
+                        "usefulness": retrieval_metadata.get("usefulness")
+                        or pool.last_query_usefulness(),
+                        "usefulness_reason": retrieval_metadata.get(
+                            "usefulness_reason", ""
+                        ),
+                        "scope_key": retrieval_metadata.get("scope_key")
+                        or pool.last_query_scope_key(),
                         "covered_region_count": len(pool.known_covered_region_keys()),
                         "scope_exhausted": bool(pool.scope_state.exhausted_scope_keys),
-                        "soft_exhausted_scope_keys": sorted(pool.scope_state.soft_exhausted_scope_keys),
-                        "hard_exhausted_scope_keys": sorted(pool.scope_state.hard_exhausted_scope_keys),
-                        "evidence_gap": retrieval_metadata.get("evidence_gap", evidence_gap),
-                        "evidence_gap_key": retrieval_metadata.get("evidence_gap_key", ""),
+                        "soft_exhausted_scope_keys": sorted(
+                            pool.scope_state.soft_exhausted_scope_keys
+                        ),
+                        "hard_exhausted_scope_keys": sorted(
+                            pool.scope_state.hard_exhausted_scope_keys
+                        ),
+                        "evidence_gap": retrieval_metadata.get(
+                            "evidence_gap", evidence_gap
+                        ),
+                        "evidence_gap_key": retrieval_metadata.get(
+                            "evidence_gap_key", ""
+                        ),
                         "gap_type": retrieval_metadata.get("gap_type", ""),
-                        "repeat_reason": retrieval_metadata.get("repeat_reason", repeat_reason),
+                        "repeat_reason": retrieval_metadata.get(
+                            "repeat_reason", repeat_reason
+                        ),
                         "caller_role": caller.get("caller_role", ""),
                         "caller_phase": caller.get("caller_phase", ""),
                         "caller_round": caller.get("caller_round", 0),
@@ -1228,7 +1409,8 @@ class ModelRouter:
         else:
             self._emit_event(
                 "tool_complete",
-                tool_complete_payload or {"name": tool_name, "result_size": result_size},
+                tool_complete_payload
+                or {"name": tool_name, "result_size": result_size},
             )
         self._check_cancel(f"after_tool:{tool_name}")
         return result
@@ -1284,7 +1466,9 @@ class ModelRouter:
 
     def _load_memory(self, turn):
         if self.memory_store is not None:
-            turn.memory_snapshot_text = self.memory_store.format_memory_snapshot(turn.user_question)
+            turn.memory_snapshot_text = self.memory_store.format_memory_snapshot(
+                turn.user_question
+            )
             self._emit_event(
                 "memory_loaded",
                 {
@@ -1301,32 +1485,41 @@ class ModelRouter:
     # Caveat: this state may intentionally no-op when the conversation is small
     # enough that summarizing would add cost without reducing meaningful context.
     def _summarize_conversation_history(self, turn):
-        turn.summarized_conversation_history, summarized = self.history_summarizer.call_api(
-            self.conversation_history,
+        turn.summarized_conversation_history, summarized = (
+            self.history_summarizer.call_api(
+                self.conversation_history,
+            )
         )
         self._emit_event(
             "summarized_conversation_history",
             {
                 "recent_turns": len(turn.summarized_conversation_history.recent_turns),
-                "summary_chars": len(turn.summarized_conversation_history.summary_text or ""),
+                "summary_chars": len(
+                    turn.summarized_conversation_history.summary_text or ""
+                ),
                 "summarized": summarized,
             },
         )
         return RouterState.CLASSIFY
 
     def _classify(self, turn):
-        turn.routing_labels = self.classification_agent.call_api(
-            turn.user_question,
-            turn.summarized_conversation_history,
-            turn.memory_snapshot_text,
-        ) or []
+        turn.routing_labels = (
+            self.classification_agent.call_api(
+                turn.user_question,
+                turn.summarized_conversation_history,
+                turn.memory_snapshot_text,
+            )
+            or []
+        )
         turn.suggested_search_labels = self._searchable_labels(turn.routing_labels)
         return RouterState.DECIDE_RAG
 
     def _rewrite_query(self, turn):
         turn.retrieval_query = self.context_agent.call_api(
             turn.user_question,
-            turn.summarized_conversation_history.recent_turns if turn.summarized_conversation_history else [],
+            turn.summarized_conversation_history.recent_turns
+            if turn.summarized_conversation_history
+            else [],
         )
         return RouterState.RETRIEVE_CONTEXT
 
@@ -1344,7 +1537,9 @@ class ModelRouter:
             evidence_gap=turn.retrieval_query or turn.user_question,
         )
         turn.retrieved_docs = str(retrieval_result.get("context_text") or "")
-        turn.retrieved_context_blocks = list(retrieval_result.get("merged_blocks") or [])
+        turn.retrieved_context_blocks = list(
+            retrieval_result.get("merged_blocks") or []
+        )
         return RouterState.GENERATE_RESPONSE
 
     def _summarize_retrieved_docs(self, turn):
@@ -1392,7 +1587,11 @@ class ModelRouter:
                 evidence_pool_summary=evidence_pool_summary,
             )
         else:
-            responder_method = responder.stream_api if self._stream_response_enabled else responder.call_api
+            responder_method = (
+                responder.stream_api
+                if self._stream_response_enabled
+                else responder.call_api
+            )
             kwargs = {}
             if evidence_pool_summary:
                 kwargs["evidence_pool_summary"] = evidence_pool_summary
@@ -1404,7 +1603,9 @@ class ModelRouter:
                 **kwargs,
             )
         self._check_cancel("after_generate_response")
-        turn.council_entries = list(getattr(responder, "last_council_entries", None) or [])
+        turn.council_entries = list(
+            getattr(responder, "last_council_entries", None) or []
+        )
         if not (turn.retrieved_docs or "").strip():
             return RouterState.UPDATE_HISTORY
         return RouterState.SUMMARIZE_RETRIEVED_DOCS
@@ -1412,7 +1613,9 @@ class ModelRouter:
     def _update_history(self, turn):
         self._check_cancel("before_update_history")
         turn.persisted_user_message = self.update_history("user", turn.user_question)
-        turn.persisted_assistant_message = self.update_history("model", turn.response, council_entries=turn.council_entries or None)
+        turn.persisted_assistant_message = self.update_history(
+            "model", turn.response, council_entries=turn.council_entries or None
+        )
         return RouterState.DECIDE_MEMORY
 
     def _decide_memory(self, turn):
@@ -1442,7 +1645,9 @@ class ModelRouter:
                     "attempts": len(extracted.get("attempts", [])),
                     "constraints": len(extracted.get("constraints", [])),
                     "preferences": len(extracted.get("preferences", [])),
-                    "has_session_summary": bool((extracted.get("session_summary") or "").strip()),
+                    "has_session_summary": bool(
+                        (extracted.get("session_summary") or "").strip()
+                    ),
                     "examples": self._summarize_extracted_memory(extracted),
                     "items": extracted,
                 },
@@ -1460,7 +1665,9 @@ class ModelRouter:
 
         try:
             snapshot = self.memory_store.load_snapshot()
-            turn.memory_resolution = self.memory_resolver.resolve(turn.extracted_memory, snapshot=snapshot)
+            turn.memory_resolution = self.memory_resolver.resolve(
+                turn.extracted_memory, snapshot=snapshot
+            )
             self._emit_event(
                 "memory_resolved",
                 {
@@ -1485,6 +1692,7 @@ class ModelRouter:
                 turn.memory_resolution,
                 user_question=turn.user_question,
                 assistant_response=turn.response,
+                chat_session_id=self.chat_session_id or "",
             )
             self._emit_event(
                 "memory_committed",
@@ -1513,7 +1721,9 @@ class ModelRouter:
 
         user_text, assistant_text = self._auto_name_source_pair(turn)
         if not user_text or not assistant_text:
-            self._emit_event("chat_name_skipped", {"reason": "missing_opening_exchange"})
+            self._emit_event(
+                "chat_name_skipped", {"reason": "missing_opening_exchange"}
+            )
             return RouterState.DONE
 
         try:
@@ -1529,7 +1739,14 @@ class ModelRouter:
                 cancel_check=self.cancel_check,
             )
             self._check_cancel("after_auto_name")
-            title = (raw_title or "").strip().strip('"').strip("'").strip()[:80].rstrip(".,;:!?")
+            title = (
+                (raw_title or "")
+                .strip()
+                .strip('"')
+                .strip("'")
+                .strip()[:80]
+                .rstrip(".,;:!?")
+            )
             if title:
                 turn.generated_chat_title = title
                 self.chat_store.update_chat_session_title(self.chat_session_id, title)
@@ -1544,9 +1761,17 @@ class ModelRouter:
 
     def update_history(self, role, content, council_entries=None):
         self.conversation_history.append((role, content))
-        if self.persist_turn_messages and self.chat_store is not None and self.chat_session_id:
-            append_fn = getattr(self.chat_store, "append_message_fast", self.chat_store.append_message)
-            return append_fn(self.chat_session_id, role, content, council_entries=council_entries)
+        if (
+            self.persist_turn_messages
+            and self.chat_store is not None
+            and self.chat_session_id
+        ):
+            append_fn = getattr(
+                self.chat_store, "append_message_fast", self.chat_store.append_message
+            )
+            return append_fn(
+                self.chat_session_id, role, content, council_entries=council_entries
+            )
         return None
 
     def get_history(self):

@@ -4,7 +4,6 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
 
 from config.settings import SETTINGS, load_effective_settings
 from orchestration.normalized_inputs import build_normalized_inputs
@@ -12,6 +11,7 @@ from orchestration.model_router import ModelRouter, RouterExecutionError
 from orchestration.run_control import RunCancelledError, RunPausedError
 from persistence.postgres_app_store import PostgresAppStore
 from persistence.postgres_memory_store import PostgresMemoryStore
+from utils.time_utils import _iso
 from persistence.postgres_run_store import (
     AUTO_NAME_RUN_KIND,
     MESSAGE_RUN_KIND,
@@ -87,7 +87,9 @@ class _DeltaBuffer:
 
     def _raise_if_ownership_lost(self):
         if self._ownership_lost_event.is_set():
-            raise RunOwnershipLostError(f"Worker '{self._worker_id}' no longer owns run '{self._run_id}'.")
+            raise RunOwnershipLostError(
+                f"Worker '{self._worker_id}' no longer owns run '{self._run_id}'."
+            )
 
     def _maybe_take_flush_chunk(self, delta_text):
         now = time.monotonic()
@@ -202,7 +204,9 @@ class _MagiRoleDeltaBuffer:
         checkpoints = []
         with self._lock:
             for state in self._states.values():
-                checkpoint = self._take_flush_chunk_locked(state, force=False, now=time.monotonic())
+                checkpoint = self._take_flush_chunk_locked(
+                    state, force=False, now=time.monotonic()
+                )
                 if checkpoint is not None:
                     checkpoints.append(checkpoint)
         for checkpoint in checkpoints:
@@ -213,7 +217,9 @@ class _MagiRoleDeltaBuffer:
         checkpoints = []
         with self._lock:
             for state in self._states.values():
-                checkpoint = self._take_flush_chunk_locked(state, force=True, now=time.monotonic())
+                checkpoint = self._take_flush_chunk_locked(
+                    state, force=True, now=time.monotonic()
+                )
                 if checkpoint is not None:
                     checkpoints.append(checkpoint)
         for checkpoint in checkpoints:
@@ -221,7 +227,9 @@ class _MagiRoleDeltaBuffer:
 
     def _raise_if_ownership_lost(self):
         if self._ownership_lost_event.is_set():
-            raise RunOwnershipLostError(f"Worker '{self._worker_id}' no longer owns run '{self._run_id}'.")
+            raise RunOwnershipLostError(
+                f"Worker '{self._worker_id}' no longer owns run '{self._run_id}'."
+            )
 
     def _normalize_context(self, payload):
         payload = payload or {}
@@ -264,12 +272,18 @@ class _MagiRoleDeltaBuffer:
 
     def _take_flush_chunk(self, state, force):
         with self._lock:
-            return self._take_flush_chunk_locked(state, force=force, now=time.monotonic())
+            return self._take_flush_chunk_locked(
+                state, force=force, now=time.monotonic()
+            )
 
     def _take_flush_chunk_locked(self, state, force, now):
         if not state["buffer"]:
             return None
-        if not force and len(state["buffer"]) < self._flush_bytes and (now - state["last_flush"]) < self._flush_interval:
+        if (
+            not force
+            and len(state["buffer"]) < self._flush_bytes
+            and (now - state["last_flush"]) < self._flush_interval
+        ):
             return None
         state["text"] += state["buffer"]
         checkpoint = {
@@ -302,10 +316,6 @@ def _checkpoint_flush_interval(redis_client):
     return 1.0 if redis_client is not None else 0.2
 
 
-def _iso(value):
-    return value.isoformat() if value is not None else ""
-
-
 def _serialize_message(message):
     return {
         "id": message.id,
@@ -328,18 +338,24 @@ def _extract_sources(retrieved_docs):
 def _turn_normalized_inputs(request_text, turn):
     return build_normalized_inputs(
         request_text=request_text,
-        summarized_conversation_history=getattr(turn, "summarized_conversation_history", None),
+        summarized_conversation_history=getattr(
+            turn, "summarized_conversation_history", None
+        ),
         memory_snapshot_text=getattr(turn, "memory_snapshot_text", "") or "",
         retrieval_query=getattr(turn, "retrieval_query", "") or "",
         retrieved_docs=getattr(turn, "retrieved_docs", "") or "",
-        retrieved_context_blocks=list(getattr(turn, "retrieved_context_blocks", []) or []),
+        retrieved_context_blocks=list(
+            getattr(turn, "retrieved_context_blocks", []) or []
+        ),
     )
 
 
 class ChatRunWorkerService:
     def __init__(self, worker_id=None, settings=None, run_store=None):
         self.settings = settings or SETTINGS
-        self.worker_id = worker_id or os.getenv("CHAT_RUN_WORKER_ID", f"chat-worker-{uuid.uuid4().hex[:8]}")
+        self.worker_id = worker_id or os.getenv(
+            "CHAT_RUN_WORKER_ID", f"chat-worker-{uuid.uuid4().hex[:8]}"
+        )
         self.run_store = run_store or PostgresRunStore(redis_client=_get_redis_client())
         self.app_store = PostgresAppStore()
         self._stop_event = threading.Event()
@@ -382,16 +398,22 @@ class ChatRunWorkerService:
             now = time.monotonic()
             if (now - last_heartbeat) < heartbeat_interval:
                 continue
-            if not self.run_store.heartbeat(run_id, claimed_worker_id, self.settings.chat_run_lease_seconds):
+            if not self.run_store.heartbeat(
+                run_id, claimed_worker_id, self.settings.chat_run_lease_seconds
+            ):
                 ownership_lost_event.set()
                 break
             last_heartbeat = now
 
     def _emit_state(self, run_id, claimed_worker_id, state, _turn):
-        self.run_store.append_event_for_worker(run_id, claimed_worker_id, "state", state.name, None)
+        self.run_store.append_event_for_worker(
+            run_id, claimed_worker_id, "state", state.name, None
+        )
 
     def _emit_event(self, run_id, claimed_worker_id, event_type, payload):
-        self.run_store.append_event_for_worker(run_id, claimed_worker_id, "event", event_type, payload or None)
+        self.run_store.append_event_for_worker(
+            run_id, claimed_worker_id, "event", event_type, payload or None
+        )
 
     def _publish_live_event(self, run_id, payload, code):
         payload = payload or {}
@@ -416,7 +438,9 @@ class ChatRunWorkerService:
                 "state_trace": list(getattr(turn, "state_trace", []) or []),
                 "tool_events": list(getattr(turn, "tool_events", []) or []),
                 "retrieval_query": getattr(turn, "retrieval_query", "") or "",
-                "retrieved_sources": _extract_sources(getattr(turn, "retrieved_docs", "") or ""),
+                "retrieved_sources": _extract_sources(
+                    getattr(turn, "retrieved_docs", "") or ""
+                ),
                 "auto_name_scheduled": bool(getattr(turn, "schedule_auto_name", False)),
                 "normalized_inputs": normalized_inputs,
             },
@@ -444,7 +468,8 @@ class ChatRunWorkerService:
                     "tool_events": list(getattr(turn, "tool_events", []) or []),
                     "retrieval_query": "",
                     "retrieved_sources": [],
-                    "generated_chat_title": getattr(turn, "generated_chat_title", "") or "",
+                    "generated_chat_title": getattr(turn, "generated_chat_title", "")
+                    or "",
                 }
             },
         )
@@ -456,7 +481,10 @@ class ChatRunWorkerService:
             return None
         try:
             chat_session = self.app_store.get_chat_session(run.chat_session_id)
-            if chat_session is None or (getattr(chat_session, "title", "") or "").strip():
+            if (
+                chat_session is None
+                or (getattr(chat_session, "title", "") or "").strip()
+            ):
                 return None
             return self.run_store.create_or_reuse_run(
                 chat_session_id=run.chat_session_id,
@@ -491,13 +519,17 @@ class ChatRunWorkerService:
         if run.status == "cancel_requested":
             self._cancel_run(run, claimed_worker_id)
             return
-        resuming_paused_magi = bool(getattr(run, "pause_state_json", None)) and (run.magi or "off") in {"full", "lite"}
+        resuming_paused_magi = bool(getattr(run, "pause_state_json", None)) and (
+            run.magi or "off"
+        ) in {"full", "lite"}
         if (
             run.status == "running"
             and int(getattr(run, "latest_event_seq", 0) or 0) > 0
             and not resuming_paused_magi
         ):
-            self._fail_run(run, claimed_worker_id, "Run lease expired before completion.")
+            self._fail_run(
+                run, claimed_worker_id, "Run lease expired before completion."
+            )
             return
 
         ownership_lost_event = threading.Event()
@@ -505,21 +537,29 @@ class ChatRunWorkerService:
             run_id=run.id,
             worker_id=claimed_worker_id,
             run_store=self.run_store,
-            redis_publish_fn=lambda run_id, delta_text, window: self._publish_live_event(
-                run_id,
-                {"delta": delta_text, "window": int(window)},
-                "text_delta",
+            redis_publish_fn=lambda run_id, delta_text, window: (
+                self._publish_live_event(
+                    run_id,
+                    {"delta": delta_text, "window": int(window)},
+                    "text_delta",
+                )
             ),
             ownership_lost_event=ownership_lost_event,
-            flush_interval=_checkpoint_flush_interval(getattr(self.run_store, "_redis_client", None)),
+            flush_interval=_checkpoint_flush_interval(
+                getattr(self.run_store, "_redis_client", None)
+            ),
         )
         magi_role_delta_buffer = _MagiRoleDeltaBuffer(
             run_id=run.id,
             worker_id=claimed_worker_id,
             run_store=self.run_store,
-            redis_publish_fn=lambda run_id, payload, code: self._publish_live_event(run_id, payload, code),
+            redis_publish_fn=lambda run_id, payload, code: self._publish_live_event(
+                run_id, payload, code
+            ),
             ownership_lost_event=ownership_lost_event,
-            flush_interval=_checkpoint_flush_interval(getattr(self.run_store, "_redis_client", None)),
+            flush_interval=_checkpoint_flush_interval(
+                getattr(self.run_store, "_redis_client", None)
+            ),
         )
         heartbeat_stop = threading.Event()
         heartbeat_thread = threading.Thread(
@@ -542,7 +582,9 @@ class ChatRunWorkerService:
             def _state_listener(state, turn):
                 nonlocal last_normalized_inputs
                 self._emit_state(run.id, claimed_worker_id, state, turn)
-                if (getattr(run, "run_kind", MESSAGE_RUN_KIND) or MESSAGE_RUN_KIND) != MESSAGE_RUN_KIND:
+                if (
+                    getattr(run, "run_kind", MESSAGE_RUN_KIND) or MESSAGE_RUN_KIND
+                ) != MESSAGE_RUN_KIND:
                     return
                 normalized_inputs = _turn_normalized_inputs(run.request_content, turn)
                 if normalized_inputs == last_normalized_inputs:
@@ -573,16 +615,23 @@ class ChatRunWorkerService:
 
             router.set_event_listener(_event_listener)
 
-            if (getattr(run, "run_kind", MESSAGE_RUN_KIND) or MESSAGE_RUN_KIND) == AUTO_NAME_RUN_KIND:
+            if (
+                getattr(run, "run_kind", MESSAGE_RUN_KIND) or MESSAGE_RUN_KIND
+            ) == AUTO_NAME_RUN_KIND:
                 turn = router.run_auto_name_follow_up()
-            elif getattr(run, "pause_state_json", None) and (run.magi or "off") in {"full", "lite"}:
+            elif getattr(run, "pause_state_json", None) and (run.magi or "off") in {
+                "full",
+                "lite",
+            }:
                 turn = router.run_magi_resumption(
                     getattr(run, "pause_state_json", None),
                     stream_response=True,
                     magi=run.magi,
                 )
             else:
-                turn = router.run_turn(run.request_content, stream_response=True, magi=run.magi)
+                turn = router.run_turn(
+                    run.request_content, stream_response=True, magi=run.magi
+                )
             if self.run_store.is_cancel_requested(run.id):
                 raise RunCancelledError("Run cancelled.")
             if turn is None:
@@ -590,7 +639,9 @@ class ChatRunWorkerService:
 
             delta_buffer.flush()
             magi_role_delta_buffer.flush()
-            if (getattr(run, "run_kind", MESSAGE_RUN_KIND) or MESSAGE_RUN_KIND) == AUTO_NAME_RUN_KIND:
+            if (
+                getattr(run, "run_kind", MESSAGE_RUN_KIND) or MESSAGE_RUN_KIND
+            ) == AUTO_NAME_RUN_KIND:
                 self._complete_background_run(run, claimed_worker_id, turn)
             else:
                 self._complete_run(run, claimed_worker_id, turn)
@@ -618,7 +669,8 @@ class ChatRunWorkerService:
                 run.id,
                 worker_id=claimed_worker_id,
                 pause_state=getattr(exc, "pause_state", None) or {},
-                event_payload=getattr(exc, "payload", None) or {"message": "Run paused."},
+                event_payload=getattr(exc, "payload", None)
+                or {"message": "Run paused."},
             )
         except RouterExecutionError as exc:
             try:
@@ -652,7 +704,9 @@ class ChatRunWorkerService:
                 wakeup_sub = None
         try:
             while not self._stop_event.is_set():
-                run = self.run_store.claim_next_run(claimed_worker_id, self.settings.chat_run_lease_seconds)
+                run = self.run_store.claim_next_run(
+                    claimed_worker_id, self.settings.chat_run_lease_seconds
+                )
                 if run is None:
                     if wakeup_sub is not None:
                         try:
@@ -674,7 +728,10 @@ class ChatRunWorkerService:
     def run(self):
         concurrency = max(1, int(self.settings.chat_run_worker_concurrency))
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures = [executor.submit(self._worker_loop, index) for index in range(concurrency)]
+            futures = [
+                executor.submit(self._worker_loop, index)
+                for index in range(concurrency)
+            ]
             try:
                 for future in futures:
                     future.result()

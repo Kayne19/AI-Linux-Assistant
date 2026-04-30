@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
-
 from persistence.database import Base, get_engine, get_session_factory
+
+from utils.time_utils import _utc_now
 
 try:
     from sqlalchemy import inspect, select, text, update
@@ -17,10 +17,6 @@ from persistence.postgres_models import ChatMessage, ChatSession, Project, User
 
 
 AUTH_PROVIDER_AUTH0 = "auth0"
-
-
-def _utc_now():
-    return datetime.now(timezone.utc)
 
 
 class PostgresAppStore:
@@ -63,27 +59,45 @@ class PostgresAppStore:
         user_columns = {column["name"] for column in inspector.get_columns("users")}
         statements = []
         if "role" not in user_columns:
-            statements.append("ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'user'")
+            statements.append(
+                "ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'user'"
+            )
         if "auth_provider" not in user_columns:
-            statements.append("ALTER TABLE users ADD COLUMN auth_provider VARCHAR(32) NULL")
+            statements.append(
+                "ALTER TABLE users ADD COLUMN auth_provider VARCHAR(32) NULL"
+            )
         if "auth_subject" not in user_columns:
-            statements.append("ALTER TABLE users ADD COLUMN auth_subject VARCHAR(255) NULL")
+            statements.append(
+                "ALTER TABLE users ADD COLUMN auth_subject VARCHAR(255) NULL"
+            )
         if "email" not in user_columns:
-            statements.append("ALTER TABLE users ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT ''")
+            statements.append(
+                "ALTER TABLE users ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT ''"
+            )
         if "email_verified" not in user_columns:
-            statements.append("ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE")
+            statements.append(
+                "ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE"
+            )
         if "display_name" not in user_columns:
-            statements.append("ALTER TABLE users ADD COLUMN display_name VARCHAR(255) NOT NULL DEFAULT ''")
+            statements.append(
+                "ALTER TABLE users ADD COLUMN display_name VARCHAR(255) NOT NULL DEFAULT ''"
+            )
         if "avatar_url" not in user_columns:
-            statements.append("ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''")
+            statements.append(
+                "ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''"
+            )
         if "last_login_at" not in user_columns:
-            statements.append("ALTER TABLE users ADD COLUMN last_login_at TIMESTAMP WITH TIME ZONE NULL")
+            statements.append(
+                "ALTER TABLE users ADD COLUMN last_login_at TIMESTAMP WITH TIME ZONE NULL"
+            )
         with engine.begin() as connection:
             for statement in statements:
                 connection.exec_driver_sql(statement)
             # Postgres-only DDL; harmlessly ignored by sqlite tests.
             if engine.dialect.name.startswith("postgres"):
-                connection.exec_driver_sql("ALTER TABLE users ALTER COLUMN username DROP NOT NULL")
+                connection.exec_driver_sql(
+                    "ALTER TABLE users ALTER COLUMN username DROP NOT NULL"
+                )
                 connection.exec_driver_sql(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_auth_provider_subject "
                     "ON users (auth_provider, auth_subject)"
@@ -181,7 +195,11 @@ class PostgresAppStore:
 
     def list_projects(self, user_id):
         with self._session() as session:
-            stmt = select(Project).where(Project.user_id == user_id).order_by(Project.updated_at.desc())
+            stmt = (
+                select(Project)
+                .where(Project.user_id == user_id)
+                .order_by(Project.updated_at.desc())
+            )
             return list(session.scalars(stmt))
 
     def list_projects_for_user(self, user_id):
@@ -192,7 +210,9 @@ class PostgresAppStore:
         if not name:
             raise ValueError("project name is required")
         with self._session() as session:
-            project = Project(user_id=user_id, name=name, description=(description or "").strip())
+            project = Project(
+                user_id=user_id, name=name, description=(description or "").strip()
+            )
             session.add(project)
             session.commit()
             session.refresh(project)
@@ -227,7 +247,9 @@ class PostgresAppStore:
     def update_project_for_user(self, project_id, user_id, name, description=""):
         with self._session() as session:
             project = session.scalar(
-                select(Project).where(Project.id == project_id, Project.user_id == user_id)
+                select(Project).where(
+                    Project.id == project_id, Project.user_id == user_id
+                )
             )
             if project is None:
                 raise ValueError(f"Unknown project '{project_id}'")
@@ -241,9 +263,6 @@ class PostgresAppStore:
             session.refresh(project)
             return project
 
-    def update_project_for_user_id_first(self, user_id, project_id, name, description=""):
-        return self.update_project_for_user(project_id, user_id, name, description=description)
-
     def delete_project(self, project_id):
         with self._session() as session:
             project = session.scalar(select(Project).where(Project.id == project_id))
@@ -255,19 +274,20 @@ class PostgresAppStore:
     def delete_project_for_user(self, project_id, user_id):
         with self._session() as session:
             project = session.scalar(
-                select(Project).where(Project.id == project_id, Project.user_id == user_id)
+                select(Project).where(
+                    Project.id == project_id, Project.user_id == user_id
+                )
             )
             if project is None:
                 raise ValueError(f"Unknown project '{project_id}'")
             session.delete(project)
             session.commit()
 
-    def delete_project_for_user_id_first(self, user_id, project_id):
-        self.delete_project_for_user(project_id, user_id)
-
     def create_chat_session(self, project_id, title=""):
         with self._session() as session:
-            chat_session = ChatSession(project_id=project_id, title=(title or "").strip())
+            chat_session = ChatSession(
+                project_id=project_id, title=(title or "").strip()
+            )
             session.add(chat_session)
             session.commit()
             session.refresh(chat_session)
@@ -276,18 +296,19 @@ class PostgresAppStore:
     def create_chat_session_for_user(self, project_id, user_id, title=""):
         with self._session() as session:
             project = session.scalar(
-                select(Project).where(Project.id == project_id, Project.user_id == user_id)
+                select(Project).where(
+                    Project.id == project_id, Project.user_id == user_id
+                )
             )
             if project is None:
                 raise ValueError(f"Unknown project '{project_id}'")
-            chat_session = ChatSession(project_id=project_id, title=(title or "").strip())
+            chat_session = ChatSession(
+                project_id=project_id, title=(title or "").strip()
+            )
             session.add(chat_session)
             session.commit()
             session.refresh(chat_session)
             return chat_session
-
-    def create_chat_session_for_user_id_first(self, user_id, project_id, title=""):
-        return self.create_chat_session_for_user(project_id, user_id, title=title)
 
     def list_chat_sessions(self, project_id, limit=50):
         with self._session() as session:
@@ -301,9 +322,14 @@ class PostgresAppStore:
 
     def list_chat_sessions_for_user(self, project_id, user_id, limit=50):
         with self._session() as session:
-            if session.scalar(
-                select(Project.id).where(Project.id == project_id, Project.user_id == user_id)
-            ) is None:
+            if (
+                session.scalar(
+                    select(Project.id).where(
+                        Project.id == project_id, Project.user_id == user_id
+                    )
+                )
+                is None
+            ):
                 return None
             stmt = (
                 select(ChatSession)
@@ -319,7 +345,9 @@ class PostgresAppStore:
 
     def get_chat_session(self, chat_session_id):
         with self._session() as session:
-            return session.scalar(select(ChatSession).where(ChatSession.id == chat_session_id))
+            return session.scalar(
+                select(ChatSession).where(ChatSession.id == chat_session_id)
+            )
 
     def get_chat_session_for_user(self, chat_session_id, user_id):
         with self._session() as session:
@@ -334,7 +362,9 @@ class PostgresAppStore:
         if not title:
             raise ValueError("chat title is required")
         with self._session() as session:
-            chat_session = session.scalar(select(ChatSession).where(ChatSession.id == chat_session_id))
+            chat_session = session.scalar(
+                select(ChatSession).where(ChatSession.id == chat_session_id)
+            )
             if chat_session is None:
                 raise ValueError(f"Unknown chat session '{chat_session_id}'")
             chat_session.title = title
@@ -361,12 +391,11 @@ class PostgresAppStore:
             session.refresh(chat_session)
             return chat_session
 
-    def update_chat_session_title_for_user_id_first(self, user_id, chat_session_id, title):
-        return self.update_chat_session_title_for_user(chat_session_id, user_id, title)
-
     def delete_chat_session(self, chat_session_id):
         with self._session() as session:
-            chat_session = session.scalar(select(ChatSession).where(ChatSession.id == chat_session_id))
+            chat_session = session.scalar(
+                select(ChatSession).where(ChatSession.id == chat_session_id)
+            )
             if chat_session is None:
                 raise ValueError(f"Unknown chat session '{chat_session_id}'")
             session.delete(chat_session)
@@ -383,9 +412,6 @@ class PostgresAppStore:
                 raise ValueError(f"Unknown chat session '{chat_session_id}'")
             session.delete(chat_session)
             session.commit()
-
-    def delete_chat_session_for_user_id_first(self, user_id, chat_session_id):
-        self.delete_chat_session_for_user(chat_session_id, user_id)
 
     def get_session_context(self, chat_session_id):
         with self._session() as session:
@@ -420,7 +446,10 @@ class PostgresAppStore:
 
     def list_chat_sessions_checked(self, project_id, limit=50):
         with self._session() as session:
-            if session.scalar(select(Project.id).where(Project.id == project_id)) is None:
+            if (
+                session.scalar(select(Project.id).where(Project.id == project_id))
+                is None
+            ):
                 return None
             stmt = (
                 select(ChatSession)
@@ -432,7 +461,12 @@ class PostgresAppStore:
 
     def list_messages_checked(self, chat_session_id):
         with self._session() as session:
-            if session.scalar(select(ChatSession.id).where(ChatSession.id == chat_session_id)) is None:
+            if (
+                session.scalar(
+                    select(ChatSession.id).where(ChatSession.id == chat_session_id)
+                )
+                is None
+            ):
                 return None
             stmt = (
                 select(ChatMessage)
@@ -443,17 +477,25 @@ class PostgresAppStore:
 
     def list_messages_for_user(self, chat_session_id, user_id):
         with self._session() as session:
-            if session.scalar(
-                select(ChatSession.id)
-                .join(Project, ChatSession.project_id == Project.id)
-                .where(ChatSession.id == chat_session_id, Project.user_id == user_id)
-            ) is None:
+            if (
+                session.scalar(
+                    select(ChatSession.id)
+                    .join(Project, ChatSession.project_id == Project.id)
+                    .where(
+                        ChatSession.id == chat_session_id, Project.user_id == user_id
+                    )
+                )
+                is None
+            ):
                 return None
             stmt = (
                 select(ChatMessage)
                 .join(ChatSession, ChatMessage.session_id == ChatSession.id)
                 .join(Project, ChatSession.project_id == Project.id)
-                .where(ChatMessage.session_id == chat_session_id, Project.user_id == user_id)
+                .where(
+                    ChatMessage.session_id == chat_session_id,
+                    Project.user_id == user_id,
+                )
                 .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
             )
             return list(session.scalars(stmt))
@@ -488,11 +530,15 @@ class PostgresAppStore:
 
     def get_message(self, message_id):
         with self._session() as session:
-            return session.scalar(select(ChatMessage).where(ChatMessage.id == message_id))
+            return session.scalar(
+                select(ChatMessage).where(ChatMessage.id == message_id)
+            )
 
     def append_message(self, chat_session_id, role, content, council_entries=None):
         with self._session() as session:
-            chat_session = session.scalar(select(ChatSession).where(ChatSession.id == chat_session_id))
+            chat_session = session.scalar(
+                select(ChatSession).where(ChatSession.id == chat_session_id)
+            )
             if chat_session is None:
                 raise ValueError(f"Unknown chat session '{chat_session_id}'")
             message = ChatMessage(
@@ -568,7 +614,9 @@ class PostgresAppStore:
                         "updated_at": project.updated_at,
                     }
                 )
-                chats = sorted(project.chat_sessions, key=lambda c: c.updated_at, reverse=True)[:50]
+                chats = sorted(
+                    project.chat_sessions, key=lambda c: c.updated_at, reverse=True
+                )[:50]
                 chats_by_project[project.id] = [
                     {
                         "id": chat.id,

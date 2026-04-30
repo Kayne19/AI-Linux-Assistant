@@ -3,21 +3,9 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-try:
-    from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - optional in some test/runtime environments
-    def load_dotenv(*args, **kwargs):
-        return False
-
-try:
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import DeclarativeBase, sessionmaker
-except ImportError:  # pragma: no cover - optional until SQLAlchemy is installed
-    create_engine = None
-    sessionmaker = None
-
-    class DeclarativeBase:  # type: ignore[override]
-        pass
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
 class Base(DeclarativeBase):
@@ -37,7 +25,10 @@ def normalize_database_url(database_url):
     parsed = urlparse(database_url)
     if parsed.query:
         cleaned_query = urlencode(
-            [(key.strip(), value.strip()) for key, value in parse_qsl(parsed.query, keep_blank_values=True)],
+            [
+                (key.strip(), value.strip())
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            ],
             doseq=True,
         )
         database_url = urlunparse(parsed._replace(query=cleaned_query))
@@ -50,16 +41,7 @@ def get_database_url():
     return normalize_database_url(raw)
 
 
-def _ensure_sqlalchemy():
-    if create_engine is None or sessionmaker is None:
-        raise ImportError(
-            "SQLAlchemy is required for Postgres-backed persistence. "
-            "Install sqlalchemy and alembic in the AI-Linux-Assistant environment."
-        )
-
-
 def build_engine(database_url=None, echo=False):
-    _ensure_sqlalchemy()
     database_url = normalize_database_url(database_url or get_database_url())
     if not database_url:
         raise ValueError("DATABASE_URL is not set.")
@@ -73,7 +55,6 @@ def build_engine(database_url=None, echo=False):
 
 
 def build_session_factory(engine):
-    _ensure_sqlalchemy()
     return sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
 

@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import re
+
+from utils.time_utils import _utc_now as _utc_now_dt
 
 
 DEFAULT_HOST_LABEL = "local"
@@ -45,11 +46,13 @@ FACT_LABELS = {
 
 
 def _display_fact_label(fact_key):
-    return FACT_LABELS.get(fact_key, fact_key.replace(".", " ").replace("_", " ").title())
+    return FACT_LABELS.get(
+        fact_key, fact_key.replace(".", " ").replace("_", " ").title()
+    )
 
 
 def _utc_now():
-    return datetime.now(timezone.utc).isoformat()
+    return _utc_now_dt().isoformat()
 
 
 def _truncate(text, limit=220):
@@ -64,7 +67,11 @@ def _clean_text(text):
 
 
 def _tokenize(text):
-    return [token for token in re.split(r"[^a-zA-Z0-9_.+-]+", (text or "").lower()) if len(token) >= 3]
+    return [
+        token
+        for token in re.split(r"[^a-zA-Z0-9_.+-]+", (text or "").lower())
+        if len(token) >= 3
+    ]
 
 
 def _relevance_score(query_tokens, text):
@@ -112,7 +119,10 @@ class MemorySnapshot:
             for attempt in self.relevant_attempts:
                 action = attempt.get("action", "").strip()
                 command = attempt.get("command", "").strip()
-                outcome = attempt.get("outcome", "").strip() or attempt.get("status", "").strip()
+                outcome = (
+                    attempt.get("outcome", "").strip()
+                    or attempt.get("status", "").strip()
+                )
                 parts = [part for part in [action, command, outcome] if part]
                 if parts:
                     sections.append("- " + " | ".join(parts))

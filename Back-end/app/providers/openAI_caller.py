@@ -1,6 +1,5 @@
 import json
 import hashlib
-import re
 import time
 
 from orchestration.run_control import invoke_cancel_check
@@ -10,6 +9,7 @@ from providers.structured_output import (
     warning_payload,
 )
 from providers.step_protocol import ProviderStepResult, ProviderToolCall
+from providers._retry import _extract_retry_delay_seconds, _is_rate_limit_error
 from providers.openai_request_builder import (
     build_responses_request_kwargs,
     build_structured_output_kwargs,
@@ -20,21 +20,29 @@ from providers.openai_request_builder import (
 
 try:
     from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - optional dependency in some test/runtime environments
+except (
+    ImportError
+):  # pragma: no cover - optional dependency in some test/runtime environments
+
     def load_dotenv():
         return False
 
+
 try:
     from openai import OpenAI
-except ImportError:  # pragma: no cover - optional dependency in some test/runtime environments
+except (
+    ImportError
+):  # pragma: no cover - optional dependency in some test/runtime environments
     OpenAI = None
 
 
 class OpenAICaller:
-    def __init__(self, model="gpt-4.1-mini", reasoning_effort=None):
+    def __init__(self, model, reasoning_effort=None):
         load_dotenv()
         if OpenAI is None:
-            raise RuntimeError("OpenAI SDK is not installed. Install the 'openai' package to use this provider.")
+            raise RuntimeError(
+                "OpenAI SDK is not installed. Install the 'openai' package to use this provider."
+            )
         self.client = OpenAI()
         self.model = model
         self.reasoning_effort = reasoning_effort or None
@@ -46,7 +54,9 @@ class OpenAICaller:
                 role, content = item
             elif isinstance(item, dict):
                 role = item.get("role")
-                content = item.get("content") or item.get("parts", [{}])[0].get("text", "")
+                content = item.get("content") or item.get("parts", [{}])[0].get(
+                    "text", ""
+                )
             else:
                 continue
             if role == "model":
@@ -74,7 +84,9 @@ class OpenAICaller:
                     "type": "function",
                     "name": tool["name"],
                     "description": tool["description"],
-                    "parameters": self._normalize_strict_schema(tool["parameters"]) if strict else tool["parameters"],
+                    "parameters": self._normalize_strict_schema(tool["parameters"])
+                    if strict
+                    else tool["parameters"],
                     "strict": strict,
                 }
             )
@@ -102,7 +114,10 @@ class OpenAICaller:
     def _step_result_from_response(self, response):
         return ProviderStepResult(
             output_text=response.output_text or "",
-            tool_calls=[self._normalize_tool_call(tool_call) for tool_call in self._extract_tool_calls(response)],
+            tool_calls=[
+                self._normalize_tool_call(tool_call)
+                for tool_call in self._extract_tool_calls(response)
+            ],
             session_state={"response_id": getattr(response, "id", None)},
         )
 
@@ -125,7 +140,9 @@ class OpenAICaller:
 
     def _run_tool_handler(self, tool_handler, tool_name, tool_args):
         if tool_handler is None:
-            raise ValueError(f"OpenAI worker received tool call '{tool_name}' without a tool handler.")
+            raise ValueError(
+                f"OpenAI worker received tool call '{tool_name}' without a tool handler."
+            )
         return tool_handler(tool_name, tool_args)
 
     def _build_tool_outputs(self, tool_calls, tool_handler, cancel_check=None):
@@ -216,7 +233,11 @@ class OpenAICaller:
             return None
 
         input_details = getattr(usage, "input_tokens_details", None)
-        cached_tokens = getattr(input_details, "cached_tokens", 0) if input_details is not None else 0
+        cached_tokens = (
+            getattr(input_details, "cached_tokens", 0)
+            if input_details is not None
+            else 0
+        )
         input_tokens = getattr(usage, "input_tokens", None)
         output_tokens = getattr(usage, "output_tokens", None)
         return {
@@ -225,7 +246,9 @@ class OpenAICaller:
             "output_tokens": output_tokens,
         }
 
-    def _emit_prompt_cache_metrics_if_present(self, response, event_listener, round_number):
+    def _emit_prompt_cache_metrics_if_present(
+        self, response, event_listener, round_number
+    ):
         if event_listener is None:
             return
 
@@ -241,7 +264,9 @@ class OpenAICaller:
             },
         )
 
-    def _emit_structured_output_warning(self, event_listener, output_schema, reason, used_prompt_fallback):
+    def _emit_structured_output_warning(
+        self, event_listener, output_schema, reason, used_prompt_fallback
+    ):
         if event_listener is None:
             return
         event_listener(
@@ -257,34 +282,14 @@ class OpenAICaller:
         )
 
     def _is_rate_limit_error(self, exc):
-        status_code = getattr(exc, "status_code", None)
-        if status_code == 429:
-            return True
-
-        response = getattr(exc, "response", None)
-        if getattr(response, "status_code", None) == 429:
-            return True
-
-        code = getattr(exc, "code", None)
-        if code == "rate_limit_exceeded":
-            return True
-
-        message = str(exc).lower()
-        return "rate limit" in message or "429" in message
+        return _is_rate_limit_error(exc)
 
     def _extract_retry_delay_seconds(self, exc, attempt_number):
-        message = str(exc)
-        match = re.search(r"try again in\s+(\d+(?:\.\d+)?)ms", message, re.IGNORECASE)
-        if match:
-            return max(float(match.group(1)) / 1000.0, 1.0)
+        return _extract_retry_delay_seconds(exc, attempt_number)
 
-        match = re.search(r"try again in\s+(\d+(?:\.\d+)?)s", message, re.IGNORECASE)
-        if match:
-            return max(float(match.group(1)), 1.0)
-
-        return min(1.0 * (2 ** max(0, attempt_number - 1)), 80.0)
-
-    def _create_response_with_retries(self, request_kwargs, event_listener=None, round_number=0, max_retries=12):
+    def _create_response_with_retries(
+        self, request_kwargs, event_listener=None, round_number=0, max_retries=12
+    ):
         attempt = 0
         while True:
             try:
@@ -307,7 +312,9 @@ class OpenAICaller:
                     )
                 time.sleep(delay_seconds)
 
-    def _stream_response_with_retries(self, request_kwargs, event_listener=None, round_number=0, max_retries=12):
+    def _stream_response_with_retries(
+        self, request_kwargs, event_listener=None, round_number=0, max_retries=12
+    ):
         attempt = 0
         while True:
             emitted_text = False
@@ -328,7 +335,11 @@ class OpenAICaller:
                     return stream.get_final_response()
             except Exception as exc:
                 attempt += 1
-                if emitted_text or not self._is_rate_limit_error(exc) or attempt > max_retries:
+                if (
+                    emitted_text
+                    or not self._is_rate_limit_error(exc)
+                    or attempt > max_retries
+                ):
                     raise
 
                 delay_seconds = self._extract_retry_delay_seconds(exc, attempt)
@@ -341,7 +352,7 @@ class OpenAICaller:
                             "attempt": attempt,
                             "delay_seconds": delay_seconds,
                         },
-                )
+                    )
                 time.sleep(delay_seconds)
 
     def _create_text_response(
@@ -362,7 +373,9 @@ class OpenAICaller:
         except Exception as exc:
             if not structured_output:
                 raise
-            self._emit_structured_output_warning(event_listener, output_schema, str(exc), used_prompt_fallback=True)
+            self._emit_structured_output_warning(
+                event_listener, output_schema, str(exc), used_prompt_fallback=True
+            )
             fallback_kwargs = dict(request_kwargs)
             fallback_kwargs.pop("text", None)
             return self._create_response_with_retries(
@@ -371,7 +384,11 @@ class OpenAICaller:
                 round_number=round_number,
             )
 
-        if structured_output and response.output_text and not is_valid_json_text(response.output_text):
+        if (
+            structured_output
+            and response.output_text
+            and not is_valid_json_text(response.output_text)
+        ):
             self._emit_structured_output_warning(
                 event_listener,
                 output_schema,
@@ -411,7 +428,9 @@ class OpenAICaller:
                 cache_config,
             )
         )
-        request_kwargs["input"] = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
+        request_kwargs["input"] = self._translate_history(history or []) + [
+            {"role": "user", "content": user_message}
+        ]
 
         invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
@@ -422,7 +441,9 @@ class OpenAICaller:
             round_number=round_number,
         )
         invoke_cancel_check(cancel_check, "after_model_call")
-        self._emit_prompt_cache_metrics_if_present(response, event_listener, round_number)
+        self._emit_prompt_cache_metrics_if_present(
+            response, event_listener, round_number
+        )
         web_search_calls = self._extract_web_search_calls(response)
         if web_search_calls and event_listener is not None:
             event_listener(
@@ -466,7 +487,9 @@ class OpenAICaller:
                 cache_config,
             )
         )
-        request_kwargs["previous_response_id"] = (session_state or {}).get("response_id")
+        request_kwargs["previous_response_id"] = (session_state or {}).get(
+            "response_id"
+        )
         request_kwargs["input"] = self._translate_tool_results(tool_results)
 
         invoke_cancel_check(cancel_check, "before_model_call")
@@ -478,7 +501,9 @@ class OpenAICaller:
             round_number=round_number,
         )
         invoke_cancel_check(cancel_check, "after_model_call")
-        self._emit_prompt_cache_metrics_if_present(response, event_listener, round_number)
+        self._emit_prompt_cache_metrics_if_present(
+            response, event_listener, round_number
+        )
         web_search_calls = self._extract_web_search_calls(response)
         if web_search_calls and event_listener is not None:
             event_listener(
@@ -528,7 +553,9 @@ class OpenAICaller:
                 cache_config,
             )
         )
-        request_kwargs["input"] = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
+        request_kwargs["input"] = self._translate_history(history or []) + [
+            {"role": "user", "content": user_message}
+        ]
 
         invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
@@ -565,7 +592,10 @@ class OpenAICaller:
                     {
                         "round": tool_rounds,
                         "count": len(tool_calls),
-                        "names": [getattr(tool_call, "name", "unknown_tool") for tool_call in tool_calls],
+                        "names": [
+                            getattr(tool_call, "name", "unknown_tool")
+                            for tool_call in tool_calls
+                        ],
                     },
                 )
 
@@ -586,7 +616,9 @@ class OpenAICaller:
                 )
             )
             followup_kwargs["previous_response_id"] = response.id
-            followup_kwargs["input"] = self._build_tool_outputs(tool_calls, tool_handler, cancel_check=cancel_check)
+            followup_kwargs["input"] = self._build_tool_outputs(
+                tool_calls, tool_handler, cancel_check=cancel_check
+            )
             if event_listener is not None:
                 event_listener("tool_results_submitted", {"round": tool_rounds})
 
@@ -599,7 +631,9 @@ class OpenAICaller:
                 round_number=tool_rounds,
             )
             invoke_cancel_check(cancel_check, "after_model_call")
-            self._emit_prompt_cache_metrics_if_present(response, event_listener, tool_rounds)
+            self._emit_prompt_cache_metrics_if_present(
+                response, event_listener, tool_rounds
+            )
             web_search_calls = self._extract_web_search_calls(response)
             if web_search_calls and event_listener is not None:
                 event_listener(
@@ -667,7 +701,9 @@ class OpenAICaller:
                 cache_config,
             )
         )
-        request_kwargs["input"] = self._translate_history(history or []) + [{"role": "user", "content": user_message}]
+        request_kwargs["input"] = self._translate_history(history or []) + [
+            {"role": "user", "content": user_message}
+        ]
 
         invoke_cancel_check(cancel_check, "before_model_call")
         if event_listener is not None:
@@ -702,7 +738,10 @@ class OpenAICaller:
                     {
                         "round": tool_rounds,
                         "count": len(tool_calls),
-                        "names": [getattr(tool_call, "name", "unknown_tool") for tool_call in tool_calls],
+                        "names": [
+                            getattr(tool_call, "name", "unknown_tool")
+                            for tool_call in tool_calls
+                        ],
                     },
                 )
 
@@ -721,7 +760,9 @@ class OpenAICaller:
                 )
             )
             followup_kwargs["previous_response_id"] = response.id
-            followup_kwargs["input"] = self._build_tool_outputs(tool_calls, tool_handler, cancel_check=cancel_check)
+            followup_kwargs["input"] = self._build_tool_outputs(
+                tool_calls, tool_handler, cancel_check=cancel_check
+            )
             if event_listener is not None:
                 event_listener("tool_results_submitted", {"round": tool_rounds})
 
@@ -732,7 +773,9 @@ class OpenAICaller:
                 round_number=tool_rounds,
             )
             invoke_cancel_check(cancel_check, "after_model_call")
-            self._emit_prompt_cache_metrics_if_present(response, event_listener, tool_rounds)
+            self._emit_prompt_cache_metrics_if_present(
+                response, event_listener, tool_rounds
+            )
             web_search_calls = self._extract_web_search_calls(response)
             if web_search_calls and event_listener is not None:
                 event_listener(
