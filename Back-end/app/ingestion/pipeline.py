@@ -16,7 +16,13 @@ from pypdf import PdfReader
 
 from config.settings import SETTINGS
 from ingestion.audit import AuditLog
-from ingestion.console import print_artifact, print_banner, print_kv, print_progress, print_state, print_summary
+from ingestion.console import (
+    print_artifact,
+    print_banner,
+    print_progress,
+    print_state,
+    print_summary,
+)
 from ingestion.indexer import build_ingestion_indexer
 from ingestion.identity.heuristics import extract_heuristic_signals
 from ingestion.identity.llm_normalizer import normalize_with_llm
@@ -27,17 +33,13 @@ from ingestion.identity.sidecar import load_sidecar
 from ingestion.stages.cleaner import clean_elements
 from ingestion.stages.context_enrichment import (
     build_enrichment_requests,
-    enrich_batch_merge,
-    enrich_batch_poll,
     enrich_batch_prepare,
-    enrich_batch_submit,
     enrich_elements,
-    enrich_sync,
 )
 from ingestion.stages.pdf_intake import IntakeResult, process_pdf_parallel
 from ingestion.stages.sanitizer import sanitize_pdf
 from ingestion.stages.sections import attach_sections
-from ingestion.doc_state import DocState, save_state, load_state, state_dir
+from ingestion.doc_state import DocState, save_state, state_dir
 from ingestion.trace import IngestTraceRecorder
 from orchestration.routing_registry import load_registry, merge_domain_suggestion
 from prompting.prompts import REGISTRY_UPDATE_SYSTEM_PROMPT
@@ -189,10 +191,18 @@ def extract_document_identity(pdf_path: Path):
         "filename": pdf_path.name,
         "stem": pdf_path.stem,
         "metadata": {
-            "title": _clean_pdf_meta_value(getattr(metadata, "title", None) or metadata.get("/Title")),
-            "subject": _clean_pdf_meta_value(getattr(metadata, "subject", None) or metadata.get("/Subject")),
-            "author": _clean_pdf_meta_value(getattr(metadata, "author", None) or metadata.get("/Author")),
-            "producer": _clean_pdf_meta_value(getattr(metadata, "producer", None) or metadata.get("/Producer")),
+            "title": _clean_pdf_meta_value(
+                getattr(metadata, "title", None) or metadata.get("/Title")
+            ),
+            "subject": _clean_pdf_meta_value(
+                getattr(metadata, "subject", None) or metadata.get("/Subject")
+            ),
+            "author": _clean_pdf_meta_value(
+                getattr(metadata, "author", None) or metadata.get("/Author")
+            ),
+            "producer": _clean_pdf_meta_value(
+                getattr(metadata, "producer", None) or metadata.get("/Producer")
+            ),
         },
         "front_matter_samples": first_page_samples[:3],
         "heading_candidates": heading_candidates[:15],
@@ -236,7 +246,10 @@ def auto_apply_registry_suggestion(
                 doc=doc,
                 phase="registry_update",
                 action="reject_missing",
-                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                inputs={
+                    "document_identity": document_identity,
+                    "suggestion": suggestion,
+                },
                 chosen=result,
                 confidence=None,
                 rationale="no LLM output",
@@ -251,7 +264,10 @@ def auto_apply_registry_suggestion(
                 doc=doc,
                 phase="registry_update",
                 action="reject_bad_action",
-                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                inputs={
+                    "document_identity": document_identity,
+                    "suggestion": suggestion,
+                },
                 chosen=result,
                 confidence=None,
                 rationale="unrecognized action from LLM",
@@ -264,7 +280,10 @@ def auto_apply_registry_suggestion(
                 doc=doc,
                 phase="registry_update",
                 action="accept_skip",
-                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                inputs={
+                    "document_identity": document_identity,
+                    "suggestion": suggestion,
+                },
                 chosen=suggestion,
                 confidence=None,
                 rationale="accepted LLM suggestion",
@@ -280,7 +299,10 @@ def auto_apply_registry_suggestion(
                 doc=doc,
                 phase="registry_update",
                 action="reject_missing_label",
-                inputs={"document_identity": document_identity, "suggestion": suggestion},
+                inputs={
+                    "document_identity": document_identity,
+                    "suggestion": suggestion,
+                },
                 chosen=result,
                 confidence=None,
                 rationale="label missing",
@@ -319,16 +341,31 @@ def review_registry_suggestion(suggestion, document_identity):
         print("⚠️ Unrecognized choice. Accepting model suggestion.")
         return suggestion
 
-    default_label = suggestion.get("label", "") if suggestion.get("action") == "upsert" else ""
+    default_label = (
+        suggestion.get("label", "") if suggestion.get("action") == "upsert" else ""
+    )
     if not default_label:
-        default_label = _normalize_whitespace(document_identity.get("stem", "")).lower().replace(" ", "_")
+        default_label = (
+            _normalize_whitespace(document_identity.get("stem", ""))
+            .lower()
+            .replace(" ", "_")
+        )
 
-    default_aliases = suggestion.get("aliases", []) if suggestion.get("action") == "upsert" else []
+    default_aliases = (
+        suggestion.get("aliases", []) if suggestion.get("action") == "upsert" else []
+    )
     if not default_aliases:
-        default_aliases = [document_identity.get("filename", ""), document_identity.get("stem", "")]
+        default_aliases = [
+            document_identity.get("filename", ""),
+            document_identity.get("stem", ""),
+        ]
     default_aliases_text = ", ".join(alias for alias in default_aliases if alias)
 
-    default_description = suggestion.get("description", "") if suggestion.get("action") == "upsert" else ""
+    default_description = (
+        suggestion.get("description", "")
+        if suggestion.get("action") == "upsert"
+        else ""
+    )
     if not default_description:
         default_description = (
             document_identity.get("metadata", {}).get("title")
@@ -337,7 +374,9 @@ def review_registry_suggestion(suggestion, document_identity):
         )
 
     label = _prompt_with_default("Label", default_label)
-    aliases_text = _prompt_with_default("Aliases (comma-separated)", default_aliases_text)
+    aliases_text = _prompt_with_default(
+        "Aliases (comma-separated)", default_aliases_text
+    )
     description = _prompt_with_default("Description", default_description)
     aliases = [alias.strip() for alias in aliases_text.split(",") if alias.strip()]
 
@@ -389,7 +428,9 @@ def update_routing_registry(
         provider = SETTINGS.registry_updater.provider
     if model is None:
         model = SETTINGS.registry_updater.model
-    worker = build_text_worker(provider, model, SETTINGS.registry_updater.reasoning_effort)
+    worker = build_text_worker(
+        provider, model, SETTINGS.registry_updater.reasoning_effort
+    )
 
     user_message = f"""
     <existing_registry>
@@ -424,7 +465,9 @@ def update_routing_registry(
         print("⚠️ Registry update skipped: could not parse local model output.")
         return
 
-    suggestion = auto_apply_registry_suggestion(suggestion, document_identity, audit=audit)
+    suggestion = auto_apply_registry_suggestion(
+        suggestion, document_identity, audit=audit
+    )
 
     if suggestion.get("action") == "skip":
         print(f"ℹ️ Registry unchanged: {suggestion.get('reason', 'not needed')}")
@@ -452,9 +495,9 @@ class IngestState(str, Enum):
     UPDATE_REGISTRY = "UPDATE_REGISTRY"
     CLEAN_ELEMENTS = "CLEAN_ELEMENTS"
     DETECT_SECTIONS = "DETECT_SECTIONS"
-    ENRICH_CONTEXT = "ENRICH_CONTEXT"        # sync path
-    ENRICH_PREPARE = "ENRICH_PREPARE"        # batch path: build JSONL
-    ENRICH_SUBMIT = "ENRICH_SUBMIT"          # batch path: upload + create
+    ENRICH_CONTEXT = "ENRICH_CONTEXT"  # sync path
+    ENRICH_PREPARE = "ENRICH_PREPARE"  # batch path: build JSONL
+    ENRICH_SUBMIT = "ENRICH_SUBMIT"  # batch path: upload + create
     AWAITING_ENRICHMENT = "AWAITING_ENRICHMENT"  # parked between phase 1 and phase 2
     ENRICH_POLL = "ENRICH_POLL"
     ENRICH_MERGE = "ENRICH_MERGE"
@@ -490,9 +533,12 @@ class IngestPipelineConfig:
     sanitize: bool = False
     min_page_coverage: float = 0.9
     # Two-phase batch-mode fields
-    batch_mode: bool = False            # when True, phase 1 stops after ENRICH_PREPARE
+    batch_mode: bool = False  # when True, phase 1 stops after ENRICH_PREPARE
     ingest_state_dir: Path | None = None  # parent dir for durable per-doc state
     identity_llm_infill: bool = True
+    force_reingest: bool = (
+        False  # replace existing chunks / doc rows instead of skipping
+    )
 
 
 @dataclass
@@ -506,12 +552,14 @@ class IngestRunContext:
     generated_final_output: Path | None = None
     queue_index: int = 1
     queue_total: int = 1
-    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    started_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     completed_at: str | None = None
     duration_seconds: float = 0.0
     audit: "AuditLog | None" = None
     intake_result: "IntakeResult | None" = None
-    doc_id: str | None = None                 # canonical_source_id; stem fallback
+    doc_id: str | None = None  # canonical_source_id; stem fallback
     enrichment_requests: list = field(default_factory=list)
     doc_state_path: Path | None = None
     sidecar: dict | None = None
@@ -557,13 +605,16 @@ def _identity_value_is_weak(field: str, value, *, stem: str) -> bool:
         return False
     if isinstance(value, list):
         return not value or all(
-            item is None or (isinstance(item, str) and item.strip().lower() in {"", "unknown"})
+            item is None
+            or (isinstance(item, str) and item.strip().lower() in {"", "unknown"})
             for item in value
         )
     return False
 
 
-def _weak_identity_fields(identity: DocumentIdentity, sidecar: dict | None, heuristic_signals: dict) -> set[str]:
+def _weak_identity_fields(
+    identity: DocumentIdentity, sidecar: dict | None, heuristic_signals: dict
+) -> set[str]:
     stem = heuristic_signals.get("stem", "")
     sidecar_fields = set(sidecar or {})
     weak: set[str] = set()
@@ -625,7 +676,9 @@ class IngestPipelineRunner:
                 config.identity_reasoning_effort,
             )
 
-    def run(self, pdf_path: Path, queue_index: int = 1, queue_total: int = 1) -> IngestRunContext:
+    def run(
+        self, pdf_path: Path, queue_index: int = 1, queue_total: int = 1
+    ) -> IngestRunContext:
         run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%f')}Z_{pdf_path.stem}"
         audit = AuditLog(run_id=run_id, traces_dir=self.config.trace_output_dir)
         context = IngestRunContext(
@@ -699,7 +752,10 @@ class IngestPipelineRunner:
 
     def _transition(self, context: IngestRunContext, state: IngestState) -> None:
         context.state_trace.append(state.value)
-        print_state(f"[{context.queue_index}/{context.queue_total}] {state.value}", context.pdf_path.name)
+        print_state(
+            f"[{context.queue_index}/{context.queue_total}] {state.value}",
+            context.pdf_path.name,
+        )
 
     def _validate_input(self, context: IngestRunContext) -> None:
         if not context.pdf_path.exists():
@@ -752,7 +808,11 @@ class IngestPipelineRunner:
         )
         context.identity_weak_fields = sorted(weak_fields)
         llm_fields: dict[str, Any] = {}
-        if context.config.identity_llm_infill and weak_fields and self.identity_worker is not None:
+        if (
+            context.config.identity_llm_infill
+            and weak_fields
+            and self.identity_worker is not None
+        ):
             if context.audit is not None:
                 context.audit.record(
                     doc=context.pdf_path.name,
@@ -778,7 +838,9 @@ class IngestPipelineRunner:
                 pdf_info=context.pdf_info,
                 heuristic_signals=context.heuristic_signals,
                 sidecar=context.sidecar,
-                cache_suffix=hashlib.sha256(cache_material.encode("utf-8")).hexdigest()[:16],
+                cache_suffix=hashlib.sha256(cache_material.encode("utf-8")).hexdigest()[
+                    :16
+                ],
                 requested_fields=sorted(weak_fields),
             )
             llm_fields = _filter_llm_identity_fields(
@@ -803,7 +865,10 @@ class IngestPipelineRunner:
                 doc=context.pdf_path.name,
                 phase="identity_llm_infill",
                 action="skipped",
-                inputs={"enabled": context.config.identity_llm_infill, "weak_fields": sorted(weak_fields)},
+                inputs={
+                    "enabled": context.config.identity_llm_infill,
+                    "weak_fields": sorted(weak_fields),
+                },
                 chosen=None,
                 confidence=None,
                 rationale="no infill needed or worker disabled",
@@ -878,9 +943,7 @@ class IngestPipelineRunner:
                 rationale=reason,
             )
 
-        raise LowPageCoverageError(
-            f"{pdf_path.name}: quarantined ({action}): {reason}"
-        )
+        raise LowPageCoverageError(f"{pdf_path.name}: quarantined ({action}): {reason}")
 
     def _intake_raw(self, context: IngestRunContext) -> None:
         config = context.config
@@ -910,7 +973,11 @@ class IngestPipelineRunner:
         context.intake_result = intake_result
 
         # Clean up temporary sanitized file if we created one
-        if config.sanitize and source_for_intake != pdf_path and source_for_intake.exists():
+        if (
+            config.sanitize
+            and source_for_intake != pdf_path
+            and source_for_intake.exists()
+        ):
             try:
                 source_for_intake.unlink()
             except Exception:
@@ -965,7 +1032,9 @@ class IngestPipelineRunner:
 
     def _clean_elements(self, context: IngestRunContext) -> None:
         drop_boilerplate = context.config.mass_mode
-        context.cleaned_elements = clean_elements(context.raw_elements, drop_boilerplate=drop_boilerplate)
+        context.cleaned_elements = clean_elements(
+            context.raw_elements, drop_boilerplate=drop_boilerplate
+        )
         write_json(context.config.clean_output, context.cleaned_elements)
         print_summary(
             "Cleaning complete",
@@ -1024,7 +1093,9 @@ class IngestPipelineRunner:
         context.cleaned_elements = elements
 
         if context.config.ingest_state_dir is None:
-            raise RuntimeError("batch_mode requires IngestPipelineConfig.ingest_state_dir")
+            raise RuntimeError(
+                "batch_mode requires IngestPipelineConfig.ingest_state_dir"
+            )
 
         doc_id = self._doc_id_for(context)
         dir_path = state_dir(context.config.ingest_state_dir, doc_id)
@@ -1073,7 +1144,9 @@ class IngestPipelineRunner:
             source_pdf=str(context.pdf_path.resolve()),
             state=IngestState.AWAITING_ENRICHMENT.value,
             total_chunks=len(context.enrichment_requests),
-            document_identity=context.document_identity.to_dict() if context.document_identity else None,
+            document_identity=context.document_identity.to_dict()
+            if context.document_identity
+            else None,
             artifacts={
                 "raw_output": str(context.config.raw_output),
                 "clean_output": str(context.config.clean_output),
@@ -1094,7 +1167,9 @@ class IngestPipelineRunner:
             )
 
     def _finalize_output(self, context: IngestRunContext) -> None:
-        generated_final_output = context.config.clean_output.with_name(f"{context.config.clean_output.stem}_final.json")
+        generated_final_output = context.config.clean_output.with_name(
+            f"{context.config.clean_output.stem}_final.json"
+        )
         context.generated_final_output = generated_final_output
         if generated_final_output != context.config.final_output:
             context.config.final_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1105,12 +1180,15 @@ class IngestPipelineRunner:
         print_artifact("final artifact", context.config.final_output)
 
     def _ingest_vector_db(self, context: IngestRunContext) -> None:
-        print_summary("Vector DB ingest", [("source", context.config.final_output.name)])
+        print_summary(
+            "Vector DB ingest", [("source", context.config.final_output.name)]
+        )
         retrieval_config = load_retrieval_config()
         indexer = build_ingestion_indexer(retrieval_config)
         result = indexer.ingest_json(
             str(context.config.final_output),
             document_identity=context.document_identity,
+            force_reingest=context.config.force_reingest,
         )
         print_summary(
             "Vector DB ingest complete",
@@ -1155,7 +1233,9 @@ def _trace_config_snapshot(config: IngestPipelineConfig) -> dict[str, Any]:
         "sanitize": config.sanitize,
         "min_page_coverage": config.min_page_coverage,
         "batch_mode": config.batch_mode,
-        "ingest_state_dir": str(config.ingest_state_dir) if config.ingest_state_dir else None,
+        "ingest_state_dir": str(config.ingest_state_dir)
+        if config.ingest_state_dir
+        else None,
     }
 
 
@@ -1197,6 +1277,7 @@ def run_pipeline(
     batch_mode: bool = False,
     ingest_state_dir: Path | None = None,
     identity_llm_infill: bool = True,
+    force_reingest: bool = False,
 ) -> IngestRunContext:
     config = IngestPipelineConfig(
         raw_output=raw_output,
@@ -1213,9 +1294,12 @@ def run_pipeline(
         enrichment_reasoning_effort=enrichment_reasoning_effort,
         registry_provider=registry_provider,
         registry_model=registry_model,
-        identity_provider=identity_provider or SETTINGS.ingest_identity_normalizer.provider,
+        identity_provider=identity_provider
+        or SETTINGS.ingest_identity_normalizer.provider,
         identity_model=identity_model or SETTINGS.ingest_identity_normalizer.model,
-        identity_reasoning_effort=identity_reasoning_effort or SETTINGS.ingest_identity_normalizer.reasoning_effort or None,
+        identity_reasoning_effort=identity_reasoning_effort
+        or SETTINGS.ingest_identity_normalizer.reasoning_effort
+        or None,
         trace_output_dir=trace_output_dir,
         mass_mode=mass_mode,
         sanitize=sanitize,
@@ -1223,6 +1307,7 @@ def run_pipeline(
         batch_mode=batch_mode,
         ingest_state_dir=ingest_state_dir,
         identity_llm_infill=identity_llm_infill,
+        force_reingest=force_reingest,
     )
     runner = IngestPipelineRunner(config)
     trace = IngestTraceRecorder(
@@ -1255,7 +1340,8 @@ def run_pipeline(
 
     trace_status = (
         "awaiting_enrichment"
-        if context.state_trace and context.state_trace[-1] == IngestState.AWAITING_ENRICHMENT.value
+        if context.state_trace
+        and context.state_trace[-1] == IngestState.AWAITING_ENRICHMENT.value
         else "completed"
     )
     trace.record_document(
@@ -1298,7 +1384,11 @@ def ensure_queue_directories(root_dir: Path) -> tuple[Path, Path]:
 
 def iter_queue_files(ingest_dir: Path) -> list[Path]:
     return sorted(
-        [path for path in ingest_dir.iterdir() if path.is_file() and path.suffix.lower() == ".pdf"],
+        [
+            path
+            for path in ingest_dir.iterdir()
+            if path.is_file() and path.suffix.lower() == ".pdf"
+        ],
         key=lambda path: path.name.lower(),
     )
 
@@ -1318,7 +1408,9 @@ def _unique_destination_path(destination_dir: Path, source_file: Path) -> Path:
         counter += 1
 
 
-def stage_root_queue_files(root_dir: Path, ingest_dir: Path, completed_dir: Path) -> int:
+def stage_root_queue_files(
+    root_dir: Path, ingest_dir: Path, completed_dir: Path
+) -> int:
     staged_count = 0
     for path in sorted(root_dir.iterdir(), key=lambda item: item.name.lower()):
         if not path.is_file() or path.suffix.lower() != ".pdf":
@@ -1364,7 +1456,11 @@ def _log_queue_doc_failure(
             error=str(exc),
         )
     except Exception as record_exc:
-        logger.warning("queue: failed to record trace for %s: %s", context.pdf_path.name, record_exc)
+        logger.warning(
+            "queue: failed to record trace for %s: %s",
+            context.pdf_path.name,
+            record_exc,
+        )
     print_artifact("trace", trace.trace_path)
 
 
@@ -1418,14 +1514,16 @@ def run_directory_queue(root_dir: Path, config: IngestPipelineConfig) -> None:
                 filename=context.pdf_path.name,
                 status=(
                     "awaiting_enrichment"
-                    if context.state_trace and context.state_trace[-1] == IngestState.AWAITING_ENRICHMENT.value
+                    if context.state_trace
+                    and context.state_trace[-1] == IngestState.AWAITING_ENRICHMENT.value
                     else "completed"
                 ),
                 state_trace=context.state_trace,
                 raw_elements=len(context.raw_elements),
                 cleaned_elements=len(context.cleaned_elements),
                 started_at=context.started_at,
-                completed_at=context.completed_at or datetime.now(timezone.utc).isoformat(),
+                completed_at=context.completed_at
+                or datetime.now(timezone.utc).isoformat(),
                 duration_seconds=context.duration_seconds,
                 artifacts=_context_artifacts(context),
                 archived_to=destination,

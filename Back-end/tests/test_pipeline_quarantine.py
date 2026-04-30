@@ -25,6 +25,7 @@ from ingestion.stages.pdf_intake import IntakeResult
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _minimal_config(tmp_path: Path, **overrides) -> IngestPipelineConfig:
     """Build a minimal IngestPipelineConfig pointing at tmp_path."""
     defaults = dict(
@@ -89,7 +90,9 @@ def _low_coverage_result() -> IntakeResult:
 
 def _full_coverage_result() -> IntakeResult:
     return IntakeResult(
-        elements=[{"type": "NarrativeText", "text": "hello", "metadata": {"page_number": 1}}],
+        elements=[
+            {"type": "NarrativeText", "text": "hello", "metadata": {"page_number": 1}}
+        ],
         total_pages=1,
         processed_pages=1,
         failed_batches=[],
@@ -100,7 +103,11 @@ def _full_coverage_result() -> IntakeResult:
 def _long_coverage_result() -> IntakeResult:
     return IntakeResult(
         elements=[
-            {"type": "Title", "text": "Chapter 1 Setup", "metadata": {"page_number": 1}},
+            {
+                "type": "Title",
+                "text": "Chapter 1 Setup",
+                "metadata": {"page_number": 1},
+            },
             {
                 "type": "NarrativeText",
                 "text": "Install packages and configure the service. " * 4,
@@ -118,8 +125,8 @@ class _FakeIndexer:
     def __init__(self):
         self.calls = []
 
-    def ingest_json(self, path, *, document_identity=None):
-        self.calls.append((path, document_identity))
+    def ingest_json(self, path, *, document_identity=None, force_reingest=False):
+        self.calls.append((path, document_identity, force_reingest))
         return {"rows": 2, "table_name": "chunks", "created_table": False}
 
 
@@ -127,13 +134,17 @@ class _FakeIndexer:
 # Tests: low coverage raises LowPageCoverageError
 # ---------------------------------------------------------------------------
 
+
 class TestLowCoverageQuarantine:
     def test_low_coverage_raises_error(self, tmp_path):
         """process_pdf_parallel returning low coverage → LowPageCoverageError."""
         pdf = _make_pdf(tmp_path)
         config = _minimal_config(tmp_path, min_page_coverage=0.9)
 
-        with patch("ingestion.pipeline.process_pdf_parallel", return_value=_low_coverage_result()):
+        with patch(
+            "ingestion.pipeline.process_pdf_parallel",
+            return_value=_low_coverage_result(),
+        ):
             runner = IngestPipelineRunner.__new__(IngestPipelineRunner)
             runner.config = config
             context = IngestRunContext(pdf_path=pdf, config=config, audit=MagicMock())
@@ -146,7 +157,10 @@ class TestLowCoverageQuarantine:
         config = _minimal_config(tmp_path, min_page_coverage=0.9)
         mock_audit = MagicMock()
 
-        with patch("ingestion.pipeline.process_pdf_parallel", return_value=_low_coverage_result()):
+        with patch(
+            "ingestion.pipeline.process_pdf_parallel",
+            return_value=_low_coverage_result(),
+        ):
             runner = IngestPipelineRunner.__new__(IngestPipelineRunner)
             runner.config = config
             context = IngestRunContext(pdf_path=pdf, config=config, audit=mock_audit)
@@ -177,7 +191,10 @@ class TestLowCoverageQuarantine:
 
         config = _minimal_config(tmp_path, min_page_coverage=0.9)
 
-        with patch("ingestion.pipeline.process_pdf_parallel", return_value=_low_coverage_result()):
+        with patch(
+            "ingestion.pipeline.process_pdf_parallel",
+            return_value=_low_coverage_result(),
+        ):
             runner = IngestPipelineRunner.__new__(IngestPipelineRunner)
             runner.config = config
             context = IngestRunContext(pdf_path=pdf, config=config, audit=MagicMock())
@@ -186,7 +203,9 @@ class TestLowCoverageQuarantine:
             except LowPageCoverageError:
                 pass
 
-        assert expected_failed_dir.exists(), f"Expected quarantine dir: {expected_failed_dir}"
+        assert expected_failed_dir.exists(), (
+            f"Expected quarantine dir: {expected_failed_dir}"
+        )
 
     def test_low_coverage_error_json_has_expected_keys(self, tmp_path):
         """error.json must have: reason, page_coverage_pct, processed_pages, total_pages, failed_batches, ts."""
@@ -197,7 +216,10 @@ class TestLowCoverageQuarantine:
 
         config = _minimal_config(tmp_path, min_page_coverage=0.9)
 
-        with patch("ingestion.pipeline.process_pdf_parallel", return_value=_low_coverage_result()):
+        with patch(
+            "ingestion.pipeline.process_pdf_parallel",
+            return_value=_low_coverage_result(),
+        ):
             runner = IngestPipelineRunner.__new__(IngestPipelineRunner)
             runner.config = config
             context = IngestRunContext(pdf_path=pdf, config=config, audit=MagicMock())
@@ -209,13 +231,21 @@ class TestLowCoverageQuarantine:
         error_json = expected_failed_dir / "error.json"
         assert error_json.exists()
         data = json.loads(error_json.read_text())
-        for key in ("reason", "page_coverage_pct", "processed_pages", "total_pages", "failed_batches", "ts"):
+        for key in (
+            "reason",
+            "page_coverage_pct",
+            "processed_pages",
+            "total_pages",
+            "failed_batches",
+            "ts",
+        ):
             assert key in data, f"error.json missing key: {key}"
 
 
 # ---------------------------------------------------------------------------
 # Tests: sanitizer failure quarantine
 # ---------------------------------------------------------------------------
+
 
 class TestSanitizerFailedQuarantine:
     def test_sanitizer_failure_raises_low_coverage_error(self, tmp_path):
@@ -277,6 +307,7 @@ class TestSanitizerFailedQuarantine:
 # Tests: sufficient coverage does NOT quarantine
 # ---------------------------------------------------------------------------
 
+
 class TestSufficientCoverageNoQuarantine:
     def test_full_coverage_does_not_raise(self, tmp_path):
         """Full coverage should not trigger LowPageCoverageError."""
@@ -284,7 +315,10 @@ class TestSufficientCoverageNoQuarantine:
         config = _minimal_config(tmp_path, min_page_coverage=0.9)
 
         with (
-            patch("ingestion.pipeline.process_pdf_parallel", return_value=_full_coverage_result()),
+            patch(
+                "ingestion.pipeline.process_pdf_parallel",
+                return_value=_full_coverage_result(),
+            ),
             patch("ingestion.pipeline.write_json"),
         ):
             runner = IngestPipelineRunner.__new__(IngestPipelineRunner)
@@ -297,12 +331,16 @@ class TestSufficientCoverageNoQuarantine:
 
 
 class TestPipelineIdentitySections:
-    def test_sync_run_resolves_identity_sections_and_indexes_with_identity(self, tmp_path):
+    def test_sync_run_resolves_identity_sections_and_indexes_with_identity(
+        self, tmp_path
+    ):
         pdf = _make_pdf(tmp_path, stem="manual")
         config = _minimal_config(tmp_path, min_page_coverage=0.9)
         fake_indexer = _FakeIndexer()
 
-        def fake_enrich_elements(json_path, context_text_path, worker, model, cache_config):
+        def fake_enrich_elements(
+            json_path, context_text_path, worker, model, cache_config
+        ):
             final = Path(json_path).with_name(f"{Path(json_path).stem}_final.json")
             final.write_text(Path(json_path).read_text())
 
@@ -311,13 +349,29 @@ class TestPipelineIdentitySections:
         runner.enrichment_worker = MagicMock()
 
         with (
-            patch("ingestion.pipeline.load_sidecar", return_value={"canonical_title": "Operator Manual", "source_family": "debian"}),
-            patch("ingestion.pipeline.process_pdf_parallel", return_value=_long_coverage_result()),
-            patch("ingestion.pipeline.export_full_text", side_effect=lambda _pdf, out: out.write_text("Operator Manual context")),
+            patch(
+                "ingestion.pipeline.load_sidecar",
+                return_value={
+                    "canonical_title": "Operator Manual",
+                    "source_family": "debian",
+                },
+            ),
+            patch(
+                "ingestion.pipeline.process_pdf_parallel",
+                return_value=_long_coverage_result(),
+            ),
+            patch(
+                "ingestion.pipeline.export_full_text",
+                side_effect=lambda _pdf, out: out.write_text("Operator Manual context"),
+            ),
             patch("ingestion.pipeline.update_routing_registry"),
-            patch("ingestion.pipeline.enrich_elements", side_effect=fake_enrich_elements),
+            patch(
+                "ingestion.pipeline.enrich_elements", side_effect=fake_enrich_elements
+            ),
             patch("ingestion.pipeline.load_retrieval_config", return_value=MagicMock()),
-            patch("ingestion.pipeline.build_ingestion_indexer", return_value=fake_indexer),
+            patch(
+                "ingestion.pipeline.build_ingestion_indexer", return_value=fake_indexer
+            ),
         ):
             context = runner.run(pdf)
 
@@ -343,9 +397,23 @@ class TestPipelineIdentitySections:
         runner.enrichment_worker = MagicMock()
 
         with (
-            patch("ingestion.pipeline.load_sidecar", return_value={"canonical_title": "Batch Manual", "source_family": "debian"}),
-            patch("ingestion.pipeline.process_pdf_parallel", return_value=_long_coverage_result()),
-            patch("ingestion.pipeline.export_full_text", side_effect=lambda _pdf, out: out.write_text("Batch Manual context " * 20)),
+            patch(
+                "ingestion.pipeline.load_sidecar",
+                return_value={
+                    "canonical_title": "Batch Manual",
+                    "source_family": "debian",
+                },
+            ),
+            patch(
+                "ingestion.pipeline.process_pdf_parallel",
+                return_value=_long_coverage_result(),
+            ),
+            patch(
+                "ingestion.pipeline.export_full_text",
+                side_effect=lambda _pdf, out: out.write_text(
+                    "Batch Manual context " * 20
+                ),
+            ),
             patch("ingestion.pipeline.update_routing_registry"),
         ):
             context = runner.run(pdf)
@@ -411,7 +479,11 @@ class TestPipelineIdentitySections:
 
     def test_conservative_llm_fields_are_dropped(self):
         filtered = _filter_llm_identity_fields(
-            llm_fields={"trust_tier": "canonical", "freshness_status": "current", "doc_kind": "admin_guide"},
+            llm_fields={
+                "trust_tier": "canonical",
+                "freshness_status": "current",
+                "doc_kind": "admin_guide",
+            },
             requested_fields={"trust_tier", "freshness_status", "doc_kind"},
             audit=None,
             doc="x.pdf",
@@ -423,6 +495,7 @@ class TestPipelineIdentitySections:
 # ---------------------------------------------------------------------------
 # Tests: quarantine path resolves relative to queue root (not repo layout)
 # ---------------------------------------------------------------------------
+
 
 class TestQuarantinePathQueueRelative:
     def test_non_standard_queue_layout(self, tmp_path):
@@ -438,7 +511,10 @@ class TestQuarantinePathQueueRelative:
 
         config = _minimal_config(tmp_path, min_page_coverage=0.9)
 
-        with patch("ingestion.pipeline.process_pdf_parallel", return_value=_low_coverage_result()):
+        with patch(
+            "ingestion.pipeline.process_pdf_parallel",
+            return_value=_low_coverage_result(),
+        ):
             runner = IngestPipelineRunner.__new__(IngestPipelineRunner)
             runner.config = config
             context = IngestRunContext(pdf_path=pdf, config=config, audit=MagicMock())
@@ -447,5 +523,7 @@ class TestQuarantinePathQueueRelative:
             except LowPageCoverageError:
                 pass
 
-        assert expected_failed_dir.exists(), f"Expected quarantine dir: {expected_failed_dir}"
+        assert expected_failed_dir.exists(), (
+            f"Expected quarantine dir: {expected_failed_dir}"
+        )
         assert (expected_failed_dir / "error.json").exists()

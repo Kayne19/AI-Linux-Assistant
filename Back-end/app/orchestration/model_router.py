@@ -1728,16 +1728,17 @@ class ModelRouter:
 
         try:
             self._check_cancel("before_auto_name")
-            raw_title = self.chat_namer.generate_text(
-                (
+            step_result = self.chat_namer.start_text_step(
+                system_prompt=(
                     "You generate short chat titles from the opening exchange. "
                     "Return only a concise 3 to 6 word title with no quotes or trailing punctuation."
                 ),
-                f"User: {user_text[:400]}\nAssistant: {assistant_text[:400]}",
+                user_message=f"User: {user_text[:400]}\nAssistant: {assistant_text[:400]}",
                 temperature=0.3,
                 max_output_tokens=30,
                 cancel_check=self.cancel_check,
             )
+            raw_title = step_result.output_text
             self._check_cancel("after_auto_name")
             title = (
                 (raw_title or "")

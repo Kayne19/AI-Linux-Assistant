@@ -69,7 +69,9 @@ def _entities_as_json(raw) -> str:
         return "{}"
 
 
-def _source_key_for(json_path: str, raw_data: list[dict], document_identity: DocumentIdentity | None) -> str:
+def _source_key_for(
+    json_path: str, raw_data: list[dict], document_identity: DocumentIdentity | None
+) -> str:
     if document_identity is not None and document_identity.canonical_source_id:
         return document_identity.canonical_source_id
     source_hint = ""
@@ -84,13 +86,21 @@ def _source_key_for(json_path: str, raw_data: list[dict], document_identity: Doc
 
 
 class IngestionIndexer:
-    def __init__(self, store, metadata_store, embedding_provider, *, documents_store=None):
+    def __init__(
+        self, store, metadata_store, embedding_provider, *, documents_store=None
+    ):
         self.store = store
         self.metadata_store = metadata_store
         self.embedding_provider = embedding_provider
         self.documents_store = documents_store
 
-    def ingest_json(self, json_path: str, *, document_identity: DocumentIdentity | None = None):
+    def ingest_json(
+        self,
+        json_path: str,
+        *,
+        document_identity: DocumentIdentity | None = None,
+        force_reingest: bool = False,
+    ):
         if not os.path.exists(json_path):
             raise FileNotFoundError(json_path)
 
@@ -100,9 +110,29 @@ class IngestionIndexer:
         data_to_insert = []
         texts_to_embed = []
 
-        source_display = document_identity.canonical_title if document_identity else None
-        canonical_source_id = document_identity.canonical_source_id if document_identity else ""
+        source_display = (
+            document_identity.canonical_title if document_identity else None
+        )
+        canonical_source_id = (
+            document_identity.canonical_source_id if document_identity else ""
+        )
         source_key = _source_key_for(json_path, raw_data, document_identity)
+        id_prefix = f"vec_{source_key}_"
+
+        # --- Idempotency guard ---
+        existing_chunk_count = self.store.count_rows_by_id_prefix(id_prefix)
+        if existing_chunk_count > 0:
+            if not force_reingest:
+                return {
+                    "rows": 0,
+                    "created_table": False,
+                    "table_name": self.store.table_name,
+                    "skipped": True,
+                    "reason": f"{existing_chunk_count} chunk(s) already exist for source_key={source_key}",
+                    "document_row": None,
+                }
+            # Replace: delete old chunks first
+            self.store.delete_by_id_prefix(id_prefix)
 
         for idx, element in enumerate(raw_data):
             metadata = element.get("metadata", {}) or {}
@@ -110,7 +140,11 @@ class IngestionIndexer:
             display_text = (element.get("text", "") or "").strip()
 
             page_start, page_end = _coerce_page_range(metadata, element)
-            chunk_source = source_display if source_display else metadata.get("filename", "Unknown")
+            chunk_source = (
+                source_display
+                if source_display
+                else metadata.get("filename", "Unknown")
+            )
 
             row = {
                 "id": f"vec_{source_key}_{idx:06d}",
@@ -120,14 +154,36 @@ class IngestionIndexer:
                 "source": chunk_source,
                 "type": element.get("type", "Text"),
                 "canonical_source_id": canonical_source_id,
-                "section_path": _chunk_metadata_value(metadata, element, "section_path", list(_CHUNK_DEFAULTS["section_path"])),
-                "section_title": _chunk_metadata_value(metadata, element, "section_title", _CHUNK_DEFAULTS["section_title"]) or "",
+                "section_path": _chunk_metadata_value(
+                    metadata,
+                    element,
+                    "section_path",
+                    list(_CHUNK_DEFAULTS["section_path"]),
+                ),
+                "section_title": _chunk_metadata_value(
+                    metadata, element, "section_title", _CHUNK_DEFAULTS["section_title"]
+                )
+                or "",
                 "page_start": page_start,
                 "page_end": page_end,
-                "chunk_type": _chunk_metadata_value(metadata, element, "chunk_type", _CHUNK_DEFAULTS["chunk_type"]),
-                "local_subsystems": _chunk_metadata_value(metadata, element, "local_subsystems", list(_CHUNK_DEFAULTS["local_subsystems"])),
-                "entities": _entities_as_json(_chunk_metadata_value(metadata, element, "entities", None)),
-                "applies_to_override": _chunk_metadata_value(metadata, element, "applies_to_override", list(_CHUNK_DEFAULTS["applies_to_override"])),
+                "chunk_type": _chunk_metadata_value(
+                    metadata, element, "chunk_type", _CHUNK_DEFAULTS["chunk_type"]
+                ),
+                "local_subsystems": _chunk_metadata_value(
+                    metadata,
+                    element,
+                    "local_subsystems",
+                    list(_CHUNK_DEFAULTS["local_subsystems"]),
+                ),
+                "entities": _entities_as_json(
+                    _chunk_metadata_value(metadata, element, "entities", None)
+                ),
+                "applies_to_override": _chunk_metadata_value(
+                    metadata,
+                    element,
+                    "applies_to_override",
+                    list(_CHUNK_DEFAULTS["applies_to_override"]),
+                ),
             }
 
             texts_to_embed.append(search_text)
@@ -139,7 +195,9 @@ class IngestionIndexer:
                 require_metadata=False,
             )
 
-        vectors = self.embedding_provider.embed_documents(texts_to_embed, show_progress_bar=True)
+        vectors = self.embedding_provider.embed_documents(
+            texts_to_embed, show_progress_bar=True
+        )
         for index, row in enumerate(data_to_insert):
             row["vector"] = vectors[index]
 
@@ -149,7 +207,9 @@ class IngestionIndexer:
 
         doc_result = None
         if document_identity is not None:
-            doc_result = self._write_document_row(document_identity)
+            doc_result = self._write_document_row(
+                document_identity, force_reingest=force_reingest
+            )
 
         return {
             "rows": len(data_to_insert),
@@ -158,14 +218,37 @@ class IngestionIndexer:
             "document_row": doc_result,
         }
 
-    def _write_document_row(self, identity: DocumentIdentity) -> dict:
-        """Upsert the identity row into the ``documents`` table.
+    def _write_document_row(
+        self, identity: DocumentIdentity, *, force_reingest: bool = False
+    ) -> dict:
+        """Write the identity row into the ``documents`` table.
+
+        Idempotent: if a row already exists for this canonical_source_id,
+        return without writing unless *force_reingest* is True, in which case
+        the old row is deleted first.
 
         Falls back silently when no documents store is configured so legacy
         callers keep working.
         """
         if self.documents_store is None:
             return {"written": False, "reason": "no documents_store"}
+
+        escaped_id = identity.canonical_source_id.replace("'", "''")
+        predicate = f"canonical_source_id = '{escaped_id}'"
+        existing_count = self.documents_store.count_rows_matching(predicate)
+
+        if existing_count > 0:
+            if not force_reingest:
+                return {
+                    "written": False,
+                    "created_table": False,
+                    "table_name": self.documents_store.table_name,
+                    "canonical_source_id": identity.canonical_source_id,
+                    "skipped": True,
+                    "reason": "document row already exists",
+                }
+            self.documents_store.delete_by_predicate(predicate)
+
         row = _document_identity_to_row(identity)
         created = self.documents_store.add_rows([row])
         return {

@@ -12,7 +12,11 @@ for path in (BACKEND_DIR, APP_DIR):
         sys.path.insert(0, str(path))
 
 from app.config.settings import SETTINGS
-from app.ingestion.pipeline import IngestPipelineConfig, run_directory_queue, run_pipeline
+from app.ingestion.pipeline import (
+    IngestPipelineConfig,
+    run_directory_queue,
+    run_pipeline,
+)
 
 
 def _identity_settings():
@@ -20,8 +24,14 @@ def _identity_settings():
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the full PDF -> clean -> enrich -> LanceDB pipeline.")
-    parser.add_argument("pdf_path", nargs="?", help="Path to the PDF to ingest, relative to Back-end/ or absolute.")
+    parser = argparse.ArgumentParser(
+        description="Run the full PDF -> clean -> enrich -> LanceDB pipeline."
+    )
+    parser.add_argument(
+        "pdf_path",
+        nargs="?",
+        help="Path to the PDF to ingest, relative to Back-end/ or absolute.",
+    )
     parser.add_argument("--raw-output", default="extracted_raw.json")
     parser.add_argument("--clean-output", default="extracted_clean.json")
     parser.add_argument("--context-output", default="doc_context.txt")
@@ -31,15 +41,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hi-res-model-name", default="yolox")
     parser.add_argument("--min-text-chars", type=int, default=50)
     parser.add_argument("--ocr-dpi", type=int, default=300)
-    parser.add_argument("--enrichment-provider", default=SETTINGS.ingest_enricher.provider)
+    parser.add_argument(
+        "--enrichment-provider", default=SETTINGS.ingest_enricher.provider
+    )
     parser.add_argument("--enrichment-model", default=SETTINGS.ingest_enricher.model)
-    parser.add_argument("--enrichment-reasoning-effort", default=SETTINGS.ingest_enricher.reasoning_effort or "")
-    parser.add_argument("--registry-provider", default=SETTINGS.registry_updater.provider)
+    parser.add_argument(
+        "--enrichment-reasoning-effort",
+        default=SETTINGS.ingest_enricher.reasoning_effort or "",
+    )
+    parser.add_argument(
+        "--registry-provider", default=SETTINGS.registry_updater.provider
+    )
     parser.add_argument("--registry-model", default=SETTINGS.registry_updater.model)
     identity_settings = _identity_settings()
     parser.add_argument("--identity-provider", default=identity_settings.provider)
     parser.add_argument("--identity-model", default=identity_settings.model)
-    parser.add_argument("--identity-reasoning-effort", default=identity_settings.reasoning_effort or "")
+    parser.add_argument(
+        "--identity-reasoning-effort", default=identity_settings.reasoning_effort or ""
+    )
     parser.add_argument(
         "--no-identity-llm-infill",
         action="store_true",
@@ -86,6 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="ingest_state",
         help="Directory holding per-document durable state for Phase 2. Default: ingest_state",
     )
+    parser.add_argument(
+        "--force-reingest",
+        action="store_true",
+        default=False,
+        help="Delete existing chunks and document rows before re-ingesting. Without this flag, re-ingestion of an already-indexed document is a no-op.",
+    )
     return parser
 
 
@@ -102,7 +127,11 @@ def build_config(args) -> IngestPipelineConfig:
     sanitize = mass_mode or getattr(args, "sanitize", False)
     min_page_coverage = getattr(args, "min_page_coverage", 0.9)
     batch_mode = getattr(args, "batch_mode", False)
-    ingest_state_dir = resolve_path(getattr(args, "ingest_state_dir", "ingest_state")) if batch_mode else None
+    ingest_state_dir = (
+        resolve_path(getattr(args, "ingest_state_dir", "ingest_state"))
+        if batch_mode
+        else None
+    )
     return IngestPipelineConfig(
         raw_output=resolve_path(args.raw_output),
         clean_output=resolve_path(args.clean_output),
@@ -128,6 +157,7 @@ def build_config(args) -> IngestPipelineConfig:
         batch_mode=batch_mode,
         ingest_state_dir=ingest_state_dir,
         identity_llm_infill=not args.no_identity_llm_infill,
+        force_reingest=args.force_reingest,
     )
 
 
@@ -137,10 +167,19 @@ def main() -> int:
     pdf_path_arg = args.pdf_path
 
     if not pdf_path_arg:
-        print("Usage: python scripts/ingest/ingest_pipeline.py <pdf_path_or_queue_dir>", file=sys.stderr)
+        print(
+            "Usage: python scripts/ingest/ingest_pipeline.py <pdf_path_or_queue_dir>",
+            file=sys.stderr,
+        )
         print("  Examples:", file=sys.stderr)
-        print("    python scripts/ingest/ingest_pipeline.py data/The_Linux_Command_Line.pdf", file=sys.stderr)
-        print("    python scripts/ingest/ingest_pipeline.py /path/to/queue_root", file=sys.stderr)
+        print(
+            "    python scripts/ingest/ingest_pipeline.py data/The_Linux_Command_Line.pdf",
+            file=sys.stderr,
+        )
+        print(
+            "    python scripts/ingest/ingest_pipeline.py /path/to/queue_root",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
 
     target_path = resolve_path(pdf_path_arg)
@@ -176,6 +215,7 @@ def main() -> int:
         batch_mode=config.batch_mode,
         ingest_state_dir=config.ingest_state_dir,
         identity_llm_infill=config.identity_llm_infill,
+        force_reingest=config.force_reingest,
     )
     return 0
 
