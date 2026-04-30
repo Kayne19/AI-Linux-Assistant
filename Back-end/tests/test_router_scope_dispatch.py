@@ -98,7 +98,9 @@ def test_scope_hints_reach_direct_responder_tool_retrieval():
 
 
 def test_canonical_source_ids_reach_direct_responder_tool_retrieval():
-    database = ScopedDatabase(known_ids=["proxmox-ve-8-admin-guide", "debian-install-guide-12"])
+    database = ScopedDatabase(
+        known_ids=["proxmox-ve-8-admin-guide", "debian-install-guide-12"]
+    )
     router = build_router(database)
 
     router._handle_responder_tool_call(
@@ -171,6 +173,7 @@ def test_regular_responder_tool_call_carries_scope_fields():
     tool_args = {
         "query": "create zfs pool",
         "relevant_documents": ["proxmox"],
+        "evidence_gap": "zfs docs",
         "scope_hints": {"source_family": "proxmox", "major_subsystems": ["storage"]},
         "canonical_source_ids": ["proxmox-ve-8-admin-guide"],
     }
@@ -188,7 +191,13 @@ def test_regular_responder_tool_call_carries_scope_fields():
 def test_tool_schema_reads_canonical_ids_from_database_facade():
     router = build_router(ScopedDatabase(known_ids=["b-doc", "a-doc"]))
 
-    search_tool = next(tool for tool in router._build_response_tools() if tool["name"] == "search_rag_database")
+    search_tool = next(
+        tool
+        for tool in router._build_response_tools()
+        if tool["name"] == "search_rag_database"
+    )
 
-    assert search_tool["parameters"]["properties"]["canonical_source_ids"]["items"]["enum"] == ["a-doc", "b-doc"]
+    assert search_tool["parameters"]["properties"]["canonical_source_ids"]["items"][
+        "enum"
+    ] == ["a-doc", "b-doc"]
     assert "scope_hints" in search_tool["parameters"]["properties"]

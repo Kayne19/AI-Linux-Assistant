@@ -192,6 +192,10 @@ class FakeTitleWorker:
         self.calls.append({"args": args, "kwargs": kwargs})
         return self.response_text
 
+    def start_text_step(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return SimpleNamespace(output_text=self.response_text)
+
 
 class FakeMemoryExtractor:
     def __init__(self, extracted=None):
