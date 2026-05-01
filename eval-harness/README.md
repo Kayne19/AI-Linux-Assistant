@@ -10,6 +10,7 @@ The current design target is an AWS-first, Postgres-backed workflow with four ex
 4. Blind judging grades stored transcripts after the benchmark run completes.
 
 Golden images are now target-image driven:
+
 - scenarios name a `target_image`
 - the AWS backend resolves that alias to the newest tagged golden AMI
 - if the AMI is missing, `verify-scenario` auto-builds it with Packer and prints build progress to `stderr`
@@ -33,6 +34,7 @@ Every transcript is graded against five fixed criteria applied universally acros
 Per-scenario planner rubric items are appended as a `[scenario]`-tagged block and graded alongside the universal items. The universal block (tagged `[universal]`) is what drives cross-subject and cross-scenario aggregates.
 
 **0–4 anchored scale (absolute mode):**
+
 - `0` wrong/harmful · `1` poor · `2` partial · `3` good · `4` excellent
 - `Outcome` is mechanically enforced: forced to 4 if `repair_success=True`, forced to ≤2 if False.
 
@@ -48,12 +50,14 @@ Both modes share the same rubric so absolute and pairwise signals are conceptual
 ### Multi-Judge Ensembling
 
 Configure a `judges:` list (see Config Shape) to run multiple providers in parallel:
+
 - **Absolute mode**: per-criterion scores are averaged (weighted).
 - **Pairwise mode**: fractional-win aggregation before Bradley-Terry fitting.
 
 Variance across judges is persisted as a calibration signal per criterion. A single-entry `judges:` list reproduces single-judge behavior.
 
 **Defaults when no `judges:` is configured:**
+
 - `--mode pairwise`: Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) via `ANTHROPIC_API_KEY`.
 - `--mode absolute`: Claude Sonnet 4.6 (`claude-sonnet-4-6`) via `ANTHROPIC_API_KEY`.
 
@@ -77,6 +81,7 @@ python -m eval_harness calibrate-judge \
 ```
 
 Outputs:
+
 - **Pairwise mode**: per-criterion raw agreement on non-tie verdicts + Cohen's κ over `{A, B, tie}`.
 - **Absolute mode**: mean absolute error per criterion + Pearson correlation per criterion.
 
@@ -85,6 +90,7 @@ Pass `--out PATH` to write the JSON report to disk. This subcommand reads the DB
 ## Methodology
 
 V1 benchmark flow:
+
 - planner LLM produces the troubleshooting scenario
 - planner must define both sabotage and objective verification procedures, including any prerequisite installation or provisioning needed to create the failure
 - sabotage steps are stored as raw executable shell commands or shell snippets in `sabotage_procedure`; prose labels, markdown fences, and backticks are rejected during validation
@@ -110,6 +116,7 @@ V1 benchmark flow:
 ## Architecture
 
 Core harness logic:
+
 - scenario validation and lifecycle orchestration
 - planner-driven sabotage verification loop
 - benchmark run orchestration across subject clones
@@ -117,12 +124,14 @@ Core harness logic:
 - Postgres persistence and JSON artifact export
 
 Adapter-specific logic:
+
 - AWS EC2 + SSM resource lifecycle
 - SSM-based sandbox command execution
 - AI Linux Assistant durable-run HTTP integration
 - planner/judge model transport
 
 Out of core:
+
 - canonical scoring
 - subject-specific weighting or composite scores
 - product-specific memory shortcuts
@@ -132,6 +141,7 @@ Out of core:
 Postgres is the source of truth.
 
 Primary tables:
+
 - `scenarios`
 - `scenario_revisions`
 - `scenario_setup_runs`
@@ -148,6 +158,7 @@ JSON artifact files are export-only projections built from those records.
 ## Scenario Contract
 
 Runnable scenarios must include:
+
 - stable scenario name
 - title and summary
 - `what_it_tests`
@@ -163,6 +174,7 @@ Runnable scenarios must include:
 The scenario contract is generic. It does not contain AI Linux Assistant-specific memory writes or product-internal shortcuts.
 
 Repair checks should describe the observable repaired state directly. They can combine:
+
 - `expected_exit_code`
 - `expected_substrings`
 - `expected_regexes`
@@ -173,6 +185,7 @@ Repair checks should describe the observable repaired state directly. They can c
 That keeps Linux-specific knowledge in the scenario definition instead of the benchmark orchestrator.
 
 Planner guidance should keep repair checks aligned to the real success condition:
+
 - validate the repaired end state, not a stricter incidental administrative invariant
 - include user-visible or symptom-level checks whenever the scenario has a user-visible success condition
 - avoid checks that can fail on a repaired system because of missing privileges, stale runtime files, or execution context alone
@@ -209,22 +222,26 @@ The user proxy plays a human user at a Linux terminal who does not know why the 
 The proxy itself is driven by a provider-backed tool loop. OpenAI uses the Responses API, Anthropic uses Messages tool use, and Google uses Gemini function calling. When the AI subject asks the user to run a command, the proxy model can call the `run_command` function tool, the harness executes that command on the sandbox clone, and the real command output is returned to the proxy using the provider's native tool-result format. The proxy system prompt is seeded from the same visible opening user message that the subject sees, not from a more revealing hidden problem statement, which keeps the proxy context from leaking extra scenario detail.
 
 For Phase 1 file editing, the proxy may also use bounded file tools:
+
 - `read_file(path)` to inspect a regular UTF-8 text file
 - `apply_text_edit(path, old_text, new_text)` to perform precise surgical edits
 
 For Phase 2, if the proxy is asked to use an interactive program like `nano` or `vim`, it initiates a persistent terminal session via `tmux` and uses:
+
 - `interactive_send(input_text?, control_keys?)` to inject literal text and/or named control keys
 - `interactive_read()` to capture the current screen buffer
 
 Interactive sessions are keyed per evaluation-run terminal and reused across follow-up proxy tool calls rather than being recreated on every send/read operation.
 
 Those tools fail closed:
+
 - only regular files are allowed
 - binary or non-UTF-8 files are rejected
 - oversized files are rejected instead of being silently truncated
 - `apply_text_edit` succeeds only when `old_text` matches exactly one literal occurrence
 
 The proxy is not a diagnostician:
+
 - it should only relay exact commands the subject explicitly requested
 - it should not add `sudo`, extra flags, extra subcommands, or a more specific variant on its own
 - it should not bundle multiple commands unless the subject explicitly requested multiple commands
@@ -236,6 +253,7 @@ The proxy is not a diagnostician:
 The benchmark loop enforces those constraints and suppresses proxy turns that keep trying to run unrequested commands.
 
 `user_proxy_llm.mode` controls how literal the proxy is:
+
 - `strict_relay` keeps the old exact-command behavior
 - `pragmatic_human` is the benchmark default and allows a narrow safe read-only fallback set when the assistant's intent is obvious but underspecified
 - those fallback actions are limited to `read_file`, `cat`, `sed -n`, `file`, `ls -l`, and `readlink -f`
@@ -243,6 +261,7 @@ The benchmark loop enforces those constraints and suppresses proxy turns that ke
 - `pragmatic_human` still does not infer edits, restarts, installs, or privileged commands
 
 Benchmark verification is still objective:
+
 - repair checks run after every subject turn
 - if the proxy executes a potentially state-changing action such as `run_command`, `apply_text_edit`, or `interactive_send`, repair checks run again immediately instead of waiting for another subject turn
 - soft closure messages from the proxy such as "looks good now, thanks" trigger one final verification pass before the harness spends another subject turn
@@ -265,11 +284,13 @@ If the subject asks for the exact output of a command the proxy already ran in a
 After the proxy LLM generates a reply, the FSM makes a second API call — `review_reply(...)` — using the same model and provider. The reviewer now returns structured JSON with a `verdict` of `accept`, `rewrite_text`, or `retry_with_tools`, plus the corrected `final_reply`, a short `reason`, and an internal `audit_json` block. The generator still decides whether to use tools or ask a human-style question. The reviewer only enforces that the proxy stayed in first-person confused-user voice and used tools appropriately for the assistant's request. `rewrite_text` means the generator's underlying action or question was fine but the wording slipped into assistant/helpdesk voice, so the FSM uses the corrected `final_reply` without retrying the turn. If the reviewer says `retry_with_tools`, the FSM performs one bounded corrective retry before finalizing the turn, carrying the same turn's tool outputs into the retry context. The review payloads are persisted in `evaluation_events` as internal `proxy_review` and `proxy_review_retry_decision` records; they are not rendered as transcript turns.
 
 Character fidelity is a first-class review criterion:
+
 - the proxy is reminded that it is the human user with terminal access
 - the subject is treated as a text-only assistant that cannot run commands or inspect the machine directly
 - replies that tell the assistant what to run, ask it to paste output, or otherwise switch into helpdesk voice are review failures rather than acceptable clarifications
 
 Review activity is also visible live during benchmark execution:
+
 - the stderr progress sink renders `proxy_review` and `proxy_review_retry_decision` events with the verdict, short reason, and compact reviewer reasoning
 - the full internal `audit_json`, including reviewer reasoning and character-analysis fields, still lives in `evaluation_events.payload_json` for DB inspection
 
@@ -281,11 +302,31 @@ When the proxy cannot produce a meaningful reply (empty content, no tool calls, 
 
 ```text
 eval-harness/
+  Back-end/
+    eval_harness/             Python package (engine)
+    api/                      FastAPI control center
+    tests/                    Harness tests
+  Front-end/                  Vite + React + TypeScript control center UI
   examples/                   Config and request templates
   infra/aws/                  AWS and AMI/operator notes
-  src/eval_harness/           Python package
-  tests/                      Harness tests
 ```
+
+## Control Center (new)
+
+A browser-based dashboard replaces the CLI-only workflow:
+
+```bash
+# Eval harness only
+python run_dev.py --eval-only
+
+# Chatbot + eval harness together
+python run_dev.py --eval-harness
+```
+
+- FastAPI backend on `http://localhost:8001`
+- React frontend on `http://localhost:5174`
+
+Modes: **Dashboard** (mission control), **Scenarios** (verify / benchmark / judge / run-all), **Infra** (AWS instances + preflight), **Data** (DB browser + subject CRUD).
 
 ## CLI
 
@@ -364,12 +405,14 @@ python -m eval_harness generate-scenario \
 Planner, judge, and `user_proxy_llm` config sections now select their model backend with `provider: "openai" | "anthropic" | "google"` plus provider-specific credentials such as `api_key`.
 
 OpenAI planner defaults:
+
 - when `planner.reasoning_effort` is omitted, the OpenAI planner uses `xhigh`
 - `planner.web_search_enabled` defaults to `true` on the OpenAI planner path and enables Responses web search for scenario generation, validation repair, sabotage review, and rectification planning
 - when `planner.request_timeout_seconds` is omitted, planner requests run without a client-side timeout
 - broad web search is the current v1 behavior; non-OpenAI planner providers ignore that toggle
 
 Benchmark subject turn limits are scenario-first:
+
 - `subjects[].adapter_config.max_turns` is optional
 - when omitted, the scenario's `turn_budget` is the effective cap
 - when present, it acts as an explicit lower bound for cheaper capped runs
@@ -450,6 +493,7 @@ python -m eval_harness validate-scenario examples/scenarios/nginx_service_repair
 ## Config Shape
 
 The main config now uses these top-level sections:
+
 - `database`
 - `backend`
 - `controller`
@@ -507,6 +551,7 @@ For the `openai_chatgpt` subject adapter:
 - `subjects[].adapter_config` can override any of those values per subject when you want to compare multiple ChatGPT baselines in the same run
 
 See:
+
 - [aws_ai_linux_assistant_config.json](eval-harness/examples/aws_ai_linux_assistant_config.json)
 - [aws_ai_linux_assistant_vs_chatgpt_config.json](eval-harness/examples/aws_ai_linux_assistant_vs_chatgpt_config.json)
 - [general_linux_troubleshooting_request.json](eval-harness/examples/planner_requests/general_linux_troubleshooting_request.json)
@@ -514,11 +559,13 @@ See:
 - [nginx_service_repair.json](eval-harness/examples/scenarios/nginx_service_repair.json)
 
 For the AWS backend:
+
 - `backend.default_target_image` is the alias used when a scenario or request does not override it (canonical alias: `debian-12-ssm-golden`)
 - `backend.target_images` maps each supported alias to the canonical Packer template directory and distro var-file
 - `backend.golden_ami_id` remains a legacy single-image override only; prefer tagged target images
 
 For the SSM controller:
+
 - `controller.type` must be `"ssm"`
 - `controller.aws_region` is the region where instances run
 - `controller.command_timeout_seconds` controls how long the harness waits for an SSM shell command to complete; `600` is the default

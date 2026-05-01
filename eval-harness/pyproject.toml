@@ -24,10 +24,10 @@ test = ["pytest>=8.0.0"]
 eval-harness = "eval_harness.cli:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "Back-end" }
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["Back-end"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["Back-end/tests"]

@@ -34,6 +34,15 @@ FRONTEND_PORT = os.getenv("AILA_FRONTEND_PORT", "5173")
 CHAT_WORKER_ID = os.getenv("CHAT_RUN_WORKER_ID", "dev-chat-worker")
 CHAT_WORKER_PROCESS_COUNT = max(1, int(os.getenv("CHAT_RUN_WORKER_PROCESS_COUNT", "4")))
 
+EVAL_HARNESS_BACKEND_HOST = os.getenv("EVAL_HARNESS_BACKEND_HOST", "0.0.0.0")
+EVAL_HARNESS_BACKEND_PORT = os.getenv("EVAL_HARNESS_BACKEND_PORT", "8001")
+EVAL_HARNESS_FRONTEND_HOST = os.getenv("EVAL_HARNESS_FRONTEND_HOST", "0.0.0.0")
+EVAL_HARNESS_FRONTEND_PORT = os.getenv("EVAL_HARNESS_FRONTEND_PORT", "5174")
+
+EVAL_HARNESS_DIR = ROOT_DIR / "eval-harness"
+EVAL_HARNESS_BACKEND_DIR = EVAL_HARNESS_DIR / "Back-end"
+EVAL_HARNESS_FRONTEND_DIR = EVAL_HARNESS_DIR / "Front-end"
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -59,6 +68,16 @@ def _parse_args() -> argparse.Namespace:
         "--workers-only",
         action="store_true",
         help="Start only chat workers and skip API/frontend.",
+    )
+    mode_group.add_argument(
+        "--eval-harness",
+        action="store_true",
+        help="Start the chatbot stack AND the eval harness stack.",
+    )
+    mode_group.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="Start only the eval harness stack (no chatbot).",
     )
     parser.add_argument(
         "--skip-backend",
@@ -224,6 +243,9 @@ def main() -> None:
     start_frontend = not args.skip_frontend
     start_workers = not args.skip_workers
 
+    start_eval_backend = False
+    start_eval_frontend = False
+
     if args.frontend_only:
         start_backend = False
         start_frontend = True
@@ -240,8 +262,28 @@ def main() -> None:
         start_backend = False
         start_frontend = False
         start_workers = True
+    elif args.eval_harness:
+        start_backend = True
+        start_frontend = True
+        start_workers = True
+        start_eval_backend = True
+        start_eval_frontend = True
+    elif args.eval_only:
+        start_backend = False
+        start_frontend = False
+        start_workers = False
+        start_eval_backend = True
+        start_eval_frontend = True
 
-    if not any((start_backend, start_frontend, start_workers)):
+    if not any(
+        (
+            start_backend,
+            start_frontend,
+            start_workers,
+            start_eval_backend,
+            start_eval_frontend,
+        )
+    ):
         raise SystemExit(
             "Nothing selected to start. Remove the skip flags or choose a mode like --frontend-only."
         )
@@ -304,6 +346,69 @@ def main() -> None:
                 f"worker-{worker_index + 1}", worker_command, BACKEND_DIR, worker_env
             )
             processes.append((f"worker-{worker_index + 1}", worker))
+
+    if start_eval_backend or start_eval_frontend:
+        _require_path(EVAL_HARNESS_BACKEND_DIR, "Eval harness Back-end directory")
+        _require_path(EVAL_HARNESS_FRONTEND_DIR, "Eval harness Front-end directory")
+
+    if start_eval_backend:
+        _ensure_port_available(
+            EVAL_HARNESS_BACKEND_HOST,
+            EVAL_HARNESS_BACKEND_PORT,
+            "Eval harness backend",
+            "Change EVAL_HARNESS_BACKEND_PORT or stop the other process.",
+        )
+        eval_backend_env = os.environ.copy()
+        eval_backend_env["PYTHONPATH"] = "eval_harness"
+        eval_backend_command = [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "api.main:create_app",
+            "--factory",
+            "--app-dir",
+            "api",
+            "--host",
+            EVAL_HARNESS_BACKEND_HOST,
+            "--port",
+            EVAL_HARNESS_BACKEND_PORT,
+            "--reload",
+        ]
+        eval_backend = _spawn_process(
+            "eval-backend",
+            eval_backend_command,
+            EVAL_HARNESS_BACKEND_DIR,
+            eval_backend_env,
+        )
+        processes.append(("eval-backend", eval_backend))
+
+    if start_eval_frontend:
+        _require_command("npm")
+        _ensure_port_available(
+            EVAL_HARNESS_FRONTEND_HOST,
+            EVAL_HARNESS_FRONTEND_PORT,
+            "Eval harness frontend",
+            "Change EVAL_HARNESS_FRONTEND_PORT or stop the other process.",
+        )
+        eval_frontend_env = os.environ.copy()
+        eval_frontend_env.setdefault("BROWSER", "none")
+        eval_frontend_command = [
+            "npm",
+            "run",
+            "dev",
+            "--",
+            "--host",
+            EVAL_HARNESS_FRONTEND_HOST,
+            "--port",
+            EVAL_HARNESS_FRONTEND_PORT,
+        ]
+        eval_frontend = _spawn_process(
+            "eval-frontend",
+            eval_frontend_command,
+            EVAL_HARNESS_FRONTEND_DIR,
+            eval_frontend_env,
+        )
+        processes.append(("eval-frontend", eval_frontend))
 
     def _shutdown(*_args) -> None:
         for label, process in reversed(processes):
