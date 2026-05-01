@@ -138,6 +138,11 @@ Admin-only runtime settings surface for:
 - retrieval runtime tuning
 - conversation-history tuning
 
+Before reading or writing settings, the API ensures the singleton
+`app_settings` table and any newly mapped nullable settings columns exist. This
+keeps workers from falling back to code defaults solely because a settings
+column is missing on an older local database.
+
 Current response shape includes:
 
 - top-level model-role entries such as `classifier`, `responder`, and `chat_namer`

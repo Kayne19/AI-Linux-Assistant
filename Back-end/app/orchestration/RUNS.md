@@ -32,6 +32,8 @@ The durable run layer is built around two Postgres-backed records.
 Startup compatibility rule:
 
 - the run store ensures `chat_runs` and `chat_run_events` exist before querying them
+- app settings loading ensures the `app_settings` singleton table and any newly
+  mapped nullable settings columns exist before workers read runtime settings
 - this keeps older databases from hard-failing bootstrap after the durable-run feature lands
 - full schema initialization still belongs to `scripts/db/init_postgres_schema.py`
 

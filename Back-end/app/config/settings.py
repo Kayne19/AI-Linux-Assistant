@@ -3,6 +3,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import sqlalchemy as sa
+
 from utils.env import load_project_dotenv
 
 
@@ -302,6 +304,7 @@ def _load_settings_row():
         from persistence.postgres_models import AppSettingsModel
 
         session_factory = get_session_factory()
+        _ensure_app_settings_schema(session_factory)
         with session_factory() as session:
             return session.get(AppSettingsModel, 1)
     except Exception as exc:
@@ -314,6 +317,57 @@ def _load_settings_row():
         else:
             logger.warning("Failed to load app_settings row from DB.", exc_info=True)
         return None
+
+
+def _app_settings_column_type_sql(column, dialect_name: str) -> str:
+    if isinstance(column.type, sa.Integer):
+        return "INTEGER"
+    if isinstance(column.type, sa.DateTime):
+        if dialect_name == "postgresql":
+            return "TIMESTAMP WITH TIME ZONE"
+        return "DATETIME"
+    return "TEXT"
+
+
+def _ensure_app_settings_schema(session_factory) -> None:
+    """Bring the runtime settings table up to the mapped nullable columns.
+
+    Alembic remains the canonical schema path, but workers must not silently
+    ignore DB settings just because one newly mapped nullable column is missing.
+    This mirrors the durable-run startup compatibility approach: create the
+    singleton table if needed, add missing nullable columns, and ensure id=1
+    exists before loading settings.
+    """
+    from persistence.postgres_models import AppSettingsModel
+
+    engine = getattr(session_factory, "kw", {}).get("bind")
+    if engine is None:
+        with session_factory() as session:
+            engine = session.get_bind()
+    AppSettingsModel.__table__.create(bind=engine, checkfirst=True)
+
+    inspector = sa.inspect(engine)
+    existing_columns = {
+        column["name"] for column in inspector.get_columns(AppSettingsModel.__tablename__)
+    }
+    missing_columns = [
+        column
+        for column in AppSettingsModel.__table__.columns
+        if column.name not in existing_columns
+    ]
+    if missing_columns:
+        dialect_name = engine.dialect.name
+        with engine.begin() as connection:
+            for column in missing_columns:
+                column_type = _app_settings_column_type_sql(column, dialect_name)
+                connection.exec_driver_sql(
+                    f"ALTER TABLE app_settings ADD COLUMN {column.name} {column_type}"
+                )
+
+    with session_factory() as session:
+        if session.get(AppSettingsModel, 1) is None:
+            session.add(AppSettingsModel(id=1))
+            session.commit()
 
 
 def _apply_db_overrides(base: AppSettings, row) -> AppSettings:

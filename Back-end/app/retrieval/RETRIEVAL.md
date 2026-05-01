@@ -63,7 +63,9 @@ Current runtime resolution rule:
   - `neighbor_pages`
   - `max_expanded` (applied at bundle boundaries)
   - `source_profile_sample`
-- if the DB schema is older than the running code, retrieval falls back to env/code defaults until migrations are applied
+- if the `app_settings` schema is older than the running code, startup settings
+  loading creates missing nullable settings columns before reading overrides;
+  full schema initialization still belongs to the Alembic path
 
 ### `app/retrieval/factory.py`
 

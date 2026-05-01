@@ -8,6 +8,7 @@ from config.settings import (
     SETTINGS,
     RoleModelSettings,
     _apply_db_overrides,
+    _ensure_app_settings_schema,
     load_effective_settings,
 )
 
@@ -204,3 +205,39 @@ def test_full_override_all_components(monkeypatch):
         assert role.reasoning_effort == "low", (
             f"{comp}.reasoning_effort should be 'low'"
         )
+
+
+def test_ensure_app_settings_schema_adds_missing_columns_and_preserves_row():
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from persistence.postgres_models import AppSettingsModel
+
+    engine = sa.create_engine("sqlite:///:memory:", future=True)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE app_settings ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "responder_provider TEXT)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO app_settings (id, responder_provider) VALUES (1, 'anthropic')"
+        )
+
+    session_factory = sessionmaker(
+        bind=engine, expire_on_commit=False, future=True
+    )
+
+    _ensure_app_settings_schema(session_factory)
+
+    columns = {
+        column["name"] for column in sa.inspect(engine).get_columns("app_settings")
+    }
+    assert "ingest_identity_normalizer_provider" in columns
+    assert "retrieval_initial_fetch" in columns
+    assert "history_summarize_char_threshold" in columns
+
+    with session_factory() as session:
+        row = session.get(AppSettingsModel, 1)
+        assert row is not None
+        assert row.responder_provider == "anthropic"

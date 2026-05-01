@@ -13,6 +13,7 @@ from auth import (
 from config.settings import (
     load_settings,
     _apply_db_overrides,
+    _ensure_app_settings_schema,
     SETTINGS,
 )
 from persistence.postgres_app_store import PostgresAppStore
@@ -1418,6 +1419,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         from persistence.postgres_models import AppSettingsModel
 
         session_factory = get_session_factory()
+        _ensure_app_settings_schema(session_factory)
         with session_factory() as session:
             row = session.get(AppSettingsModel, 1)
         return _build_settings_response(row)
@@ -1430,6 +1432,7 @@ def create_app(*, app_store=None, run_store=None, auth_verifier=None):
         from persistence.postgres_models import AppSettingsModel
 
         session_factory = get_session_factory()
+        _ensure_app_settings_schema(session_factory)
         with session_factory() as session:
             row = session.get(AppSettingsModel, 1)
             if row is None:
