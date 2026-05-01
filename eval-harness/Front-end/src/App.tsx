@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import Dashboard from "./components/Dashboard";
 import { DataBrowser } from "./components/DataBrowser";
 import InfraPage from "./components/InfraPage";
+import { NewScenarioPage } from "./components/NewScenarioPage";
 import ScenarioDetail from "./components/ScenarioDetail";
 import { ScenariosGrid } from "./components/ScenariosGrid";
 import DebugDrawer from "./debug/DebugDrawer";
@@ -14,6 +15,9 @@ export default function App() {
 	const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(
 		null,
 	);
+	const [newScenarioSource, setNewScenarioSource] = useState<
+		string | undefined
+	>();
 	const [debugOpen, setDebugOpen] = useState(false);
 	const { scenarios } = useScenarios();
 
@@ -92,7 +96,14 @@ export default function App() {
 			{/* Main panel */}
 			<main className="main-panel">
 				{mode === "scenarios" && selectedScenarioId && (
-					<ScenarioDetail scenarioId={selectedScenarioId} />
+					<ScenarioDetail
+						scenarioId={selectedScenarioId}
+						onGenerateVariant={(sourceId: string) => {
+							setNewScenarioSource(sourceId);
+							setMode("new-scenario");
+							setSelectedScenarioId(null);
+						}}
+					/>
 				)}
 
 				{mode === "scenarios" && !selectedScenarioId && (
@@ -102,12 +113,29 @@ export default function App() {
 					/>
 				)}
 
-				{mode === "new-scenario" && null}
+				{mode === "new-scenario" && (
+					<NewScenarioPage
+						sourceScenarioId={newScenarioSource}
+						onDiscard={() => {
+							setMode("scenarios");
+							setNewScenarioSource(undefined);
+						}}
+						onSaved={(id: string) => {
+							setMode("scenarios");
+							setSelectedScenarioId(id);
+							setNewScenarioSource(undefined);
+						}}
+					/>
+				)}
 
 				{mode === "dashboard" && (
 					<Dashboard
 						scenarios={scenarios}
 						onModeChange={handleSelectScenario}
+						onNewScenario={() => {
+							setNewScenarioSource(undefined);
+							setMode("new-scenario");
+						}}
 					/>
 				)}
 

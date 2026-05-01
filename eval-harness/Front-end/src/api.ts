@@ -150,6 +150,11 @@ export const api = {
 			method: "POST",
 			body: JSON.stringify(body),
 		}),
+	createScenarioFromSpec: (spec: Record<string, unknown>) =>
+		request<CreateScenarioResponse>("/api/v1/scenarios", {
+			method: "POST",
+			body: JSON.stringify(spec),
+		}),
 	createRevision: (scenarioId: string, body: CreateRevisionRequest) =>
 		request<CreateRevisionResponse>(
 			`/api/v1/scenarios/${scenarioId}/revisions`,
