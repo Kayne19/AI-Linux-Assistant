@@ -6,7 +6,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-SRC_EVAL_HARNESS = Path(__file__).resolve().parents[1] / "src" / "eval_harness"
+SRC_EVAL_HARNESS = Path(__file__).resolve().parents[1] / "eval_harness"
 if "eval_harness" not in sys.modules:
     namespace_pkg = ModuleType("eval_harness")
     namespace_pkg.__path__ = [str(SRC_EVAL_HARNESS)]  # type: ignore[attr-defined]
@@ -75,7 +75,9 @@ def _response(
     )
 
 
-def test_request_json_uses_responses_structured_outputs_and_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_request_json_uses_responses_structured_outputs_and_config_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(output_text='{"ok": true}')]]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
@@ -131,6 +133,7 @@ def test_request_json_uses_responses_structured_outputs_and_config_defaults(monk
                     },
                 }
             },
+            "background": True,
         }
     ]
 
@@ -168,7 +171,9 @@ def test_request_json_omits_timeout_when_unset(monkeypatch: pytest.MonkeyPatch) 
     }
 
 
-def test_request_json_supports_tools_without_breaking_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_request_json_supports_tools_without_breaking_structured_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(output_text='{"ok": true}')]]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
@@ -224,11 +229,14 @@ def test_request_json_supports_tools_without_breaking_structured_output(monkeypa
                     },
                 }
             },
+            "background": True,
         }
     ]
 
 
-def test_create_response_supports_previous_response_id_and_tool_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_response_supports_previous_response_id_and_tool_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(output_text="done")]]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
@@ -269,12 +277,16 @@ def test_create_response_supports_previous_response_id_and_tool_outputs(monkeypa
     ]
 
 
-def test_create_response_supports_conversation_id(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_response_supports_conversation_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(output_text="done")]]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
 
-    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key")
+    )
 
     client.create_response(
         instructions="Continue.",
@@ -293,12 +305,16 @@ def test_create_response_supports_conversation_id(monkeypatch: pytest.MonkeyPatc
     ]
 
 
-def test_create_response_supports_include_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_response_supports_include_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(output_text="done")]]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
 
-    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key")
+    )
 
     client.create_response(
         instructions="Continue.",
@@ -321,12 +337,16 @@ def test_create_response_supports_include_passthrough(monkeypatch: pytest.Monkey
     ]
 
 
-def test_request_json_supports_conversation_id_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_request_json_supports_conversation_id_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(output_text='{"ok": true}')]]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
 
-    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key")
+    )
 
     payload = client.request_json(
         instructions="Return JSON.",
@@ -342,15 +362,21 @@ def test_request_json_supports_conversation_id_passthrough(monkeypatch: pytest.M
 
 
 def test_conversation_request_payload_wraps_identifier() -> None:
-    assert conversation_request_payload("conv_123") == {"conversation": {"id": "conv_123"}}
+    assert conversation_request_payload("conv_123") == {
+        "conversation": {"id": "conv_123"}
+    }
 
 
-def test_create_conversation_normalizes_seed_items(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_conversation_normalizes_seed_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[]]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
 
-    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key")
+    )
 
     conversation = client.create_conversation(
         items=[
@@ -383,7 +409,10 @@ def test_build_web_search_tool_includes_domains_location_and_passthrough() -> No
             "city": "San Francisco",
             "timezone": "America/Los_Angeles",
         },
-        passthrough_config={"search_context_size": "high", "allow_related_results": False},
+        passthrough_config={
+            "search_context_size": "high",
+            "allow_related_results": False,
+        },
     )
 
     assert tool == {
@@ -510,14 +539,18 @@ def test_request_json_raises_on_refusal(monkeypatch: pytest.MonkeyPatch) -> None
                 output=[
                     SimpleNamespace(
                         type="message",
-                        content=[SimpleNamespace(type="refusal", refusal="cannot comply")],
+                        content=[
+                            SimpleNamespace(type="refusal", refusal="cannot comply")
+                        ],
                     )
                 ],
             )
         ]
     ]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
-    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key")
+    )
 
     with pytest.raises(RuntimeError, match="resp_refused"):
         client.request_json(
@@ -528,13 +561,23 @@ def test_request_json_raises_on_refusal(monkeypatch: pytest.MonkeyPatch) -> None
         )
 
 
-def test_request_json_raises_on_incomplete_response(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_request_json_raises_on_incomplete_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [
-        [_response(response_id="resp_incomplete", status="incomplete", incomplete_reason="max_output_tokens")]
+        [
+            _response(
+                response_id="resp_incomplete",
+                status="incomplete",
+                incomplete_reason="max_output_tokens",
+            )
+        ]
     ]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
-    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key")
+    )
 
     with pytest.raises(RuntimeError, match="max_output_tokens"):
         client.request_json(
@@ -544,7 +587,10 @@ def test_request_json_raises_on_incomplete_response(monkeypatch: pytest.MonkeyPa
             schema={"type": "object", "properties": {}, "additionalProperties": False},
         )
 
-def test_request_json_raises_on_failed_response_error(monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_request_json_raises_on_failed_response_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [
         [
@@ -559,7 +605,9 @@ def test_request_json_raises_on_failed_response_error(monkeypatch: pytest.Monkey
         ]
     ]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
-    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key")
+    )
 
     with pytest.raises(RuntimeError, match="quota exceeded"):
         client.request_json(
@@ -576,7 +624,9 @@ def test_request_json_rejects_openai_strict_schema_without_closed_nested_object(
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(output_text='{"ok": true}')]]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
-    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key")
+    )
 
     with pytest.raises(ValueError, match="additionalProperties=false"):
         client.request_json(
@@ -604,7 +654,9 @@ def test_request_json_rejects_openai_strict_schema_when_required_fields_are_miss
     _FakeOpenAI.instances.clear()
     _FakeOpenAI.queued_responses = [[_response(output_text='{"ok": true}')]]
     monkeypatch.setattr("eval_harness.openai_responses.OpenAI", _FakeOpenAI)
-    client = OpenAIResponsesClient(OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key"))
+    client = OpenAIResponsesClient(
+        OpenAIResponsesClientConfig(model="gpt-5.4-mini", api_key="test-key")
+    )
 
     with pytest.raises(ValueError, match="must declare every property as required"):
         client.request_json(

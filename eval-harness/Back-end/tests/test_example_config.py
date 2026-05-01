@@ -5,7 +5,11 @@ import pytest
 
 
 def test_aws_ai_linux_assistant_example_config_is_valid_json():
-    config_path = Path(__file__).resolve().parents[1] / "examples" / "aws_ai_linux_assistant_config.json"
+    config_path = (
+        Path(__file__).resolve().parents[2]
+        / "examples"
+        / "aws_ai_linux_assistant_config.json"
+    )
     payload = json.loads(config_path.read_text(encoding="utf-8"))
 
     backend = payload["backend"]
@@ -29,8 +33,12 @@ def test_aws_ai_linux_assistant_example_config_is_valid_json():
         )
 
     assert "auth0_m2m" in adapter, "auth0_m2m block must be present"
-    assert "bearer_tokens_by_subject" not in adapter, "static bearer tokens must be removed"
-    assert "legacy_bootstrap_usernames_by_subject" not in adapter, "legacy bootstrap must be removed"
+    assert "bearer_tokens_by_subject" not in adapter, (
+        "static bearer tokens must be removed"
+    )
+    assert "legacy_bootstrap_usernames_by_subject" not in adapter, (
+        "legacy bootstrap must be removed"
+    )
 
     m2m = adapter["auth0_m2m"]
     assert "token_url" in m2m
@@ -49,14 +57,21 @@ def test_aws_ai_linux_assistant_example_config_is_valid_json():
     assert "request_timeout_seconds" not in user_proxy_llm
     assert backend["default_target_image"] == "debian-12-ssm-golden"
     assert "golden_ami_id" not in backend
-    assert backend["target_images"]["debian-12-ssm-golden"]["distro_vars_file"] == "infra/aws/packer/distros/debian-12.pkrvars.hcl"
+    assert (
+        backend["target_images"]["debian-12-ssm-golden"]["distro_vars_file"]
+        == "infra/aws/packer/distros/debian-12.pkrvars.hcl"
+    )
     assert controller["type"] == "ssm"
     assert controller["aws_region"] == "env:EVAL_HARNESS_AWS_REGION"
     assert "max_turns" not in payload["subjects"][0]["adapter_config"]
 
 
 def test_aws_ai_linux_assistant_vs_chatgpt_example_config_is_valid_json():
-    config_path = Path(__file__).resolve().parents[1] / "examples" / "aws_ai_linux_assistant_vs_chatgpt_config.json"
+    config_path = (
+        Path(__file__).resolve().parents[2]
+        / "examples"
+        / "aws_ai_linux_assistant_vs_chatgpt_config.json"
+    )
     payload = json.loads(config_path.read_text(encoding="utf-8"))
 
     adapters = payload["subject_adapters"]
@@ -79,4 +94,7 @@ def test_aws_ai_linux_assistant_vs_chatgpt_example_config_is_valid_json():
     assert payload["user_proxy_llm"]["model"] == "gpt-5.4"
     assert "reasoning_effort" not in payload["user_proxy_llm"]
     assert "request_timeout_seconds" not in payload["user_proxy_llm"]
-    assert {subject["adapter_type"] for subject in subjects} == {"ai_linux_assistant_http", "openai_chatgpt"}
+    assert {subject["adapter_type"] for subject in subjects} == {
+        "ai_linux_assistant_http",
+        "openai_chatgpt",
+    }

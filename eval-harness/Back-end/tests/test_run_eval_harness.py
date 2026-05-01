@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def _load_module():
-    script_path = Path(__file__).resolve().parents[2] / "run_eval_harness.py"
+    script_path = Path(__file__).resolve().parents[3] / "run_eval_harness.py"
     spec = importlib.util.spec_from_file_location("run_eval_harness", script_path)
     assert spec is not None
     assert spec.loader is not None
@@ -38,8 +38,18 @@ def test_runner_uses_conda_when_default_env_is_not_active(monkeypatch) -> None:
     module = _load_module()
     calls = []
 
-    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/conda" if name == "conda" else None)
-    monkeypatch.setattr(module.subprocess, "run", lambda command, cwd, env: calls.append(command) or type("P", (), {"returncode": 0})())
+    monkeypatch.setattr(
+        module.shutil,
+        "which",
+        lambda name: "/usr/bin/conda" if name == "conda" else None,
+    )
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, cwd, env: (
+            calls.append(command) or type("P", (), {"returncode": 0})()
+        ),
+    )
     monkeypatch.delenv("CONDA_DEFAULT_ENV", raising=False)
 
     assert module._run_harness_command(["init-db"]) == 0

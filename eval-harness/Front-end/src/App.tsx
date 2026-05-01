@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import Dashboard from "./components/Dashboard";
 import { DataBrowser } from "./components/DataBrowser";
+import InfraPage from "./components/InfraPage";
 import ScenarioDetail from "./components/ScenarioDetail";
 import DebugDrawer from "./debug/DebugDrawer";
 import { useScenarios } from "./hooks/useScenarios";
@@ -134,18 +136,13 @@ export default function App() {
 				)}
 
 				{mode === "dashboard" && (
-					<div style={{ padding: 20 }}>
-						<h2>Dashboard</h2>
-						<p className="lede">Mission Control — coming in M2.</p>
-					</div>
+					<Dashboard
+						scenarios={scenarios}
+						onModeChange={handleSelectScenario}
+					/>
 				)}
 
-				{mode === "infra" && (
-					<div style={{ padding: 20 }}>
-						<h2>Infra</h2>
-						<p className="lede">AWS instances and images — coming in M2.</p>
-					</div>
-				)}
+				{mode === "infra" && <InfraPage />}
 
 				{mode === "data" && <DataBrowser />}
 			</main>

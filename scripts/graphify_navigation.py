@@ -105,7 +105,7 @@ ARCHITECTURE_SCOPE = ScopeConfig(
         "Front-end/FRONTEND.md",
         "eval-harness/README.md",
         "eval-harness/infra/aws/README.md",
-        "eval-harness/src/eval_harness",
+        "eval-harness/Back-end/eval_harness",
         "run_eval_harness.py",
     ),
     output_dir="graphify-out/architecture",
@@ -129,8 +129,8 @@ DEEP_SCOPE = ScopeConfig(
         "Front-end/FRONTEND.md",
         "eval-harness/README.md",
         "eval-harness/infra/aws/README.md",
-        "eval-harness/src",
-        "eval-harness/tests",
+        "eval-harness/Back-end/eval_harness",
+        "eval-harness/Back-end/tests",
         "run_eval_harness.py",
     ),
     output_dir="graphify-out/deep",
@@ -159,7 +159,9 @@ def copy_path(src: Path, dst: Path) -> None:
         for child in src.rglob("*"):
             rel = child.relative_to(src)
             target = dst / rel
-            if should_exclude(child) or any(part in EXCLUDED_NAMES for part in rel.parts):
+            if should_exclude(child) or any(
+                part in EXCLUDED_NAMES for part in rel.parts
+            ):
                 continue
             if child.is_file():
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -182,9 +184,13 @@ def stage_scope(repo_root: Path, stage_root: Path, scope: ScopeConfig) -> Path:
 
 
 def validate_scope_sources(repo_root: Path, scope: ScopeConfig) -> None:
-    missing = [include for include in scope.includes if not (repo_root / include).exists()]
+    missing = [
+        include for include in scope.includes if not (repo_root / include).exists()
+    ]
     if missing:
-        raise FileNotFoundError(f"Missing required graphify scope paths: {', '.join(missing)}")
+        raise FileNotFoundError(
+            f"Missing required graphify scope paths: {', '.join(missing)}"
+        )
 
 
 def stable_id(*parts: str) -> str:
@@ -223,7 +229,9 @@ def edge_for(source: str, target: str, relation: str, source_file: str) -> dict:
 
 def should_skip_reference(label: str) -> bool:
     ref_path = Path(label)
-    return should_exclude(ref_path) or any(part in EXCLUDED_NAMES or part in SENSITIVE_NAMES for part in ref_path.parts)
+    return should_exclude(ref_path) or any(
+        part in EXCLUDED_NAMES or part in SENSITIVE_NAMES for part in ref_path.parts
+    )
 
 
 def extract_markdown_graph(markdown_files: Iterable[Path], corpus_root: Path) -> dict:
@@ -249,7 +257,11 @@ def extract_markdown_graph(markdown_files: Iterable[Path], corpus_root: Path) ->
 
             if parent_id:
                 for code_ref in INLINE_CODE_RE.findall(line):
-                    if "/" not in code_ref and "." not in code_ref and len(code_ref) < 3:
+                    if (
+                        "/" not in code_ref
+                        and "." not in code_ref
+                        and len(code_ref) < 3
+                    ):
                         continue
                     if should_skip_reference(code_ref):
                         continue
@@ -263,7 +275,13 @@ def extract_markdown_graph(markdown_files: Iterable[Path], corpus_root: Path) ->
                         nodes.append(ref_node)
                     edges.append(edge_for(parent_id, ref_node["id"], "references", rel))
 
-    return {"nodes": nodes, "edges": edges, "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "hyperedges": [],
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
 
 
 def collect_code_files(corpus_root: Path) -> list[Path]:
@@ -277,7 +295,11 @@ def collect_code_files(corpus_root: Path) -> list[Path]:
 def is_architecture_node(node: dict) -> bool:
     label = str(node.get("label", ""))
     source = str(node.get("source_file", ""))
-    if label.startswith("_") or label.startswith(".") or label in {"__init__.py", "__init__"}:
+    if (
+        label.startswith("_")
+        or label.startswith(".")
+        or label in {"__init__.py", "__init__"}
+    ):
         return False
     if any(token in label for token in ARCHITECTURE_LABEL_ALLOW):
         return True
@@ -308,7 +330,13 @@ def prune_architecture_extraction(extraction: dict) -> dict:
 
 def run_ast_extraction(code_files: list[Path]) -> dict:
     if not code_files:
-        return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+        return {
+            "nodes": [],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
 
     from graphify.extract import extract
 
@@ -335,7 +363,9 @@ def normalize_extraction_paths(extraction: dict, corpus_root: Path) -> dict:
     for collection in ("nodes", "edges", "hyperedges"):
         for item in extraction.get(collection, []):
             if isinstance(item, dict) and "source_file" in item:
-                item["source_file"] = normalize_source_path(item["source_file"], corpus_root)
+                item["source_file"] = normalize_source_path(
+                    item["source_file"], corpus_root
+                )
     return extraction
 
 
@@ -371,9 +401,15 @@ def label_communities(graph, communities: dict[int, list[str]]) -> dict[int, str
     labels: dict[int, str] = {}
     for cid, node_ids in communities.items():
         best = f"Community {cid}"
-        for node_id in sorted(node_ids, key=lambda nid: graph.degree(nid), reverse=True):
+        for node_id in sorted(
+            node_ids, key=lambda nid: graph.degree(nid), reverse=True
+        ):
             label = str(graph.nodes[node_id].get("label", node_id)).strip()
-            if label and label not in {"__init__.py", "__init__"} and not label.startswith("_"):
+            if (
+                label
+                and label not in {"__init__.py", "__init__"}
+                and not label.startswith("_")
+            ):
                 best = label[:48]
                 break
         labels[cid] = best
@@ -381,7 +417,11 @@ def label_communities(graph, communities: dict[int, list[str]]) -> dict[int, str
 
 
 def detect_corpus_summary(corpus_root: Path) -> dict:
-    files = [path for path in corpus_root.rglob("*") if path.is_file() and not should_exclude(path)]
+    files = [
+        path
+        for path in corpus_root.rglob("*")
+        if path.is_file() and not should_exclude(path)
+    ]
     total_words = 0
     grouped = {"code": [], "document": [], "paper": [], "image": [], "video": []}
     for path in files:
@@ -428,7 +468,10 @@ def build_graph_outputs(
     labels = label_communities(graph, communities)
     questions = suggest_questions(graph, communities, labels)
     detection = detect_corpus_summary(corpus_root)
-    tokens = {"input": extraction.get("input_tokens", 0), "output": extraction.get("output_tokens", 0)}
+    tokens = {
+        "input": extraction.get("input_tokens", 0),
+        "output": extraction.get("output_tokens", 0),
+    }
 
     report = generate(
         graph,
@@ -481,7 +524,9 @@ def build_navigation_metrics(*, architecture: dict, deep: dict | None) -> dict:
     if deep and deep.get("nodes") and architecture.get("nodes"):
         ratio = architecture["nodes"] / deep["nodes"]
         if ratio > 0.60:
-            warnings.append(f"Architecture graph is not at least 40% smaller than deep graph: ratio={ratio:.2f}")
+            warnings.append(
+                f"Architecture graph is not at least 40% smaller than deep graph: ratio={ratio:.2f}"
+            )
 
     return {
         "default": "architecture",
@@ -505,10 +550,14 @@ def build_scope(repo_root: Path, stage_root: Path, scope: ScopeConfig) -> dict:
     validate_scope_sources(repo_root, scope)
     staged = stage_scope(repo_root, stage_root, scope)
     markdown = [
-        path for path in staged.rglob("*") if path.is_file() and path.suffix.lower() in {".md", ".txt"}
+        path
+        for path in staged.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".md", ".txt"}
     ]
     docs = extract_markdown_graph(markdown, staged)
-    ast = normalize_extraction_paths(run_ast_extraction(collect_code_files(staged)), staged)
+    ast = normalize_extraction_paths(
+        run_ast_extraction(collect_code_files(staged)), staged
+    )
     if scope.architecture_prune:
         ast = prune_architecture_extraction(ast)
     extraction = merge_extractions(ast, docs)
@@ -533,7 +582,9 @@ def estimate_query_tokens(output_dir: Path) -> dict:
     except Exception:
         return {}
     report = output_dir / "GRAPH_REPORT.md"
-    corpus_words = len(report.read_text(errors="ignore").split()) if report.exists() else 0
+    corpus_words = (
+        len(report.read_text(errors="ignore").split()) if report.exists() else 0
+    )
     if corpus_words <= 0:
         return {}
     result = run_benchmark(str(graph_json), corpus_words=corpus_words)
@@ -552,12 +603,17 @@ def verify_outputs(graphify_out: Path) -> None:
     ]
     missing = [path for path in required if not path.exists()]
     if missing:
-        raise RuntimeError("Missing graphify navigation artifacts: " + ", ".join(str(path) for path in missing))
+        raise RuntimeError(
+            "Missing graphify navigation artifacts: "
+            + ", ".join(str(path) for path in missing)
+        )
 
     arch_text = (
         (graphify_out / "architecture" / "GRAPH_REPORT.md").read_text(errors="ignore")
         + "\n"
-        + (graphify_out / "architecture" / "wiki" / "index.md").read_text(errors="ignore")
+        + (graphify_out / "architecture" / "wiki" / "index.md").read_text(
+            errors="ignore"
+        )
     ).lower()
     if "eval harness" not in arch_text and "eval-harness" not in arch_text:
         raise RuntimeError("Architecture graph/wiki missing eval-harness coverage")
@@ -568,7 +624,9 @@ def verify_outputs(graphify_out: Path) -> None:
             text = artifact.read_text(errors="ignore")
             for token in forbidden:
                 if token in text:
-                    raise RuntimeError(f"Forbidden source appeared in architecture artifact: {token}")
+                    raise RuntimeError(
+                        f"Forbidden source appeared in architecture artifact: {token}"
+                    )
 
 
 def run_all(repo_root: Path) -> int:
@@ -578,12 +636,16 @@ def run_all(repo_root: Path) -> int:
     stage_root.mkdir()
     try:
         architecture = build_scope(repo_root, stage_root, ARCHITECTURE_SCOPE)
-        architecture.update(estimate_query_tokens(repo_root / ARCHITECTURE_SCOPE.output_dir))
+        architecture.update(
+            estimate_query_tokens(repo_root / ARCHITECTURE_SCOPE.output_dir)
+        )
         deep = build_scope(repo_root, stage_root, DEEP_SCOPE)
         deep.update(estimate_query_tokens(repo_root / DEEP_SCOPE.output_dir))
         metrics = build_navigation_metrics(architecture=architecture, deep=deep)
         (repo_root / "graphify-out").mkdir(exist_ok=True)
-        (repo_root / "graphify-out" / "navigation.json").write_text(json.dumps(metrics, indent=2))
+        (repo_root / "graphify-out" / "navigation.json").write_text(
+            json.dumps(metrics, indent=2)
+        )
         verify_outputs(repo_root / "graphify-out")
         for warning in metrics["warnings"]:
             print(f"WARNING: {warning}")
@@ -595,7 +657,11 @@ def run_all(repo_root: Path) -> int:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build graphify navigation layers")
     parser.add_argument("command", choices=("architecture", "deep", "all", "verify"))
-    parser.add_argument("--repo-root", default=".", help="Repository root; defaults to current directory")
+    parser.add_argument(
+        "--repo-root",
+        default=".",
+        help="Repository root; defaults to current directory",
+    )
     return parser.parse_args(argv)
 
 

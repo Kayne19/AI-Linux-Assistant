@@ -10,6 +10,7 @@ import type {
 	SetupRunItem,
 	SubjectItem,
 } from "../types";
+import GenerateEditor from "./GenerateEditor";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -395,7 +396,7 @@ function RunViewer({
 
 // ─── Scenario Detail ────────────────────────────────────────────────────────
 
-type Tab = "overview" | "revisions" | "runs";
+type Tab = "overview" | "revisions" | "runs" | "edit-json" | "generate";
 
 export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 	const [scenario, setScenario] = useState<ScenarioDetailType | null>(null);
@@ -518,6 +519,8 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 		{ key: "overview", label: "Overview" },
 		{ key: "revisions", label: "Revisions" },
 		{ key: "runs", label: "Runs" },
+		{ key: "edit-json", label: "Edit JSON" },
+		{ key: "generate", label: "Generate" },
 	];
 
 	return (
@@ -1110,6 +1113,24 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 						benchmarkEvals={benchmarkEvals}
 						loadingEvals={loadingEvals}
 						loadEvaluations={loadEvaluations}
+					/>
+				)}
+
+				{tab === "edit-json" && (
+					<GenerateEditor
+						scenarioId={scenarioId}
+						onRevisionSaved={() => {
+							/* refresh scenario data */
+						}}
+					/>
+				)}
+
+				{tab === "generate" && (
+					<GenerateEditor
+						scenarioId={scenarioId}
+						onRevisionSaved={() => {
+							/* refresh scenario data */
+						}}
 					/>
 				)}
 			</div>
