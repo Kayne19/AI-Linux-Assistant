@@ -1,14 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { DataTableResponse, TableMeta } from "../types";
-import { SubjectForm } from "./SubjectForm";
-
-type DataView = "browse" | "subject-crud";
 
 export function DataBrowser() {
 	const [tables, setTables] = useState<TableMeta[]>([]);
 	const [activeTable, setActiveTable] = useState<string>("");
-	const [view, setView] = useState<DataView>("browse");
 	const [data, setData] = useState<DataTableResponse | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -114,63 +110,15 @@ export function DataBrowser() {
 					justifyContent: "space-between",
 				}}
 			>
-				<div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-					<h2
-						style={{
-							margin: 0,
-							fontSize: 18,
-							letterSpacing: "-0.02em",
-						}}
-					>
-						Data
-					</h2>
-					<div
-						style={{
-							display: "flex",
-							gap: 4,
-							border: "1px solid var(--border)",
-							borderRadius: 6,
-							overflow: "hidden",
-						}}
-					>
-						<button
-							onClick={() => setView("browse")}
-							style={{
-								padding: "5px 12px",
-								border: "none",
-								borderRadius: 0,
-								background:
-									view === "browse" ? "var(--accent-soft)" : "transparent",
-								color:
-									view === "browse" ? "var(--accent-text)" : "var(--text3)",
-								fontSize: 12,
-								fontFamily: "var(--mono)",
-							}}
-						>
-							Browse
-						</button>
-						<button
-							onClick={() => setView("subject-crud")}
-							style={{
-								padding: "5px 12px",
-								border: "none",
-								borderRadius: 0,
-								background:
-									view === "subject-crud"
-										? "var(--accent-soft)"
-										: "transparent",
-								color:
-									view === "subject-crud"
-										? "var(--accent-text)"
-										: "var(--text3)",
-								fontSize: 12,
-								fontFamily: "var(--mono)",
-							}}
-						>
-							Subjects
-						</button>
-					</div>
-				</div>
+				<h2
+					style={{
+						margin: 0,
+						fontSize: 18,
+						letterSpacing: "-0.02em",
+					}}
+				>
+					Data
+				</h2>
 
 				<div style={{ display: "flex", gap: 8 }}>
 					<button
@@ -212,26 +160,22 @@ export function DataBrowser() {
 					flexDirection: "column",
 				}}
 			>
-				{view === "subject-crud" ? (
-					<SubjectForm onToast={showToast} />
-				) : (
-					<BrowseView
-						tables={tables}
-						activeTable={activeTable}
-						setActiveTable={setActiveTable}
-						data={data}
-						loading={loading}
-						error={error}
-						page={page}
-						totalPages={totalPages}
-						sortBy={sortBy}
-						sortDir={sortDir}
-						tableLabel={tableLabel}
-						onPageChange={handlePageChange}
-						onSort={handleSort}
-						onCopyRow={copyRowAsJson}
-					/>
-				)}
+				<BrowseView
+					tables={tables}
+					activeTable={activeTable}
+					setActiveTable={setActiveTable}
+					data={data}
+					loading={loading}
+					error={error}
+					page={page}
+					totalPages={totalPages}
+					sortBy={sortBy}
+					sortDir={sortDir}
+					tableLabel={tableLabel}
+					onPageChange={handlePageChange}
+					onSort={handleSort}
+					onCopyRow={copyRowAsJson}
+				/>
 			</div>
 
 			{/* Toast */}
