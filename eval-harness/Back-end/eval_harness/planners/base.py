@@ -22,6 +22,11 @@ class ScenarioPlanner(ABC):
     def generate_scenario(self, request: PlannerScenarioRequest) -> ScenarioSpec:
         raise NotImplementedError
 
+    def stream_scenario(self, request: PlannerScenarioRequest):
+        """Default streaming fallback: wraps generate_scenario as a single event."""
+        spec = self.generate_scenario(request)
+        yield {"type": "scenario", "scenario": spec.to_dict()}
+
     @abstractmethod
     def generate_initial_user_message(
         self,
