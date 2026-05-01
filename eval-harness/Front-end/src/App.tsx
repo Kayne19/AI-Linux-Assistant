@@ -3,11 +3,11 @@ import Dashboard from "./components/Dashboard";
 import { DataBrowser } from "./components/DataBrowser";
 import InfraPage from "./components/InfraPage";
 import ScenarioDetail from "./components/ScenarioDetail";
+import { ScenariosGrid } from "./components/ScenariosGrid";
 import DebugDrawer from "./debug/DebugDrawer";
 import { useScenarios } from "./hooks/useScenarios";
-import type { ScenarioListItem } from "./types";
 
-type Mode = "dashboard" | "scenarios" | "infra" | "data";
+type Mode = "dashboard" | "scenarios" | "infra" | "data" | "new-scenario";
 
 export default function App() {
 	const [mode, setMode] = useState<Mode>("scenarios");
@@ -15,7 +15,7 @@ export default function App() {
 		null,
 	);
 	const [debugOpen, setDebugOpen] = useState(false);
-	const { scenarios, loading, error, refresh } = useScenarios();
+	const { scenarios } = useScenarios();
 
 	// Keyboard shortcut for debug drawer
 	useEffect(() => {
@@ -67,18 +67,6 @@ export default function App() {
 					))}
 				</nav>
 
-				{/* Scenario list (only in scenarios mode) */}
-				{mode === "scenarios" && (
-					<ScenarioSidebar
-						scenarios={scenarios}
-						loading={loading}
-						error={error}
-						selectedId={selectedScenarioId}
-						onSelect={handleSelectScenario}
-						onRefresh={refresh}
-					/>
-				)}
-
 				{/* Footer */}
 				<div className="sidebar-footer">
 					<div className="sidebar-footer-actions">
@@ -108,32 +96,13 @@ export default function App() {
 				)}
 
 				{mode === "scenarios" && !selectedScenarioId && (
-					<div
-						style={{
-							display: "flex",
-							flexDirection: "column",
-							alignItems: "center",
-							justifyContent: "center",
-							height: "100%",
-							padding: 40,
-							textAlign: "center",
-						}}
-					>
-						<h2
-							style={{
-								margin: "0 0 8px",
-								fontSize: 22,
-								letterSpacing: "-0.02em",
-							}}
-						>
-							Scenarios
-						</h2>
-						<p className="lede">
-							Select a scenario from the sidebar to view its details, revisions,
-							and benchmark runs.
-						</p>
-					</div>
+					<ScenariosGrid
+						onSelectScenario={(id) => setSelectedScenarioId(id)}
+						onNewScenario={() => setMode("new-scenario")}
+					/>
 				)}
+
+				{mode === "new-scenario" && null}
 
 				{mode === "dashboard" && (
 					<Dashboard
@@ -149,142 +118,6 @@ export default function App() {
 
 			{/* Debug Drawer */}
 			<DebugDrawer open={debugOpen} onClose={() => setDebugOpen(false)} />
-		</div>
-	);
-}
-
-// ─── Scenario Sidebar ───────────────────────────────────────────────────────
-
-function ScenarioSidebar({
-	scenarios,
-	loading,
-	error,
-	selectedId,
-	onSelect,
-	onRefresh,
-}: {
-	scenarios: ScenarioListItem[];
-	loading: boolean;
-	error: string | null;
-	selectedId: string | null;
-	onSelect: (id: string) => void;
-	onRefresh: () => void;
-}) {
-	return (
-		<div
-			style={{
-				minHeight: 0,
-				display: "flex",
-				flex: 1,
-				flexDirection: "column",
-				overflow: "hidden",
-			}}
-		>
-			<div style={{ padding: "0 18px 8px", flexShrink: 0 }}>
-				<div
-					style={{
-						display: "flex",
-						alignItems: "center",
-						justifyContent: "space-between",
-					}}
-				>
-					<p
-						className="eyebrow"
-						style={{ color: "var(--accent-text)", margin: 0 }}
-					>
-						Scenarios
-					</p>
-					<button
-						className="subtle-action"
-						onClick={onRefresh}
-						style={{ fontSize: 11 }}
-					>
-						Refresh
-					</button>
-				</div>
-			</div>
-
-			<div className="sidebar-content" style={{ padding: "0 6px" }}>
-				{loading && (
-					<p
-						style={{
-							color: "var(--muted)",
-							fontSize: 12,
-							padding: "8px 12px",
-						}}
-					>
-						Loading...
-					</p>
-				)}
-				{error && (
-					<p
-						style={{
-							color: "var(--danger)",
-							fontSize: 12,
-							padding: "8px 12px",
-						}}
-					>
-						{error}
-					</p>
-				)}
-				{!loading && !error && scenarios.length === 0 && (
-					<p
-						style={{
-							color: "var(--muted)",
-							fontSize: 12,
-							padding: "8px 12px",
-						}}
-					>
-						No scenarios yet.
-					</p>
-				)}
-				<div className="rail-list">
-					{scenarios.map((sc) => (
-						<button
-							key={sc.id}
-							className={`rail-item ${selectedId === sc.id ? "active" : ""}`}
-							onClick={() => onSelect(sc.id)}
-						>
-							<div className="rail-item-copy">
-								<strong>{sc.title}</strong>
-								<small>{sc.scenario_name}</small>
-								<div
-									style={{
-										display: "flex",
-										gap: 8,
-										marginTop: 4,
-									}}
-								>
-									<span
-										style={{
-											fontFamily: "var(--mono)",
-											fontSize: 9,
-											color:
-												sc.lifecycle_status === "verified"
-													? "var(--green)"
-													: "var(--muted)",
-										}}
-									>
-										{sc.lifecycle_status}
-									</span>
-									{sc.benchmark_run_count > 0 && (
-										<span
-											style={{
-												fontFamily: "var(--mono)",
-												fontSize: 9,
-												color: "var(--text3)",
-											}}
-										>
-											{sc.benchmark_run_count} run
-											{sc.benchmark_run_count !== 1 ? "s" : ""}
-										</span>
-									)}
-								</div>
-							</div>
-						</button>
-					))}
-				</div>
-			</div>
 		</div>
 	);
 }
