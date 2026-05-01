@@ -11,12 +11,11 @@ export function RecentFailures({
 	const { failures, refresh } = useRecentFailures(5);
 	const [busy, setBusy] = useState<string | null>(null);
 
-	const retry = async (scenarioId: string) => {
-		if (!scenarioId) return;
+	const retry = async (scenarioId: string, setupRunId: string | null) => {
+		if (!scenarioId || !setupRunId) return;
 		setBusy(scenarioId);
 		try {
-			// Start a new benchmark; the backend will handle setup-run resolution
-			await api.benchmarkScenario(scenarioId, { setup_run_id: "" });
+			await api.benchmarkScenario(scenarioId, { setup_run_id: setupRunId });
 		} finally {
 			setBusy(null);
 			refresh();
@@ -55,8 +54,10 @@ export function RecentFailures({
 						</span>
 						<button
 							type="button"
-							onClick={() => retry(f.scenario_id)}
-							disabled={busy === f.scenario_id || !f.scenario_id}
+							onClick={() => retry(f.scenario_id, f.setup_run_id)}
+							disabled={
+								busy === f.scenario_id || !f.scenario_id || !f.setup_run_id
+							}
 						>
 							{busy === f.scenario_id ? "\u2026" : "Retry"}
 						</button>

@@ -8,6 +8,7 @@ type FailureItem = {
 	scenario_title: string;
 	created_at: string;
 	scenario_revision_id: string;
+	setup_run_id: string | null;
 };
 
 export function useRecentFailures(limit = 5) {
@@ -58,6 +59,7 @@ export function useRecentFailures(limit = 5) {
 										owner?.title ?? r.scenario_revision_id.slice(0, 8),
 									created_at: r.created_at,
 									scenario_revision_id: r.scenario_revision_id,
+									setup_run_id: r.verified_setup_run_id ?? null,
 								};
 							}),
 						);
