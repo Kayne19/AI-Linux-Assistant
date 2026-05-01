@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import { useGenerateStream } from "../hooks/useGenerateStream";
+import type { CreateRevisionRequest } from "../types";
 
 type Props = {
 	sourceScenarioId?: string;
@@ -49,7 +50,38 @@ export function NewScenarioPage({
 		if (!stream.scenario) return;
 		setSaving(true);
 		try {
-			const created = await api.createScenarioFromSpec(stream.scenario);
+			const spec = stream.scenario;
+			const title =
+				(spec.title as string) ||
+				(spec.scenario_name as string) ||
+				"New scenario";
+			const scenarioNameHint = (spec.scenario_name as string) || "";
+
+			const created = await api.createScenario({
+				title,
+				scenario_name_hint: scenarioNameHint,
+			});
+
+			const body: CreateRevisionRequest = {
+				target_image: (spec.target_image as string) || "",
+				summary: (spec.summary as string) || "",
+				what_it_tests: (spec.what_it_tests as Record<string, unknown>) || {},
+				observable_problem_statement:
+					(spec.observable_problem_statement as string) || "",
+				initial_user_message: (spec.initial_user_message as string) || "",
+				sabotage_plan:
+					(spec.sabotage_plan as Record<string, unknown>) ||
+					(spec.sabotage_procedure ? { steps: spec.sabotage_procedure } : {}),
+				verification_plan:
+					(spec.verification_plan as Record<string, unknown>) ||
+					(spec.verification_probes
+						? { probes: spec.verification_probes }
+						: {}),
+				judge_rubric: (spec.judge_rubric as Record<string, unknown>) || {},
+				planner_metadata:
+					(spec.planner_metadata as Record<string, unknown>) || null,
+			};
+			await api.createRevision(created.id, body);
 			onSaved(created.id);
 		} finally {
 			setSaving(false);
