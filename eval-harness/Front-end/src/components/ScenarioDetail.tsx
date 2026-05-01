@@ -1123,13 +1123,6 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 						onRevisionSaved={() => setRefreshCounter((c) => c + 1)}
 					/>
 				)}
-
-				{tab === "generate" && (
-					<GenerateEditor
-						scenarioId={scenarioId}
-						onRevisionSaved={() => setRefreshCounter((c) => c + 1)}
-					/>
-				)}
 			</div>
 		</div>
 	);
