@@ -109,7 +109,10 @@ export default function App() {
 				{mode === "scenarios" && !selectedScenarioId && (
 					<ScenariosGrid
 						onSelectScenario={(id) => setSelectedScenarioId(id)}
-						onNewScenario={() => setMode("new-scenario")}
+						onNewScenario={() => {
+							setNewScenarioSource(undefined);
+							setMode("new-scenario");
+						}}
 					/>
 				)}
 
