@@ -51,7 +51,11 @@ export function useGenerateStream() {
 			let buffer = "";
 			while (true) {
 				const { value, done } = await reader.read();
-				if (done) break;
+				if (done) {
+					// Flush decoder and process any trailing buffer
+					buffer += decoder.decode();
+					break;
+				}
 				buffer += decoder.decode(value, { stream: true });
 				const lines = buffer.split("\n\n");
 				buffer = lines.pop() ?? "";
@@ -74,6 +78,29 @@ export function useGenerateStream() {
 						}
 						return { ...prev, status: "error", error: event.message };
 					});
+				}
+			}
+			// Process any remaining buffer after stream end
+			if (buffer) {
+				const dataLine = buffer.split("\n").find((l) => l.startsWith("data:"));
+				if (dataLine) {
+					const json = dataLine.slice("data:".length).trim();
+					if (json) {
+						const event = JSON.parse(json) as StreamEvent;
+						setState((prev) => {
+							if (event.type === "token") {
+								return { ...prev, text: prev.text + event.text };
+							}
+							if (event.type === "scenario") {
+								return {
+									...prev,
+									scenario: event.scenario,
+									status: "done",
+								};
+							}
+							return { ...prev, status: "error", error: event.message };
+						});
+					}
 				}
 			}
 			// If stream ended without a scenario event, mark as done

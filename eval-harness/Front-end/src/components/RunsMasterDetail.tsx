@@ -19,7 +19,6 @@ export function RunsMasterDetail({ scenarioId, onViewRun }: Props) {
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [evals, setEvals] = useState<EvaluationRunItem[] | null>(null);
 	const [loadingEvals, setLoadingEvals] = useState(false);
-	const [revisionIds, setRevisionIds] = useState<string[]>([]);
 
 	// Load scenario to get revision IDs, then load matching benchmark runs
 	useEffect(() => {
@@ -29,14 +28,15 @@ export function RunsMasterDetail({ scenarioId, onViewRun }: Props) {
 			.getScenario(scenarioId)
 			.then((scenario) => {
 				const revIds = scenario.revisions.map((r) => r.id);
-				setRevisionIds(revIds);
-				return api.listRuns({ page_size: 200 });
+				return api
+					.listRuns({ page_size: 200 })
+					.then((res) => ({ res, revIds }));
 			})
-			.then((res) => {
+			.then(({ res, revIds }) => {
 				const benchmarks: BenchmarkRunItem[] = res.items
 					.filter((r: RunListItem) =>
-						r.kind === "benchmark" && revisionIds.length > 0
-							? revisionIds.includes(r.scenario_revision_id)
+						r.kind === "benchmark" && revIds.length > 0
+							? revIds.includes(r.scenario_revision_id)
 							: false,
 					)
 					.map(
