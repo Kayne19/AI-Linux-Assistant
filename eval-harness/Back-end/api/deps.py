@@ -7,21 +7,26 @@ from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
+from eval_harness.env import autoload_dotenv
+from eval_harness.persistence.database import (
+    build_engine,
+    build_session_factory,
+    get_database_url,
+)
 from eval_harness.persistence.store import EvalHarnessStore
+
+autoload_dotenv()
 
 
 @lru_cache
 def _get_db_url() -> str:
-    return os.getenv("EVAL_HARNESS_DATABASE_URL", "postgresql://localhost/eval_harness")
+    return os.getenv("EVAL_HARNESS_DATABASE_URL") or get_database_url()
 
 
 @lru_cache
 def _get_session_factory():
-    engine = create_engine(_get_db_url(), pool_pre_ping=True)
-    return sessionmaker(bind=engine)
+    engine = build_engine(_get_db_url())
+    return build_session_factory(engine)
 
 
 @lru_cache

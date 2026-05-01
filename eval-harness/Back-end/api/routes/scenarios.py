@@ -147,6 +147,41 @@ class ControlResponse(dict):
     pass
 
 
+def _latest_revision_id_for_scenario(scenario_id: str, store: StoreDep) -> str | None:
+    from eval_harness.persistence.postgres_models import ScenarioRevisionRecord
+    from sqlalchemy import select
+
+    with store._session_factory() as session:
+        return session.scalar(
+            select(ScenarioRevisionRecord.id)
+            .where(ScenarioRevisionRecord.scenario_id == scenario_id)
+            .order_by(ScenarioRevisionRecord.revision_number.desc())
+            .limit(1)
+        )
+
+
+def _resolve_revision_id_for_control(
+    scenario_id: str,
+    store: StoreDep,
+    requested_revision_id: str | None,
+) -> str:
+    revision_id = requested_revision_id or _latest_revision_id_for_scenario(
+        scenario_id, store
+    )
+    if revision_id is None:
+        raise fastapi.HTTPException(
+            status_code=400, detail="Scenario has no revisions yet"
+        )
+    revision = store.get_scenario_revision(revision_id)
+    if revision is None:
+        raise fastapi.HTTPException(status_code=404, detail="Revision not found")
+    if revision.scenario_id != scenario_id:
+        raise fastapi.HTTPException(
+            status_code=400, detail="Revision does not belong to this scenario"
+        )
+    return revision_id
+
+
 @router.post("/scenarios/{scenario_id}/verify")
 def verify_scenario(
     scenario_id: str,
@@ -158,13 +193,19 @@ def verify_scenario(
     scenario = store.get_scenario(scenario_id)
     if scenario is None:
         raise fastapi.HTTPException(status_code=404, detail="Scenario not found")
-    if not scenario.current_verified_revision_id:
-        raise fastapi.HTTPException(status_code=400, detail="No verified revision yet")
+
+    # Resolve the revision to verify: explicit body.revision_id, or the latest
+    # draft revision for this scenario.
+    revision_id = _resolve_revision_id_for_control(
+        scenario_id,
+        store,
+        body.revision_id,
+    )
 
     dispatcher.dispatch_verify(
         background,
         scenario_id=scenario_id,
-        revision_id=scenario.current_verified_revision_id,
+        revision_id=revision_id,
         group_id=body.group_id,
     )
     return {"ok": True, "scenario_id": scenario_id, "action": "verify"}
@@ -207,15 +248,16 @@ def run_all_scenario(
     scenario = store.get_scenario(scenario_id)
     if scenario is None:
         raise fastapi.HTTPException(status_code=404, detail="Scenario not found")
-    if not scenario.current_verified_revision_id:
-        raise fastapi.HTTPException(
-            status_code=400, detail="Scenario has no verified revision"
-        )
+    revision_id = _resolve_revision_id_for_control(
+        scenario_id,
+        store,
+        body.revision_id,
+    )
 
     dispatcher.dispatch_run_all(
         background,
         scenario_id=scenario_id,
-        revision_id=scenario.current_verified_revision_id,
+        revision_id=revision_id,
         group_id=body.group_id,
         subject_ids=body.subject_ids,
         judge_mode=body.judge_mode,

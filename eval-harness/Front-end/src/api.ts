@@ -130,6 +130,8 @@ export const api = {
 
 	// Subjects
 	listSubjects: () => request<SubjectItem[]>("/api/v1/subjects"),
+	listSubjectAdapterTypes: () =>
+		request<string[]>("/api/v1/subjects/adapter-types"),
 	getSubject: (id: string) => request<SubjectItem>(`/api/v1/subjects/${id}`),
 
 	// M4 — Authoring

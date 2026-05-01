@@ -470,33 +470,23 @@ class JobDispatcher:
     ) -> str:
         """Dispatch a verify job.
 
-        Builds a PlannerScenarioRequest from the revision data and runs the
-        ScenarioSetupOrchestrator in a background task.
+        Runs the stored scenario revision through the setup verifier in a
+        background task.
         """
-        from eval_harness.models import PlannerScenarioRequest
         from eval_harness.orchestration.setup import ScenarioSetupOrchestrator
 
         store = _get_store()
         revision = store.get_scenario_revision(revision_id)
         if revision is None:
             raise ValueError(f"Unknown scenario revision {revision_id}")
+        if revision.scenario_id != scenario_id:
+            raise ValueError(
+                f"Scenario revision {revision_id} does not belong to scenario {scenario_id}"
+            )
 
-        scenario = store.get_scenario(revision.scenario_id)
+        scenario = store.get_scenario(scenario_id)
         if scenario is None:
-            raise ValueError(f"Unknown scenario {revision.scenario_id}")
-
-        # Build a planning brief from the revision's metadata
-        planning_brief = (
-            revision.observable_problem_statement
-            or f"Scenario: {scenario.title}. Target: {revision.target_image}."
-        )
-
-        request = PlannerScenarioRequest(
-            planning_brief=planning_brief,
-            target_image=revision.target_image,
-            scenario_name_hint=scenario.scenario_name,
-            metadata=revision.planner_metadata_json or {},
-        )
+            raise ValueError(f"Unknown scenario {scenario_id}")
 
         effective_group_id = group_id or f"api-{scenario.scenario_name}"
 
@@ -514,8 +504,9 @@ class JobDispatcher:
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None,
-                    lambda: orch.run(
-                        request=request,
+                    lambda: orch.run_existing_revision(
+                        scenario_id=scenario_id,
+                        revision_id=revision_id,
                         group_id=effective_group_id,
                     ),
                 )
@@ -573,6 +564,7 @@ class JobDispatcher:
                     lambda: orch.run(
                         scenario_revision_id=revision_id,
                         verified_setup_run_id=setup_run_id,
+                        subject_ids=subject_ids,
                     ),
                 )
 
@@ -630,7 +622,6 @@ class JobDispatcher:
         judge_anchor_subject: str | None = None,
     ) -> str:
         """Chain verify -> benchmark -> judge in one background task."""
-        from eval_harness.models import PlannerScenarioRequest
         from eval_harness.orchestration.benchmark import BenchmarkRunOrchestrator
         from eval_harness.orchestration.judge import JudgeJobOrchestrator
         from eval_harness.orchestration.setup import ScenarioSetupOrchestrator
@@ -639,22 +630,14 @@ class JobDispatcher:
         revision = store.get_scenario_revision(revision_id)
         if revision is None:
             raise ValueError(f"Unknown scenario revision {revision_id}")
+        if revision.scenario_id != scenario_id:
+            raise ValueError(
+                f"Scenario revision {revision_id} does not belong to scenario {scenario_id}"
+            )
 
-        scenario = store.get_scenario(revision.scenario_id)
+        scenario = store.get_scenario(scenario_id)
         if scenario is None:
-            raise ValueError(f"Unknown scenario {revision.scenario_id}")
-
-        planning_brief = (
-            revision.observable_problem_statement
-            or f"Scenario: {scenario.title}. Target: {revision.target_image}."
-        )
-
-        request = PlannerScenarioRequest(
-            planning_brief=planning_brief,
-            target_image=revision.target_image,
-            scenario_name_hint=scenario.scenario_name,
-            metadata=revision.planner_metadata_json or {},
-        )
+            raise ValueError(f"Unknown scenario {scenario_id}")
         effective_group_id = group_id or f"api-{scenario.scenario_name}"
         up_cfg = dict(_load_resolved_config().get("user_proxy_llm", {}) or {})
 
@@ -677,8 +660,9 @@ class JobDispatcher:
                 )
                 result = await loop.run_in_executor(
                     None,
-                    lambda: orch_v.run(
-                        request=request,
+                    lambda: orch_v.run_existing_revision(
+                        scenario_id=scenario_id,
+                        revision_id=revision_id,
                         group_id=effective_group_id,
                     ),
                 )
@@ -700,6 +684,7 @@ class JobDispatcher:
                     lambda: orch_b.run(
                         scenario_revision_id=rev_id,
                         verified_setup_run_id=setup_run_id,
+                        subject_ids=subject_ids,
                     ),
                 )
                 benchmark_run_id = bench_result.benchmark_run_id

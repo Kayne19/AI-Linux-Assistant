@@ -220,6 +220,7 @@ class SubjectPatchRequest(BaseModel):
 
 class VerifyRequest(BaseModel):
     group_id: str | None = None
+    revision_id: str | None = None
 
 
 class BenchmarkRequest(BaseModel):
@@ -235,6 +236,7 @@ class JudgeRequest(BaseModel):
 
 class RunAllRequest(BaseModel):
     group_id: str | None = None
+    revision_id: str | None = None
     subject_ids: list[str] | None = None
     judge_mode: str = "absolute"
     judge_anchor_subject: str | None = None

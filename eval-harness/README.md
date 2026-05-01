@@ -348,7 +348,21 @@ Place env vars in:
 
 - [eval-harness/.env](eval-harness/.env)
 
-The CLI autoloads that file from the harness root.
+The CLI and `python ../run_dev.py --eval-only` / `--eval-harness` autoload that
+file from the harness root.
+
+The web control center requires a reachable database URL:
+
+```
+EVAL_HARNESS_DATABASE_URL=postgresql://<user>:<password>@<host>:5432/<database>
+```
+
+After creating the database, initialize the schema from the Data page's
+`Init DB` action or run:
+
+```bash
+python ../run_eval_harness.py init-db
+```
 
 For the public AI Linux Assistant API path:
 

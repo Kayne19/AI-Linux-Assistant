@@ -131,6 +131,10 @@ class ScenarioBuilderFSM:
         group_id: str,
         max_corrections: int = 2,
         scrap_budget: int = 1,
+        initial_scenario: ScenarioSpec | None = None,
+        initial_scenario_row: Any = None,
+        initial_revision_row: Any = None,
+        initial_setup_run: Any = None,
         progress: Callable[[str, str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.backend = backend
@@ -144,6 +148,13 @@ class ScenarioBuilderFSM:
             group_id=group_id,
             max_corrections=max_corrections,
             scrap_budget=scrap_budget,
+            scenario=initial_scenario,
+            scenario_row=initial_scenario_row,
+            revision_row=initial_revision_row,
+            setup_run=initial_setup_run,
+            instructions=initial_scenario.sabotage_procedure
+            if initial_scenario is not None
+            else (),
         )
 
         self.state_actions: dict[
@@ -169,7 +180,14 @@ class ScenarioBuilderFSM:
 
     def run(self) -> ScenarioSetupResult:
         ctx = self._ctx
-        current = ScenarioBuilderState.DESIGN
+        current = (
+            ScenarioBuilderState.LAUNCH_STAGING
+            if ctx.scenario is not None
+            and ctx.scenario_row is not None
+            and ctx.revision_row is not None
+            and ctx.setup_run is not None
+            else ScenarioBuilderState.DESIGN
+        )
         try:
             while current not in (ScenarioBuilderState.DONE, ScenarioBuilderState.FAILED):
                 next_state = self.state_actions[current](ctx)

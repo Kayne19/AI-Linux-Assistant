@@ -622,7 +622,7 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 				>
 					<button
 						className="ghost-button compact"
-						disabled={!!dispatching || !scenario.current_verified_revision_id}
+						disabled={!!dispatching || scenario.revisions.length === 0}
 						onClick={() => {
 							clearAction();
 							verify({}).then(() => {
@@ -651,7 +651,7 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 					</button>
 					<button
 						className="ghost-button compact"
-						disabled={!!dispatching || !scenario.current_verified_revision_id}
+						disabled={!!dispatching || scenario.revisions.length === 0}
 						onClick={() => openDrawer("run-all")}
 						style={{ fontSize: 12, padding: "4px 10px" }}
 					>
@@ -947,6 +947,10 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 								disabled={dispatching !== null}
 								onClick={() => {
 									runAll({
+										revision_id:
+											scenario.revisions.length > 0
+												? scenario.revisions[0].id
+												: undefined,
 										subject_ids:
 											drawerSubjectIds.length > 0 ? drawerSubjectIds : null,
 										judge_mode: drawerJudgeMode,

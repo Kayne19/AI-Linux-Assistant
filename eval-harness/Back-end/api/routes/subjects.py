@@ -15,15 +15,19 @@ from ..schemas import (
 
 router = APIRouter(tags=["subjects"])
 
-VALID_ADAPTER_TYPES = frozenset(
-    {
-        "anthropic",
-        "openai",
-        "google",
-        "anthropic-magi-lite",
-        "anthropic-magi-full",
-    }
-)
+
+def _valid_adapter_types() -> frozenset[str]:
+    """Return adapter types registered in subject_adapters config."""
+    from ..jobs import _load_resolved_config
+
+    config = _load_resolved_config()
+    adapter_cfgs = config.get("subject_adapters")
+    if not adapter_cfgs and config.get("adapter"):
+        # Legacy single-adapter config: default to ai_linux_assistant_http
+        return frozenset({"ai_linux_assistant_http"})
+    if adapter_cfgs:
+        return frozenset(str(k) for k in adapter_cfgs)
+    return frozenset()
 
 
 def _subject_item_from_row(r) -> SubjectItem:
@@ -51,6 +55,11 @@ def list_subjects(store: StoreDep) -> list[SubjectItem]:
         return [_subject_item_from_row(r) for r in rows]
 
 
+@router.get("/subjects/adapter-types")
+def list_subject_adapter_types() -> list[str]:
+    return sorted(_valid_adapter_types())
+
+
 @router.get("/subjects/{subject_id}")
 def get_subject(subject_id: str, store: StoreDep) -> SubjectItem:
     row = store.get_subject(subject_id)
@@ -61,10 +70,11 @@ def get_subject(subject_id: str, store: StoreDep) -> SubjectItem:
 
 @router.post("/subjects", status_code=201)
 def create_subject(body: SubjectCreateRequest, store: StoreDep) -> SubjectItem:
-    if body.adapter_type not in VALID_ADAPTER_TYPES:
+    valid_adapter_types = _valid_adapter_types()
+    if body.adapter_type not in valid_adapter_types:
         raise fastapi.HTTPException(
             status_code=422,
-            detail=f"Invalid adapter_type. Must be one of: {', '.join(sorted(VALID_ADAPTER_TYPES))}",
+            detail=f"Invalid adapter_type. Must be one of: {', '.join(sorted(valid_adapter_types))}",
         )
     row = store.upsert_subject(
         subject_name=body.subject_name,
@@ -88,10 +98,11 @@ def update_subject(
             raise fastapi.HTTPException(status_code=404, detail="Subject not found")
 
         if body.adapter_type is not None:
-            if body.adapter_type not in VALID_ADAPTER_TYPES:
+            valid_adapter_types = _valid_adapter_types()
+            if body.adapter_type not in valid_adapter_types:
                 raise fastapi.HTTPException(
                     status_code=422,
-                    detail=f"Invalid adapter_type. Must be one of: {', '.join(sorted(VALID_ADAPTER_TYPES))}",
+                    detail=f"Invalid adapter_type. Must be one of: {', '.join(sorted(valid_adapter_types))}",
                 )
             row.adapter_type = body.adapter_type
         if body.display_name is not None:

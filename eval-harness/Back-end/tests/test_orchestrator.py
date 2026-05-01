@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 import pytest
@@ -1157,6 +1157,80 @@ def test_setup_orchestrator_clears_runtime_before_creating_broken_image() -> Non
     # FSM skips configure_controller_runtime but still calls clear_controller_runtime
     assert backend.configured_runtime_handles == []
     assert backend.cleared_runtime_handles == ["staging-nginx-recovery"]
+
+
+def test_setup_orchestrator_verifies_existing_revision_without_redesign() -> None:
+    store = _build_store()
+    scenario = replace(
+        _scenario(),
+        sabotage_procedure=("sudo systemctl stop nginx",),
+    )
+    scenario_row = store.create_scenario(
+        title=scenario.title,
+        scenario_name_hint=scenario.scenario_name,
+    )
+    revision_row = store.create_scenario_revision(
+        scenario_id=scenario_row.id,
+        target_image=scenario.target_image,
+        summary=scenario.summary,
+        what_it_tests={"items": list(scenario.what_it_tests)},
+        observable_problem_statement=scenario.observable_problem_statement,
+        initial_user_message=scenario.initial_user_message,
+        sabotage_plan={"steps": list(scenario.sabotage_procedure)},
+        verification_plan={
+            "probes": [item.to_dict() for item in scenario.verification_probes]
+        },
+        judge_rubric={"items": list(scenario.judge_rubric)},
+        planner_metadata={
+            "repair_checks": [item.to_dict() for item in scenario.repair_checks],
+            "turn_budget": scenario.turn_budget,
+        },
+    )
+
+    class NoRedesignPlanner(FakePlanner):
+        def generate_scenario(self, request: PlannerScenarioRequest) -> ScenarioSpec:
+            del request
+            raise AssertionError("verify should use the stored revision")
+
+    controller = FakeController(
+        execute_batches=[
+            (
+                CommandExecutionResult(
+                    command="sudo systemctl stop nginx",
+                    stdout="",
+                    stderr="",
+                    exit_code=0,
+                ),
+            ),
+            (
+                CommandExecutionResult(
+                    command="systemctl is-active nginx",
+                    stdout="failed",
+                    stderr="",
+                    exit_code=3,
+                ),
+            ),
+        ]
+    )
+    orchestrator = ScenarioSetupOrchestrator(
+        backend=FakeBackend(),
+        controller_factory=FakeControllerFactory([controller]),
+        planner=NoRedesignPlanner(),
+        store=store,
+    )
+
+    result = orchestrator.run_existing_revision(
+        scenario_id=scenario_row.id,
+        revision_id=revision_row.id,
+        group_id="group-1",
+    )
+
+    assert result.scenario_id == scenario_row.id
+    assert result.scenario_revision_id == revision_row.id
+    assert (
+        store.get_scenario(scenario_row.id).current_verified_revision_id
+        == revision_row.id
+    )
 
 
 def test_setup_orchestrator_persists_broken_image_progress_metadata() -> None:

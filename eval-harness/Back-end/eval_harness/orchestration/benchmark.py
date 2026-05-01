@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, Any
+from typing import Any
 
 from ..adapters.base import SubjectAdapter, SubjectSession
 from ..backends.base import SandboxBackend, SandboxHandle
@@ -20,7 +20,7 @@ from .user_proxy_fsm import (
     UserProxyFSM,
     _SAFE_RERUN_COMMANDS,
 )
-from .user_proxy_llm import UserProxyLLMClient, UserProxyLLMClientConfig
+from .user_proxy_llm import UserProxyLLMClient
 
 _PROXY_MEMORY_MAX_SIZE = 5
 
@@ -30,7 +30,9 @@ _SINGLE_TERMINAL_BASELINE_NOTE = (
     "can do from here."
 )
 
-_STATE_CHANGING_PROXY_TOOLS = frozenset({"run_command", "apply_text_edit", "interactive_send"})
+_STATE_CHANGING_PROXY_TOOLS = frozenset(
+    {"run_command", "apply_text_edit", "interactive_send"}
+)
 _SOFT_CLOSURE_PHRASES = (
     "thanks",
     "thank you",
@@ -75,7 +77,9 @@ class BenchmarkRunOrchestrator:
         self.subject_adapters = dict(subject_adapters)
         self.store = store
         self._user_proxy_llm = user_proxy_llm
-        normalized_mode = str(user_proxy_mode or "strict_relay").strip().lower() or "strict_relay"
+        normalized_mode = (
+            str(user_proxy_mode or "strict_relay").strip().lower() or "strict_relay"
+        )
         if normalized_mode not in USER_PROXY_MODES:
             raise ValueError(f"Unsupported user proxy mode {user_proxy_mode!r}")
         self.user_proxy_mode = normalized_mode
@@ -155,9 +159,15 @@ class BenchmarkRunOrchestrator:
     ) -> dict:
         payload = {
             "reason": reason,
-            "last_repair_check_results": list((last_repair_snapshot or {}).get("last_repair_check_results", [])),
-            "passed_check_count": int((last_repair_snapshot or {}).get("passed_check_count", 0)),
-            "failed_check_names": list((last_repair_snapshot or {}).get("failed_check_names", [])),
+            "last_repair_check_results": list(
+                (last_repair_snapshot or {}).get("last_repair_check_results", [])
+            ),
+            "passed_check_count": int(
+                (last_repair_snapshot or {}).get("passed_check_count", 0)
+            ),
+            "failed_check_names": list(
+                (last_repair_snapshot or {}).get("failed_check_names", [])
+            ),
             "last_subject_message_summary": last_subject_message_summary,
         }
         if extra:
@@ -194,7 +204,14 @@ class BenchmarkRunOrchestrator:
             finished=True,
         )
 
-    def _record_command_results(self, *, evaluation_run_id: str, seq: int, actor_role: str, command_results: tuple) -> int:
+    def _record_command_results(
+        self,
+        *,
+        evaluation_run_id: str,
+        seq: int,
+        actor_role: str,
+        command_results: tuple,
+    ) -> int:
         for result in command_results:
             self.store.append_evaluation_event(
                 evaluation_run_id=evaluation_run_id,
@@ -206,9 +223,13 @@ class BenchmarkRunOrchestrator:
             seq += 1
         return seq
 
-    def _record_proxy_review_events(self, *, evaluation_run_id: str, seq: int, review_events: tuple[dict, ...]) -> int:
+    def _record_proxy_review_events(
+        self, *, evaluation_run_id: str, seq: int, review_events: tuple[dict, ...]
+    ) -> int:
         for item in review_events:
-            event_kind = str(item.get("event_kind", "proxy_review")).strip() or "proxy_review"
+            event_kind = (
+                str(item.get("event_kind", "proxy_review")).strip() or "proxy_review"
+            )
             payload = {key: value for key, value in item.items() if key != "event_kind"}
             self.store.append_evaluation_event(
                 evaluation_run_id=evaluation_run_id,
@@ -264,11 +285,19 @@ class BenchmarkRunOrchestrator:
         )
         return verification_results, seq
 
-    def _benchmark_status_and_summary(self, benchmark_run_id: str, *, interrupted: bool = False) -> tuple[str, dict]:
+    def _benchmark_status_and_summary(
+        self, benchmark_run_id: str, *, interrupted: bool = False
+    ) -> tuple[str, dict]:
         evaluation_runs = self.store.list_evaluation_runs(benchmark_run_id)
         status_counts = Counter(run.status for run in evaluation_runs)
-        repair_success_count = sum(1 for run in evaluation_runs if run.repair_success is True)
-        failed_evaluation_count = sum(1 for run in evaluation_runs if run.status != EvaluationRunStatus.COMPLETED.value)
+        repair_success_count = sum(
+            1 for run in evaluation_runs if run.repair_success is True
+        )
+        failed_evaluation_count = sum(
+            1
+            for run in evaluation_runs
+            if run.status != EvaluationRunStatus.COMPLETED.value
+        )
         summary = {
             "evaluation_count": len(evaluation_runs),
             "repair_success_count": repair_success_count,
@@ -277,7 +306,10 @@ class BenchmarkRunOrchestrator:
         }
         if interrupted:
             return "interrupted", summary
-        if repair_success_count == len(evaluation_runs) and failed_evaluation_count == 0:
+        if (
+            repair_success_count == len(evaluation_runs)
+            and failed_evaluation_count == 0
+        ):
             return "completed", summary
         return "completed_with_failures", summary
 
@@ -294,7 +326,9 @@ class BenchmarkRunOrchestrator:
     ) -> None:
         adapter = self.subject_adapters.get(subject_row.adapter_type)
         if adapter is None:
-            raise RuntimeError(f"No subject adapter registered for {subject_row.adapter_type}")
+            raise RuntimeError(
+                f"No subject adapter registered for {subject_row.adapter_type}"
+            )
         controller: SandboxController | None = None
         session: SubjectSession | None = None
         seq = 1
@@ -304,7 +338,9 @@ class BenchmarkRunOrchestrator:
         try:
             self.backend.wait_until_ready(clone_handle)
             self.backend.configure_controller_runtime(clone_handle)
-            controller = self.controller_factory.open(clone_handle, purpose=f"evaluation-{evaluation_run_id}")
+            controller = self.controller_factory.open(
+                clone_handle, purpose=f"evaluation-{evaluation_run_id}"
+            )
 
             if scenario.verification_probes:
                 verification_results, seq = self._execute_verification_probes(
@@ -314,7 +350,9 @@ class BenchmarkRunOrchestrator:
                     seq=seq,
                     verification_agent_id=verification_agent_id,
                 )
-                verification_snapshot = self._verification_snapshot(scenario, verification_results)
+                verification_snapshot = self._verification_snapshot(
+                    scenario, verification_results
+                )
                 if not verification_snapshot["verification_passed"]:
                     self.store.update_evaluation_run_status(
                         evaluation_run_id=evaluation_run_id,
@@ -342,7 +380,9 @@ class BenchmarkRunOrchestrator:
                 if scenario.initial_user_message.strip()
                 else scenario.observable_problem_statement
             )
-            opening_user_message = f"{opening_user_message}\n\n{_SINGLE_TERMINAL_BASELINE_NOTE}"
+            opening_user_message = (
+                f"{opening_user_message}\n\n{_SINGLE_TERMINAL_BASELINE_NOTE}"
+            )
             user_message = opening_user_message
             if scenario.initial_diagnostic_commands:
                 diag_results = controller.execute_commands(
@@ -365,8 +405,14 @@ class BenchmarkRunOrchestrator:
                         diag_lines.append(f"\n{result.stderr}")
                 user_message = user_message + "".join(diag_lines)
 
-            scenario_turn_budget = scenario.turn_budget if scenario.turn_budget > 0 else 0
-            subject_max = subject_spec.max_turns if subject_spec.max_turns is not None and subject_spec.max_turns > 0 else 0
+            scenario_turn_budget = (
+                scenario.turn_budget if scenario.turn_budget > 0 else 0
+            )
+            subject_max = (
+                subject_spec.max_turns
+                if subject_spec.max_turns is not None and subject_spec.max_turns > 0
+                else 0
+            )
             if scenario_turn_budget > 0 and subject_max > 0:
                 effective_max_turns = min(scenario_turn_budget, subject_max)
             elif scenario_turn_budget > 0:
@@ -380,7 +426,9 @@ class BenchmarkRunOrchestrator:
             _PROXY_STALL_LIMIT = 3
             turn_index = 0
             # Bounded recent-action memory shared across proxy turns.
-            _recent_actions: deque[ProxyRecentAction] = deque(maxlen=_PROXY_MEMORY_MAX_SIZE)
+            _recent_actions: deque[ProxyRecentAction] = deque(
+                maxlen=_PROXY_MEMORY_MAX_SIZE
+            )
 
             _scenario_name = getattr(scenario, "scenario_name", "")
             _subject_name = subject_row.subject_name
@@ -401,7 +449,10 @@ class BenchmarkRunOrchestrator:
                     pass
 
             for turn_index_outer in range(effective_max_turns):
-                _emit("user_turn_start", {"turn": turn_index_outer, "msg_len": len(user_message)})
+                _emit(
+                    "user_turn_start",
+                    {"turn": turn_index_outer, "msg_len": len(user_message)},
+                )
                 self.store.append_evaluation_event(
                     evaluation_run_id=evaluation_run_id,
                     seq=seq,
@@ -414,8 +465,13 @@ class BenchmarkRunOrchestrator:
 
                 _emit("subject_wait", {"turn": turn_index_outer})
                 turn_result = session.submit_user_message(user_message)
-                _reply_snippet = (turn_result.assistant_message or "")[:120].replace("\n", " ")
-                _emit("subject_replied", {"turn": turn_index_outer, "reply_snippet": _reply_snippet})
+                _reply_snippet = (turn_result.assistant_message or "")[:120].replace(
+                    "\n", " "
+                )
+                _emit(
+                    "subject_replied",
+                    {"turn": turn_index_outer, "reply_snippet": _reply_snippet},
+                )
                 self.store.append_evaluation_event(
                     evaluation_run_id=evaluation_run_id,
                     seq=seq,
@@ -429,7 +485,9 @@ class BenchmarkRunOrchestrator:
                     },
                 )
                 transcript_pairs.append(("assistant", turn_result.assistant_message))
-                last_subject_message_summary = self._subject_message_summary(turn_result.assistant_message)
+                last_subject_message_summary = self._subject_message_summary(
+                    turn_result.assistant_message
+                )
                 seq += 1
 
                 for run_event in turn_result.events:
@@ -442,7 +500,13 @@ class BenchmarkRunOrchestrator:
                     )
                     seq += 1
 
-                _emit("repair_check_start", {"turn": turn_index_outer, "check_count": len(scenario.repair_checks)})
+                _emit(
+                    "repair_check_start",
+                    {
+                        "turn": turn_index_outer,
+                        "check_count": len(scenario.repair_checks),
+                    },
+                )
                 repair_results, seq = self._execute_repair_checks(
                     controller=controller,
                     scenario=scenario,
@@ -452,7 +516,9 @@ class BenchmarkRunOrchestrator:
                 )
                 _passed = self._repair_checks_pass(scenario, repair_results)
                 last_repair_snapshot = self._repair_snapshot(scenario, repair_results)
-                _emit("repair_check_done", {"turn": turn_index_outer, "passed": _passed})
+                _emit(
+                    "repair_check_done", {"turn": turn_index_outer, "passed": _passed}
+                )
 
                 if _passed:
                     session_metadata = session.close()
@@ -497,12 +563,18 @@ class BenchmarkRunOrchestrator:
                         command_results=proxy_result.tool_results,
                     )
                     for _res in proxy_result.tool_results:
-                        _tool_name = _res.metadata.get("user_proxy_tool_name", "run_command")
+                        _tool_name = _res.metadata.get(
+                            "user_proxy_tool_name", "run_command"
+                        )
                         _cmd = _res.command or ""
                         _cmd_base = _cmd.split()[0] if _cmd.split() else ""
                         _rendered = (
                             f"$ {_cmd}\n{(_res.stdout or '').strip()}"
-                            + (f"\n{(_res.stderr or '').strip()}" if _res.stderr else "")
+                            + (
+                                f"\n{(_res.stderr or '').strip()}"
+                                if _res.stderr
+                                else ""
+                            )
                             + f"\n[exit {_res.exit_code}]"
                         )
                         _recent_actions.append(
@@ -512,7 +584,8 @@ class BenchmarkRunOrchestrator:
                                 command=_cmd,
                                 result_text=_rendered,
                                 exit_code=_res.exit_code,
-                                state_changing=_tool_name in _STATE_CHANGING_PROXY_TOOLS,
+                                state_changing=_tool_name
+                                in _STATE_CHANGING_PROXY_TOOLS,
                                 safe_rerun=_cmd_base in _SAFE_RERUN_COMMANDS,
                             )
                         )
@@ -525,7 +598,8 @@ class BenchmarkRunOrchestrator:
                     )
 
                 ran_state_changing_tool = any(
-                    result.metadata.get("user_proxy_tool_name") in _STATE_CHANGING_PROXY_TOOLS
+                    result.metadata.get("user_proxy_tool_name")
+                    in _STATE_CHANGING_PROXY_TOOLS
                     for result in proxy_result.tool_results
                 )
                 if ran_state_changing_tool:
@@ -536,7 +610,9 @@ class BenchmarkRunOrchestrator:
                         seq=seq,
                         verification_agent_id=verification_agent_id,
                     )
-                    last_repair_snapshot = self._repair_snapshot(scenario, repair_results)
+                    last_repair_snapshot = self._repair_snapshot(
+                        scenario, repair_results
+                    )
                     if self._repair_checks_pass(scenario, repair_results):
                         session_metadata = session.close()
                         self._complete_success(
@@ -547,7 +623,10 @@ class BenchmarkRunOrchestrator:
                             repair_results=repair_results,
                         )
                         session = None
-                        _emit("evaluation_completed", {"repair_success": True, "source": "post_proxy_action"})
+                        _emit(
+                            "evaluation_completed",
+                            {"repair_success": True, "source": "post_proxy_action"},
+                        )
                         return
 
                 turn_index += 1
@@ -569,7 +648,10 @@ class BenchmarkRunOrchestrator:
                             adapter_session_metadata=session_metadata,
                             finished=True,
                         )
-                        _emit("evaluation_completed", {"repair_success": False, "reason": "proxy_stalled"})
+                        _emit(
+                            "evaluation_completed",
+                            {"repair_success": False, "reason": "proxy_stalled"},
+                        )
                         return
                     # Use the FSM's fallback message (not the opener) for the retry.
                     if proxy_result.user_message:
@@ -586,7 +668,9 @@ class BenchmarkRunOrchestrator:
                         seq=seq,
                         verification_agent_id=verification_agent_id,
                     )
-                    last_repair_snapshot = self._repair_snapshot(scenario, repair_results)
+                    last_repair_snapshot = self._repair_snapshot(
+                        scenario, repair_results
+                    )
                     if self._repair_checks_pass(scenario, repair_results):
                         session_metadata = session.close()
                         self._complete_success(
@@ -597,7 +681,10 @@ class BenchmarkRunOrchestrator:
                             repair_results=repair_results,
                         )
                         session = None
-                        _emit("evaluation_completed", {"repair_success": True, "source": "soft_closure"})
+                        _emit(
+                            "evaluation_completed",
+                            {"repair_success": True, "source": "soft_closure"},
+                        )
                         return
 
                 user_message = proxy_result.user_message
@@ -650,6 +737,7 @@ class BenchmarkRunOrchestrator:
         verified_setup_run_id: str,
         user_proxy_agent_id: str = "proxy",
         verification_agent_id: str = "verifier",
+        subject_ids: list[str] | None = None,
     ) -> BenchmarkRunResult:
         revision = self.store.get_scenario_revision(scenario_revision_id)
         if revision is None:
@@ -664,9 +752,18 @@ class BenchmarkRunOrchestrator:
         if setup_run.status != "verified":
             raise ValueError(f"Setup run {verified_setup_run_id} is not verified")
         if not setup_run.broken_image_id:
-            raise ValueError(f"Setup run {verified_setup_run_id} is missing broken_image_id")
+            raise ValueError(
+                f"Setup run {verified_setup_run_id} is missing broken_image_id"
+            )
 
-        subject_rows = self.store.list_active_subjects()
+        all_active = self.store.list_active_subjects()
+        if subject_ids is not None:
+            allowed = set(subject_ids)
+            subject_rows = [s for s in all_active if s.id in allowed]
+            if not subject_rows:
+                raise RuntimeError("No selected subjects are active")
+        else:
+            subject_rows = all_active
         if not subject_rows:
             raise RuntimeError("No active benchmark subjects are registered")
 
@@ -729,7 +826,9 @@ class BenchmarkRunOrchestrator:
             for future in futures:
                 try:
                     future.result()
-                except BaseException as exc:  # pragma: no cover - exercised in tests through failure paths
+                except (
+                    BaseException
+                ) as exc:  # pragma: no cover - exercised in tests through failure paths
                     failure = exc
                     break
             if failure is not None:
@@ -747,7 +846,9 @@ class BenchmarkRunOrchestrator:
                         },
                         finished=True,
                     )
-                benchmark_status, summary = self._benchmark_status_and_summary(benchmark_run.id, interrupted=True)
+                benchmark_status, summary = self._benchmark_status_and_summary(
+                    benchmark_run.id, interrupted=True
+                )
                 self.store.update_benchmark_run_status(
                     benchmark_run_id=benchmark_run.id,
                     status=benchmark_status,
@@ -759,13 +860,18 @@ class BenchmarkRunOrchestrator:
                     },
                 )
                 raise failure
-            benchmark_status, summary = self._benchmark_status_and_summary(benchmark_run.id)
+            benchmark_status, summary = self._benchmark_status_and_summary(
+                benchmark_run.id
+            )
             self.store.update_benchmark_run_status(
                 benchmark_run_id=benchmark_run.id,
                 status=benchmark_status,
                 finished=True,
                 metadata={"summary": summary},
             )
-            return BenchmarkRunResult(benchmark_run_id=benchmark_run.id, evaluation_run_ids=tuple(evaluation_run_ids))
+            return BenchmarkRunResult(
+                benchmark_run_id=benchmark_run.id,
+                evaluation_run_ids=tuple(evaluation_run_ids),
+            )
         finally:
             executor.shutdown(wait=False, cancel_futures=True)

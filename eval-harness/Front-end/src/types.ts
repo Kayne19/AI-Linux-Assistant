@@ -245,6 +245,7 @@ export type PreflightResponse = {
 
 export type VerifyRequest = {
 	group_id?: string | null;
+	revision_id?: string | null;
 };
 
 export type BenchmarkRequest = {
@@ -260,6 +261,7 @@ export type JudgeRequest = {
 
 export type RunAllRequest = {
 	group_id?: string | null;
+	revision_id?: string | null;
 	subject_ids?: string[] | null;
 	judge_mode?: string;
 	judge_anchor_subject?: string | null;

@@ -6,17 +6,14 @@ import type {
 	SubjectPatchRequest,
 } from "../types";
 
-const ADAPTER_TYPES = [
-	"anthropic",
-	"openai",
-	"google",
-	"anthropic-magi-lite",
-	"anthropic-magi-full",
+const DEFAULT_ADAPTER_TYPES = [
+	"ai_linux_assistant_http",
+	"openai_chatgpt",
 ] as const;
 
 const EMPTY_CREATE: SubjectCreateRequest = {
 	subject_name: "",
-	adapter_type: "anthropic",
+	adapter_type: DEFAULT_ADAPTER_TYPES[0],
 	display_name: "",
 	adapter_config: null,
 	is_active: true,
@@ -24,6 +21,9 @@ const EMPTY_CREATE: SubjectCreateRequest = {
 
 export function SubjectForm({ onToast }: { onToast: (msg: string) => void }) {
 	const [subjects, setSubjects] = useState<SubjectItem[]>([]);
+	const [adapterTypes, setAdapterTypes] = useState<string[]>([
+		...DEFAULT_ADAPTER_TYPES,
+	]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 
@@ -43,7 +43,18 @@ export function SubjectForm({ onToast }: { onToast: (msg: string) => void }) {
 		setLoading(true);
 		setError(null);
 		try {
-			const list = await api.listSubjects();
+			const [types, list] = await Promise.all([
+				api.listSubjectAdapterTypes(),
+				api.listSubjects(),
+			]);
+			if (types.length > 0) {
+				setAdapterTypes(types);
+				setCreateForm((form) =>
+					types.includes(form.adapter_type)
+						? form
+						: { ...form, adapter_type: types[0] },
+				);
+			}
 			setSubjects(list);
 		} catch (e) {
 			setError(String(e));
@@ -206,7 +217,7 @@ export function SubjectForm({ onToast }: { onToast: (msg: string) => void }) {
 								fontSize: "inherit",
 							}}
 						>
-							{ADAPTER_TYPES.map((t) => (
+							{adapterTypes.map((t) => (
 								<option key={t} value={t}>
 									{t}
 								</option>
@@ -305,6 +316,7 @@ export function SubjectForm({ onToast }: { onToast: (msg: string) => void }) {
 								onSave={handleSave}
 								onCancel={cancelEdit}
 								saving={saving}
+								adapterTypes={adapterTypes}
 							/>
 						) : (
 							<SubjectCard
@@ -461,6 +473,7 @@ function EditSubjectCard({
 	onSave,
 	onCancel,
 	saving,
+	adapterTypes,
 }: {
 	form: SubjectPatchRequest;
 	setForm: (f: SubjectPatchRequest) => void;
@@ -469,6 +482,7 @@ function EditSubjectCard({
 	onSave: () => void;
 	onCancel: () => void;
 	saving: boolean;
+	adapterTypes: string[];
 }) {
 	return (
 		<div
@@ -504,7 +518,7 @@ function EditSubjectCard({
 							fontSize: "inherit",
 						}}
 					>
-						{ADAPTER_TYPES.map((t) => (
+						{adapterTypes.map((t) => (
 							<option key={t} value={t}>
 								{t}
 							</option>

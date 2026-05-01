@@ -46,6 +46,21 @@ _TABLE_LABELS: dict[str, str] = {
 }
 
 
+# Direct mapping from table name (snake_case plural) to ORM model class name.
+_TABLE_TO_MODEL: dict[str, str] = {
+    "scenarios": "ScenarioRecord",
+    "scenario_revisions": "ScenarioRevisionRecord",
+    "scenario_setup_runs": "ScenarioSetupRunRecord",
+    "scenario_setup_events": "ScenarioSetupEventRecord",
+    "benchmark_subjects": "BenchmarkSubjectRecord",
+    "benchmark_runs": "BenchmarkRunRecord",
+    "evaluation_runs": "EvaluationRunRecord",
+    "evaluation_events": "EvaluationEventRecord",
+    "judge_jobs": "JudgeJobRecord",
+    "judge_items": "JudgeItemRecord",
+}
+
+
 def _model_for_table(table_name: str):
     """Return the ORM model class for a table name."""
     if table_name not in _TABLE_NAMES:
@@ -55,12 +70,7 @@ def _model_for_table(table_name: str):
         )
     from eval_harness.persistence import postgres_models as pm
 
-    return getattr(pm, _camel_model_name(table_name))
-
-
-def _camel_model_name(table_name: str) -> str:
-    """Convert snake_case table name to CamelCase model name."""
-    return "".join(part.capitalize() for part in table_name.split("_")) + "Record"
+    return getattr(pm, _TABLE_TO_MODEL[table_name])
 
 
 def _serialize_value(value: Any) -> Any:

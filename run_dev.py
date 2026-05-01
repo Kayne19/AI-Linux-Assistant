@@ -14,6 +14,27 @@ from urllib.parse import urlparse
 ROOT_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = ROOT_DIR / "Back-end"
 FRONTEND_DIR = ROOT_DIR / "Front-end"
+EVAL_HARNESS_DIR = ROOT_DIR / "eval-harness"
+EVAL_HARNESS_BACKEND_DIR = EVAL_HARNESS_DIR / "Back-end"
+EVAL_HARNESS_FRONTEND_DIR = EVAL_HARNESS_DIR / "Front-end"
+
+
+def _load_dotenv_file(path: Path) -> bool:
+    if not path.exists():
+        return False
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+    return True
 
 # Load Back-end/.env before reading env vars so REDIS_URL and others are available.
 # Use the project's canonical .env resolution so the same file is picked up as
@@ -27,6 +48,8 @@ try:
 finally:
     sys.path[:] = _sys_path_restore
 
+_load_dotenv_file(EVAL_HARNESS_DIR / ".env")
+
 BACKEND_HOST = os.getenv("AILA_BACKEND_HOST", "0.0.0.0")
 BACKEND_PORT = os.getenv("AILA_BACKEND_PORT", "8000")
 FRONTEND_HOST = os.getenv("AILA_FRONTEND_HOST", "0.0.0.0")
@@ -34,14 +57,10 @@ FRONTEND_PORT = os.getenv("AILA_FRONTEND_PORT", "5173")
 CHAT_WORKER_ID = os.getenv("CHAT_RUN_WORKER_ID", "dev-chat-worker")
 CHAT_WORKER_PROCESS_COUNT = max(1, int(os.getenv("CHAT_RUN_WORKER_PROCESS_COUNT", "4")))
 
-EVAL_HARNESS_BACKEND_HOST = os.getenv("EVAL_HARNESS_BACKEND_HOST", "0.0.0.0")
+EVAL_HARNESS_BACKEND_HOST = os.getenv("EVAL_HARNESS_BACKEND_HOST", "127.0.0.1")
 EVAL_HARNESS_BACKEND_PORT = os.getenv("EVAL_HARNESS_BACKEND_PORT", "8001")
 EVAL_HARNESS_FRONTEND_HOST = os.getenv("EVAL_HARNESS_FRONTEND_HOST", "0.0.0.0")
 EVAL_HARNESS_FRONTEND_PORT = os.getenv("EVAL_HARNESS_FRONTEND_PORT", "5174")
-
-EVAL_HARNESS_DIR = ROOT_DIR / "eval-harness"
-EVAL_HARNESS_BACKEND_DIR = EVAL_HARNESS_DIR / "Back-end"
-EVAL_HARNESS_FRONTEND_DIR = EVAL_HARNESS_DIR / "Front-end"
 
 
 def _parse_args() -> argparse.Namespace:

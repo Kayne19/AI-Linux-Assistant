@@ -22,6 +22,7 @@ from .orchestration.progress import stderr_progress_sink
 from .orchestration.user_proxy_llm import UserProxyLLMClient, UserProxyLLMClientConfig
 from .orchestration.user_proxy_llm_anthropic import AnthropicUserProxyLLMClient
 from .orchestration.user_proxy_llm_google import GoogleGenAIUserProxyLLMClient
+from .env import autoload_dotenv
 from .persistence import EvalHarnessStore, build_engine, build_session_factory, create_all_tables
 from .planners.anthropic import AnthropicScenarioPlanner, AnthropicScenarioPlannerConfig
 from .planners.google_genai import GoogleGenAIScenarioPlanner, GoogleGenAIScenarioPlannerConfig
@@ -32,24 +33,6 @@ from .models import PlannerScenarioRequest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
-
-
-def _autoload_dotenv(path: Path = DEFAULT_ENV_PATH) -> None:
-    if not path.exists():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        os.environ.setdefault(key, value)
 
 
 def _load_json(path: str | Path) -> dict[str, Any]:
@@ -829,7 +812,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _autoload_dotenv()
+    autoload_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))
