@@ -429,6 +429,7 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 	const [drawerAnchorSubject, setDrawerAnchorSubject] = useState<string>("");
 	const [subjects, setSubjects] = useState<SubjectItem[]>([]);
 	const [subjectsLoaded, setSubjectsLoaded] = useState(false);
+	const [refreshCounter, setRefreshCounter] = useState(0);
 
 	// Load subjects for the Benchmark drawer
 	const loadSubjects = () => {
@@ -462,7 +463,7 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 			.then(setScenario)
 			.catch((e) => setError(e.message || "Failed to load scenario"))
 			.finally(() => setLoading(false));
-	}, [scenarioId]);
+	}, [scenarioId, refreshCounter]);
 
 	const loadEvaluations = (benchmarkId: string) => {
 		if (benchmarkEvals[benchmarkId]) return;
@@ -1119,18 +1120,14 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 				{tab === "edit-json" && (
 					<GenerateEditor
 						scenarioId={scenarioId}
-						onRevisionSaved={() => {
-							/* refresh scenario data */
-						}}
+						onRevisionSaved={() => setRefreshCounter((c) => c + 1)}
 					/>
 				)}
 
 				{tab === "generate" && (
 					<GenerateEditor
 						scenarioId={scenarioId}
-						onRevisionSaved={() => {
-							/* refresh scenario data */
-						}}
+						onRevisionSaved={() => setRefreshCounter((c) => c + 1)}
 					/>
 				)}
 			</div>
