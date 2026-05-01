@@ -8,6 +8,10 @@ export type ScenarioListItem = {
 	verification_status: string;
 	benchmark_run_count: number;
 	created_at: string;
+	updated_at?: string | null;
+	last_run_at?: string | null;
+	run_count?: number;
+	tags?: string[];
 	current_verified_revision_id: string | null;
 	last_verified_at: string | null;
 };

@@ -1,64 +1,60 @@
 import { useInstances } from "../hooks/useInstances";
+import { usePreflight } from "../hooks/usePreflight";
 import type { ScenarioListItem } from "../types";
 import ActiveInstancesTable from "./ActiveInstancesTable";
 import ActiveRunsGrid from "./ActiveRunsGrid";
+import { AmiInstanceHealth } from "./dashboard/AmiInstanceHealth";
+import { RecentFailures } from "./dashboard/RecentFailures";
+import { RunHistoryChart } from "./dashboard/RunHistoryChart";
+import { SuccessRateSparkline } from "./dashboard/SuccessRateSparkline";
+import { TopScenarios } from "./dashboard/TopScenarios";
 import RecentActivityList from "./RecentActivityList";
-import RunScenarioPicker from "./RunScenarioPicker";
 
 export default function Dashboard({
 	scenarios,
 	onModeChange,
+	onNewScenario,
 }: {
 	scenarios: ScenarioListItem[];
 	onModeChange: (mode: "scenarios", id: string) => void;
+	onNewScenario?: () => void;
 }) {
 	const { instances, loading: instancesLoading, terminate } = useInstances();
+	const { loading: preflightLoading, runPreflight } = usePreflight();
 
 	return (
-		<div
-			style={{ padding: 20, display: "flex", flexDirection: "column", gap: 24 }}
-		>
-			<div>
-				<h3
-					style={{
-						margin: "0 0 12px",
-						fontFamily: "var(--mono)",
-						fontSize: 10,
-						letterSpacing: "0.12em",
-						textTransform: "uppercase",
-						color: "var(--accent-text)",
-						fontWeight: 500,
-					}}
-				>
-					Active Benchmark Runs
-				</h3>
-				<ActiveRunsGrid scenarios={scenarios} />
-			</div>
+		<div className="dashboard">
+			<header className="dashboard-header">
+				<h1>Control Center</h1>
+				<div className="dashboard-quick-actions">
+					<button
+						type="button"
+						className="primary"
+						onClick={() => onNewScenario?.()}
+					>
+						+ New Scenario
+					</button>
+					<button
+						type="button"
+						onClick={runPreflight}
+						disabled={preflightLoading}
+					>
+						{preflightLoading ? "Running\u2026" : "Run preflight"}
+					</button>
+				</div>
+			</header>
 
-			<div>
-				<h3
-					style={{
-						margin: "0 0 12px",
-						fontFamily: "var(--mono)",
-						fontSize: 10,
-						letterSpacing: "0.12em",
-						textTransform: "uppercase",
-						color: "var(--accent-text)",
-						fontWeight: 500,
-					}}
-				>
-					Active AWS Instances
-				</h3>
-				<ActiveInstancesTable
-					instances={instances}
-					loading={instancesLoading}
-					onTerminate={async (id) => {
-						await terminate(id);
-					}}
+			<section className="dashboard-grid">
+				<SuccessRateSparkline />
+				<RunHistoryChart />
+				<AmiInstanceHealth />
+				<RecentFailures
+					onSelectScenario={(id) => onModeChange("scenarios", id)}
 				/>
-			</div>
+				<TopScenarios onSelect={(id) => onModeChange("scenarios", id)} />
+			</section>
 
-			<div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+			<section className="dashboard-row">
 				<div>
 					<h3
 						style={{
@@ -71,9 +67,9 @@ export default function Dashboard({
 							fontWeight: 500,
 						}}
 					>
-						Recent Activity
+						Active Benchmark Runs
 					</h3>
-					<RecentActivityList scenarios={scenarios} />
+					<ActiveRunsGrid scenarios={scenarios} />
 				</div>
 				<div>
 					<h3
@@ -87,11 +83,34 @@ export default function Dashboard({
 							fontWeight: 500,
 						}}
 					>
-						Quick Action
+						Active AWS Instances
 					</h3>
-					<RunScenarioPicker scenarios={scenarios} onSelect={onModeChange} />
+					<ActiveInstancesTable
+						instances={instances}
+						loading={instancesLoading}
+						onTerminate={async (id) => {
+							await terminate(id);
+						}}
+					/>
 				</div>
-			</div>
+			</section>
+
+			<section>
+				<h3
+					style={{
+						margin: "0 0 12px",
+						fontFamily: "var(--mono)",
+						fontSize: 10,
+						letterSpacing: "0.12em",
+						textTransform: "uppercase",
+						color: "var(--accent-text)",
+						fontWeight: 500,
+					}}
+				>
+					Recent Activity
+				</h3>
+				<RecentActivityList scenarios={scenarios} />
+			</section>
 		</div>
 	);
 }

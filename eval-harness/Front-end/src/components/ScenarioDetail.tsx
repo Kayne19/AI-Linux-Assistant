@@ -10,7 +10,9 @@ import type {
 	SetupRunItem,
 	SubjectItem,
 } from "../types";
-import GenerateEditor from "./GenerateEditor";
+import { JsonEditorTab } from "./JsonEditorTab";
+import { OverviewSummary } from "./OverviewSummary";
+import { RunsMasterDetail } from "./RunsMasterDetail";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -396,20 +398,21 @@ function RunViewer({
 
 // ─── Scenario Detail ────────────────────────────────────────────────────────
 
-type Tab = "overview" | "revisions" | "runs" | "edit-json" | "generate";
+type Tab = "overview" | "revisions" | "runs" | "edit-json";
 
-export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
+export default function ScenarioDetail({
+	scenarioId,
+	onGenerateVariant,
+}: {
+	scenarioId: string;
+	onGenerateVariant?: (sourceId: string) => void;
+}) {
 	const [scenario, setScenario] = useState<ScenarioDetailType | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const [tab, setTab] = useState<Tab>("overview");
 	const [selectedEvalId, setSelectedEvalId] = useState<string | null>(null);
 	const [selectedBenchId, setSelectedBenchId] = useState<string | null>(null);
-	const [benchmarkEvals, setBenchmarkEvals] = useState<
-		Record<string, EvaluationRunItem[]>
-	>({});
-	const [loadingEvals, setLoadingEvals] = useState<Record<string, boolean>>({});
-
 	// M3 Control state
 	const {
 		dispatching,
@@ -465,20 +468,6 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 			.finally(() => setLoading(false));
 	}, [scenarioId, refreshCounter]);
 
-	const loadEvaluations = (benchmarkId: string) => {
-		if (benchmarkEvals[benchmarkId]) return;
-		setLoadingEvals((prev) => ({ ...prev, [benchmarkId]: true }));
-		api
-			.listBenchmarkEvaluations(benchmarkId)
-			.then((evals) => {
-				setBenchmarkEvals((prev) => ({ ...prev, [benchmarkId]: evals }));
-			})
-			.catch(() => {})
-			.finally(() => {
-				setLoadingEvals((prev) => ({ ...prev, [benchmarkId]: false }));
-			});
-	};
-
 	if (loading) {
 		return (
 			<p
@@ -521,7 +510,6 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 		{ key: "revisions", label: "Revisions" },
 		{ key: "runs", label: "Runs" },
 		{ key: "edit-json", label: "Edit JSON" },
-		{ key: "generate", label: "Generate" },
 	];
 
 	return (
@@ -1006,26 +994,12 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 			{/* Tab content */}
 			<div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
 				{tab === "overview" && (
-					<div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-						<div>
-							<p className="eyebrow">Verification Status</p>
-							<p style={{ fontSize: 13, color: "var(--text)" }}>
-								{scenario.verification_status}
-							</p>
-						</div>
-						<div>
-							<p className="eyebrow">Revisions</p>
-							<p style={{ fontSize: 13, color: "var(--text)" }}>
-								{scenario.revisions.length} revision
-								{scenario.revisions.length !== 1 ? "s" : ""}
-								{scenario.current_verified_revision_id && (
-									<span style={{ color: "var(--green)", marginLeft: 8 }}>
-										\u2713 verified
-									</span>
-								)}
-							</p>
-						</div>
-					</div>
+					<OverviewSummary
+						scenario={scenario}
+						onRunBenchmark={() => openDrawer("benchmark")}
+						onEditJson={() => setTab("edit-json")}
+						onGenerateVariant={() => onGenerateVariant?.(scenarioId)}
+					/>
 				)}
 
 				{tab === "revisions" && (
@@ -1105,324 +1079,23 @@ export default function ScenarioDetail({ scenarioId }: { scenarioId: string }) {
 				)}
 
 				{tab === "runs" && (
-					<RunListTab
-						scenario={scenario}
+					<RunsMasterDetail
+						scenarioId={scenarioId}
 						onViewRun={(evalId, benchId) => {
 							setSelectedEvalId(evalId);
 							setSelectedBenchId(benchId);
 						}}
-						benchmarkEvals={benchmarkEvals}
-						loadingEvals={loadingEvals}
-						loadEvaluations={loadEvaluations}
 					/>
 				)}
 
 				{tab === "edit-json" && (
-					<GenerateEditor
+					<JsonEditorTab
 						scenarioId={scenarioId}
-						onRevisionSaved={() => setRefreshCounter((c) => c + 1)}
-					/>
-				)}
-
-				{tab === "generate" && (
-					<GenerateEditor
-						scenarioId={scenarioId}
+						initialJson={scenario}
 						onRevisionSaved={() => setRefreshCounter((c) => c + 1)}
 					/>
 				)}
 			</div>
-		</div>
-	);
-}
-
-// ─── Runs Tab ───────────────────────────────────────────────────────────────
-
-function RunListTab({
-	scenario,
-	onViewRun,
-	benchmarkEvals,
-	loadingEvals,
-	loadEvaluations,
-}: {
-	scenario: ScenarioDetailType;
-	onViewRun: (evalId: string, benchId: string) => void;
-	benchmarkEvals: Record<string, EvaluationRunItem[]>;
-	loadingEvals: Record<string, boolean>;
-	loadEvaluations: (benchmarkId: string) => void;
-}) {
-	const [benchmarks, setBenchmarks] = useState<BenchmarkRunItem[]>([]);
-	const [loading, setLoading] = useState(true);
-
-	useEffect(() => {
-		setLoading(true);
-		// Load benchmarks for each revision
-		const loadAll = async () => {
-			const all: BenchmarkRunItem[] = [];
-
-			try {
-				const res = await api.listRuns({ page_size: 200 });
-				const bms = res.items
-					.filter(
-						(r) =>
-							r.kind === "benchmark" &&
-							scenario.revisions.some(
-								(rev) => rev.id === r.scenario_revision_id,
-							),
-					)
-					.map(
-						(r) =>
-							({
-								id: r.id,
-								scenario_revision_id: r.scenario_revision_id,
-								verified_setup_run_id: r.verified_setup_run_id || "",
-								status: r.status,
-								subject_count: r.subject_count || 0,
-								started_at: r.started_at,
-								finished_at: r.finished_at,
-								created_at: r.created_at,
-								metadata_json: null,
-							}) as BenchmarkRunItem,
-					);
-				all.push(...bms);
-			} catch {
-				// skip
-			}
-
-			setBenchmarks(all);
-			setLoading(false);
-		};
-		loadAll();
-	}, [scenario.revisions]);
-
-	if (loading) {
-		return (
-			<p style={{ color: "var(--muted)", fontSize: 13 }}>Loading runs...</p>
-		);
-	}
-
-	if (benchmarks.length === 0) {
-		return (
-			<p style={{ color: "var(--muted)", fontSize: 13 }}>
-				No benchmark runs yet.
-			</p>
-		);
-	}
-
-	return (
-		<div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-			{benchmarks.map((bm) => (
-				<BenchmarkRunCard
-					key={bm.id}
-					benchmark={bm}
-					revisions={scenario.revisions}
-					evals={benchmarkEvals[bm.id] || null}
-					loadingEvals={!!loadingEvals[bm.id]}
-					onLoadEvals={() => loadEvaluations(bm.id)}
-					onViewRun={onViewRun}
-				/>
-			))}
-		</div>
-	);
-}
-
-function BenchmarkRunCard({
-	benchmark,
-	revisions,
-	evals,
-	loadingEvals,
-	onLoadEvals,
-	onViewRun,
-}: {
-	benchmark: BenchmarkRunItem;
-	revisions: ScenarioDetailType["revisions"];
-	evals: EvaluationRunItem[] | null;
-	loadingEvals: boolean;
-	onLoadEvals: () => void;
-	onViewRun: (evalId: string, benchId: string) => void;
-}) {
-	const rev = revisions.find((r) => r.id === benchmark.scenario_revision_id);
-	const [expanded, setExpanded] = useState(false);
-
-	const handleToggle = () => {
-		if (!expanded && !evals) {
-			onLoadEvals();
-		}
-		setExpanded(!expanded);
-	};
-
-	return (
-		<div
-			style={{
-				border: "1px solid var(--border)",
-				borderRadius: 6,
-				overflow: "hidden",
-			}}
-		>
-			<button
-				onClick={handleToggle}
-				style={{
-					width: "100%",
-					textAlign: "left",
-					background: "transparent",
-					border: "none",
-					borderRadius: 0,
-					padding: "10px 12px",
-					cursor: "pointer",
-					display: "flex",
-					justifyContent: "space-between",
-					alignItems: "center",
-					color: "var(--text)",
-				}}
-			>
-				<div
-					style={{
-						display: "flex",
-						flexDirection: "column",
-						gap: 4,
-					}}
-				>
-					<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-						<span style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
-							{benchmark.id.slice(0, 8)}
-						</span>
-						<span
-							style={{
-								fontFamily: "var(--mono)",
-								fontSize: 10,
-								display: "inline-flex",
-								alignItems: "center",
-								gap: 3,
-								color: statusColor(benchmark.status),
-							}}
-						>
-							<span
-								style={{
-									width: 6,
-									height: 6,
-									borderRadius: "50%",
-									background: statusColor(benchmark.status),
-									display: "inline-block",
-								}}
-							/>
-							{benchmark.status}
-						</span>
-					</div>
-					<div
-						style={{
-							fontFamily: "var(--mono)",
-							fontSize: 10,
-							color: "var(--text3)",
-						}}
-					>
-						{rev ? `Revision ${rev.revision_number}` : "—"} &middot;{" "}
-						{benchmark.subject_count} subject
-						{benchmark.subject_count !== 1 ? "s" : ""} &middot;{" "}
-						{formatDuration(benchmark.started_at, benchmark.finished_at)}
-					</div>
-				</div>
-				<span
-					style={{
-						fontFamily: "var(--mono)",
-						fontSize: 10,
-						color: "var(--text3)",
-						transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-						transition: "transform 0.15s",
-					}}
-				>
-					\u25B6
-				</span>
-			</button>
-
-			{expanded && (
-				<div
-					style={{
-						borderTop: "1px solid var(--border)",
-						padding: "8px 12px",
-					}}
-				>
-					{loadingEvals && (
-						<p style={{ color: "var(--muted)", fontSize: 12 }}>
-							Loading evaluations...
-						</p>
-					)}
-					{evals && evals.length === 0 && (
-						<p style={{ color: "var(--muted)", fontSize: 12 }}>
-							No evaluations yet.
-						</p>
-					)}
-					{evals &&
-						evals.map((ev) => (
-							<div
-								key={ev.id}
-								style={{
-									display: "flex",
-									alignItems: "center",
-									justifyContent: "space-between",
-									padding: "6px 0",
-									borderBottom: "1px solid var(--border-soft)",
-								}}
-							>
-								<div
-									style={{
-										display: "flex",
-										alignItems: "center",
-										gap: 8,
-									}}
-								>
-									<span
-										style={{
-											width: 6,
-											height: 6,
-											borderRadius: "50%",
-											background: statusColor(ev.status),
-											display: "inline-block",
-											flexShrink: 0,
-										}}
-									/>
-									<span
-										style={{
-											fontFamily: "var(--mono)",
-											fontSize: 11,
-											color: "var(--text)",
-										}}
-									>
-										{ev.id.slice(0, 8)}
-									</span>
-									<span
-										style={{
-											fontFamily: "var(--mono)",
-											fontSize: 10,
-											color: "var(--muted)",
-										}}
-									>
-										{ev.status}
-										{ev.repair_success !== null && (
-											<span>
-												{" "}
-												&middot; repair: {ev.repair_success ? "yes" : "no"}
-											</span>
-										)}
-									</span>
-								</div>
-								<button
-									className="ghost-button compact"
-									style={{ fontSize: 11, padding: "3px 8px" }}
-									onClick={() => onViewRun(ev.id, benchmark.id)}
-								>
-									View transcript
-								</button>
-							</div>
-						))}
-					{evals && evals.length > 0 && (
-						<div
-							style={{
-								borderTop: "none",
-								paddingBottom: 4,
-							}}
-						/>
-					)}
-				</div>
-			)}
 		</div>
 	);
 }

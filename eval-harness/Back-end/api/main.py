@@ -22,7 +22,6 @@ from .routes import (
     judge,
     runs,
     scenarios,
-    subjects,
 )
 
 
@@ -39,7 +38,13 @@ def _redact_database_url(value: str | None) -> str:
     if parsed.password is not None:
         userinfo = f"{userinfo}:***"
     return urlunsplit(
-        (parsed.scheme, f"{userinfo}@{hostname}{port}", parsed.path, parsed.query, parsed.fragment)
+        (
+            parsed.scheme,
+            f"{userinfo}@{hostname}{port}",
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
     )
 
 
@@ -133,7 +138,6 @@ def create_app() -> FastAPI:
     app.include_router(runs.router, prefix="/api/v1")
     app.include_router(infra.router, prefix="/api/v1")
     app.include_router(generate.router, prefix="/api/v1")
-    app.include_router(subjects.router, prefix="/api/v1")
     app.include_router(judge.router, prefix="/api/v1")
     app.include_router(artifacts.router, prefix="/api/v1")
     app.include_router(admin.router, prefix="/api/v1")
