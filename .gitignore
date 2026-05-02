@@ -60,3 +60,4 @@ lancedb_data/
 .gemini/
 .pi-lens/
 graphify-out/
+docs/
